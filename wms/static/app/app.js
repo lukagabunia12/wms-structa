@@ -714,7 +714,7 @@ function vignettesAccueil() {
   const v = [];
   if (peut('cab')) v.push(tile('in', 'Entrée', 'créer une cabine', 'entree'));
   v.push(tile('scan', 'Scanner', 'emplacement ou cabine', 'scanner'));
-  v.push(tile('build', 'Cabines', 'chercher, filtrer, agir', 'cabines'));
+  v.push(tile('build', 'Parc', 'chercher, filtrer, agir', 'cabines'));
   v.push(tile('box', 'Emplacements', peut('ref')
     ? 'occupation, ajout et réglages' : 'occupation des racks', 'emplacements'));
   v.push(tile('search', 'Par chantier', 'toutes les cabines d’un chantier', 'chantier'));
