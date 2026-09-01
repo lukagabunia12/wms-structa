@@ -1,0 +1,551 @@
+/* ============================================================================
+   WMS Structa — feuille de style unique, deux mises en page.
+
+   Jetons issus de la charte graphique STRUCTA : marine #1C394B (structure),
+   bleu nuit #002060 (titres et valeurs), orange brique #BF4E14 (accent),
+   bordeaux #943634 (destructif), gris #808080 (secondaire).
+
+   Mise en page mobile par défaut (poste entrepôt : barre marine en haut,
+   5 onglets en bas). À partir de 1024 px, mise en page desktop (poste bureau :
+   barre latérale dépliée, contenu large, pas d'onglets bas).
+   ========================================================================== */
+
+:root{
+  /* --- charte --- */
+  --marine:#1C394B; --marine-2:#274A60; --nuit:#002060;
+  --brique:#BF4E14; --bordeaux:#943634; --gris:#808080;
+  /* Alias conservés : app.js pose var(--navy) et var(--line) en style inline. */
+  --navy:var(--marine); --navy-2:var(--marine-2); --orange:var(--brique);
+
+  /* --- neutres, légèrement bleutés pour s'accorder au marine --- */
+  --fond:#EEF2F5; --surface:#FFFFFF; --surface-2:#F6F9FA; --ligne:#DCE3E9;
+  --txt:#16222C; --muted:#65737F;
+  --marine-tint:#E8EFF4; --brique-tint:#FBEBE2;
+  --bg:var(--fond); --card:var(--surface); --line:var(--ligne);
+
+  /* --- états : distincts de la charte, un vert signifie « conforme », pas « Structa » --- */
+  --ok:#1D7A4D; --ok-tint:#E3F2EA;
+  --warn-tx:#8A4B0B; --warn-bg:#FBE7D6;
+  --danger:#B3261E; --danger-tint:#FBE9E6;
+
+  --radius:14px; --radius-s:10px;
+  --ombre:0 1px 2px rgba(22,34,44,.05), 0 8px 24px rgba(22,34,44,.05);
+  --f:'Lato','Calibri','Segoe UI',system-ui,-apple-system,Roboto,sans-serif;
+  --f-data:'Consolas',ui-monospace,'SFMono-Regular',Menlo,monospace;
+}
+
+*{box-sizing:border-box}
+/* Supprime le délai de 300 ms que certains Android gardent avant de déclencher
+   un clic, et empêche le double-tap de zoomer sur un bouton qu'on presse deux
+   fois de suite — au poste, on enchaîne les cabines. */
+button,.tile,.geste,.item,.chip,.case,.kpi,label.fichier{touch-action:manipulation}
+html,body{margin:0;padding:0}
+body{font-family:var(--f);background:var(--fond);color:var(--txt);-webkit-tap-highlight-color:transparent}
+:focus-visible{outline:2px solid var(--brique);outline-offset:2px}
+
+/* ============================ ossature ==================================== */
+
+/* `100dvh` suit la barre d'adresse d'Android qui se rétracte au défilement :
+   avec `100vh`, la barre d'onglets du bas restait sous le pli et l'écran
+   « sautait » à chaque changement de sens de défilement. `100vh` reste écrit
+   avant, pour les navigateurs qui ignorent l'unité dynamique. */
+#app{max-width:520px;margin:0 auto;min-height:100vh;min-height:100dvh;padding-bottom:76px;overscroll-behavior-y:contain}
+.shell{display:block}
+.side{display:none}                              /* barre latérale : desktop seulement */
+
+.top{background:var(--marine);color:#fff;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:5}
+.top .brand{font-size:18px;font-weight:700;letter-spacing:.3px}
+.top .who{width:32px;height:32px;border-radius:50%;background:#ffffff26;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
+.wrap{padding:16px}
+
+.nav{position:fixed;left:0;right:0;bottom:0;max-width:520px;margin:0 auto;background:var(--surface);border-top:1px solid var(--ligne);display:flex;justify-content:space-around;padding:6px 0 8px;z-index:6;padding-bottom:calc(8px + env(safe-area-inset-bottom))}
+.nav button{background:none;border:none;color:var(--muted);font:inherit;font-size:11px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;padding:6px 8px;min-width:56px}
+.nav button.on{color:var(--brique);font-weight:700}
+
+/* ============================ typographie ================================= */
+
+h2.title{font-size:17px;margin:2px 2px 12px;font-weight:700;color:var(--nuit)}
+.sec{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:8px 2px 8px}
+
+/* ============================ composants ================================== */
+
+.kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:14px}
+.kpi{background:var(--surface);border:1px solid var(--ligne);border-radius:12px;padding:11px 13px}
+.kpi .l{font-size:12px;color:var(--muted)}
+.kpi .v{font-size:22px;font-weight:700;margin-top:2px;line-height:1.15;color:var(--nuit);font-variant-numeric:tabular-nums}
+.kpi.warn{background:var(--warn-bg);border-color:transparent}
+.kpi.warn .l,.kpi.warn .v{color:var(--warn-tx)}
+
+.banner{display:flex;gap:8px;align-items:center;background:var(--warn-bg);color:var(--warn-tx);border-radius:12px;padding:11px 13px;font-size:13px;margin-bottom:14px}
+
+.tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:11px}
+.tile{background:var(--surface);border:1px solid var(--ligne);border-radius:var(--radius);padding:15px 14px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:5px;min-height:88px;transition:transform .06s,border-color .12s}
+.tile:hover{border-color:var(--marine-tint)}
+.tile:active{transform:scale(.985)}
+.tile .ic{color:var(--marine)}
+.tile .t{font-size:15px;font-weight:700}
+.tile .s{font-size:12px;color:var(--muted);line-height:1.4}
+.tile.dim{opacity:.55}
+
+.card{background:var(--surface);border:1px solid var(--ligne);border-radius:var(--radius);padding:15px}
+label{display:block;font-size:12px;color:var(--muted);margin:11px 0 5px}
+/* 16 px, pas 15 : en dessous de 16 px, iOS et plusieurs Android zooment
+   automatiquement sur le champ au moment où on le touche. La page saute, le
+   clavier recouvre le bouton, et il faut pincer pour revenir. C'est la première
+   cause de « ça bouge tout seul » signalée au poste. */
+input,select,textarea{width:100%;padding:11px 12px;border:1px solid var(--ligne);border-radius:var(--radius-s);font:inherit;font-size:16px;background:var(--surface);color:var(--txt)}
+input:focus,select:focus{outline:none;border-color:var(--marine);box-shadow:0 0 0 3px var(--marine-tint)}
+
+.btn{width:100%;padding:13px;border:none;border-radius:var(--radius-s);background:var(--marine);color:#fff;font:inherit;font-size:15px;font-weight:700;cursor:pointer;margin-top:14px}
+.btn:hover{background:var(--marine-2)}
+.btn:active{opacity:.9}
+.btn.orange{background:var(--brique)}
+.btn.orange:hover{filter:brightness(1.07)}
+.btn.ghost{background:transparent;color:var(--marine);border:1px solid var(--ligne)}
+.btn.ghost:hover{background:var(--surface-2)}
+.btn.danger{background:var(--bordeaux)}
+
+.row{display:flex;gap:10px}
+.row>*{flex:1}
+
+.list{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+.item{background:var(--surface);border:1px solid var(--ligne);border-radius:12px;padding:11px 13px;cursor:pointer;transition:border-color .12s}
+.item:hover{border-color:var(--marine-tint)}
+.item .r{font-weight:700;font-size:14px}
+.item .d{font-size:13px;color:var(--muted);margin-top:2px}
+.item .meta{font-size:12px;color:var(--muted);margin-top:4px}
+.pill{display:inline-block;background:var(--marine-tint);color:var(--marine);border-radius:20px;padding:2px 9px;font-size:12px;font-weight:700;margin-right:6px}
+
+/* Pastilles d'état : l'information se lit dans la forme et la couleur, pas seulement
+   dans le chiffre. Distinctes de la charte — un vert signifie « conforme ». */
+.etat{display:inline-block;border-radius:20px;padding:1px 9px;font-size:11.5px;font-weight:700;vertical-align:1px}
+.etat.ok{background:var(--ok-tint);color:var(--ok)}
+.etat.att{background:var(--warn-bg);color:var(--warn-tx)}
+.etat.crit{background:var(--danger-tint);color:var(--danger)}
+.etat.plein{background:var(--marine);color:#fff}
+
+/* Barre de volume du suivi de processus : la longueur encode la quantité, pour
+   comparer les étapes d'un coup d'œil sans lire les chiffres. */
+.barre{height:6px;border-radius:3px;background:var(--ligne);overflow:hidden}
+.barre i{display:block;height:100%;border-radius:3px;background:var(--marine);min-width:2px}
+.empty{color:var(--muted);font-size:14px;text-align:center;padding:26px 10px}
+
+#toast{position:fixed;left:50%;bottom:92px;transform:translateX(-50%);background:#222;color:#fff;padding:11px 16px;border-radius:var(--radius-s);font-size:14px;font-weight:600;opacity:0;transition:opacity .25s;pointer-events:none;max-width:90%;text-align:center;z-index:20;box-shadow:var(--ombre)}
+#toast.show{opacity:1}
+#toast.err{background:var(--danger)}
+#toast.ok{background:var(--ok)}
+
+.login{max-width:380px;margin:11vh auto 0;padding:24px}
+.login .logo{font-size:27px;font-weight:800;color:var(--marine);text-align:center;margin-bottom:4px;letter-spacing:.3px}
+.login .sub{text-align:center;color:var(--muted);font-size:14px;margin-bottom:22px}
+.back{background:none;border:none;color:#fff;font:inherit;font-size:15px;cursor:pointer;display:flex;align-items:center;gap:4px}
+
+/* ============ palier tablette : on garde les onglets, on prend la largeur ==== */
+
+@media (min-width:700px) and (max-width:1023px){
+  #app{max-width:760px}
+  .nav{max-width:760px}
+  .wrap{padding:20px}
+  h2.title{font-size:20px;margin-bottom:16px}
+  .kpis{grid-template-columns:repeat(4,1fr)}
+  .tiles{grid-template-columns:repeat(3,1fr)}
+  .card{max-width:600px}
+}
+
+/* ====================== mise en page desktop ============================== */
+
+@media (min-width:1024px){
+
+  #app{max-width:none;margin:0;padding-bottom:0}
+  .nav{display:none}                             /* onglets bas : mobile seulement */
+  .top{display:none}                             /* marque et compte passent dans la barre latérale */
+
+  .shell{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:100vh}
+
+  .side{
+    display:flex;flex-direction:column;gap:14px;
+    background:var(--surface);border-right:1px solid var(--ligne);
+    padding:18px 13px;position:sticky;top:0;height:100vh;overflow-y:auto;
+  }
+  .side .marque{display:flex;align-items:center;gap:10px;padding:2px 6px 14px;border-bottom:1px solid var(--ligne)}
+  .side .sceau{width:34px;height:34px;border-radius:9px;background:var(--marine);color:#fff;display:grid;place-items:center;flex:none}
+  .side .marque .nom{display:block;font-size:16px;font-weight:800;letter-spacing:.4px;line-height:1.1;color:var(--marine)}
+  .side .marque .desc{display:block;font-size:9px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);line-height:1.3}
+
+  .menu{display:flex;flex-direction:column;gap:2px}
+  .menu .grp{font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);padding:12px 8px 4px}
+  .menu button{
+    display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+    background:none;border:none;font:inherit;font-size:13.5px;color:var(--muted);
+    padding:9px 10px;border-radius:9px;cursor:pointer;
+  }
+  .menu button:hover{background:var(--surface-2);color:var(--txt)}
+  .menu button.on{background:var(--brique-tint);color:var(--brique);font-weight:700}
+
+  .side-pied{margin-top:auto;border-top:1px solid var(--ligne);padding-top:13px;display:flex;flex-direction:column;gap:10px}
+  .side-pied .compte{display:flex;align-items:center;gap:10px}
+  .side-pied .avatar{width:32px;height:32px;border-radius:50%;background:var(--marine-tint);color:var(--marine);display:grid;place-items:center;font-size:12px;font-weight:700;flex:none}
+  /* Sans display:block, les deux <span> se suivaient sur la même ligne : la barre
+     latérale affichait « VéroConnecté » d'un seul tenant. */
+  .side-pied .n{display:block;font-size:13px;font-weight:700;line-height:1.2}
+  .side-pied .r{display:block;font-size:11px;color:var(--muted);line-height:1.3}
+  .side-pied .btn{margin-top:0;padding:9px;font-size:13px}
+
+  .main{min-width:0;display:flex;flex-direction:column}
+  .wrap{padding:26px 30px 40px;max-width:1200px;width:100%}
+
+  h2.title{font-size:24px;margin:0 0 20px}
+  .sec{margin:14px 2px 10px}
+
+  /* Densité : l'écran large sert à voir plus, pas à étirer les mêmes blocs. */
+  .kpis{grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+  .kpi{padding:14px 16px}
+  .kpi .v{font-size:26px}
+  .tiles{grid-template-columns:repeat(3,1fr);gap:14px}
+  .tile{min-height:104px;padding:17px 16px}
+
+  /* Un champ de saisie n'a aucune raison de faire 1 200 px de large. */
+  .card{max-width:620px;padding:18px}
+  .card.large{max-width:none}
+  .btn{width:auto;min-width:190px}
+  .row .btn{width:100%}
+  .list{max-width:820px}
+  .banner{max-width:820px}
+  .item input,.item select{max-width:220px}
+
+  /* Deux colonnes là où le mobile empile : on profite de la largeur. */
+  .duo{display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:start}
+  .duo .list,.duo .banner{max-width:none}
+  .duo .sec:first-child{margin-top:0}
+
+  #toast{bottom:28px}
+  .login{margin-top:14vh}
+}
+
+/* ==================== barre de titre avec action principale ================
+   Le bouton de création vit EN HAUT, à côté du titre. Il était auparavant en bas
+   de page : sur l'écran des emplacements, il fallait faire défiler tout
+   l'entrepôt pour ajouter une travée.                                        */
+.tete-ecran{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.tete-ecran .title{flex:1 1 auto}
+.bouton-tete{margin-top:0;width:auto;flex:0 0 auto;padding:10px 16px;font-size:14px;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.retour{margin:0 0 12px;width:auto;padding:9px 14px;font-size:14px}
+/* Alignée sur la carte de réglages : un bouton « Supprimer » de 1 200 px de large
+   pèse beaucoup trop lourd dans la page. */
+.actions-fiche{max-width:620px}
+
+/* Texte d'aide sous un champ : dit ce que le réglage change réellement. */
+.aide{font-size:12px;color:var(--muted);line-height:1.45;margin-top:6px}
+.aide.alerte{color:var(--warn-tx);background:var(--warn-bg);border-radius:9px;padding:8px 10px}
+
+/* Case à cocher alignée avec son libellé (les <label> du formulaire sont en bloc). */
+label.case{display:flex;align-items:center;gap:9px;margin-top:14px;font-size:14px;color:var(--txt);cursor:pointer}
+label.case input{width:auto;flex:none;accent-color:var(--marine)}
+
+/* Filtres repliés par défaut : la liste doit être visible d'emblée au poste. */
+.filtres{margin-bottom:14px}
+.filtres>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--marine);padding:9px 12px;background:var(--surface);border:1px solid var(--ligne);border-radius:var(--radius-s);list-style:none;display:flex;align-items:center;gap:8px}
+.filtres>summary::-webkit-details-marker{display:none}
+.filtres>summary::before{content:'▸';font-size:11px}
+.filtres[open]>summary::before{content:'▾'}
+.filtres>summary:hover{background:var(--surface-2)}
+/* Corps du panneau : encadré comme une carte, sans coller au résumé. */
+.filtres[open]>summary{border-bottom-left-radius:0;border-bottom-right-radius:0}
+.filtres>.grille-filtres,.filtres>label.case{background:var(--surface);border:1px solid var(--ligne);border-top:none;padding:2px 12px 12px}
+.filtres>.grille-filtres{display:grid;grid-template-columns:1fr 1fr;gap:0 10px;padding-top:2px}
+.filtres>label.case{margin:0;border-radius:0 0 var(--radius-s) var(--radius-s);padding:12px}
+.filtres label{margin-top:10px}
+
+/* Champ de recherche libre : la première chose que l'on voit sur l'écran. */
+.recherche{margin-bottom:12px}
+.recherche::-webkit-search-cancel-button{cursor:pointer}
+
+/* Filtres rapides : une question courante = un bouton, avec son rendement. */
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.chip{display:inline-flex;align-items:center;gap:7px;background:var(--surface);border:1px solid var(--ligne);border-radius:20px;padding:7px 13px;font:inherit;font-size:13px;font-weight:700;color:var(--marine);cursor:pointer;margin:0;width:auto}
+.chip:hover{background:var(--surface-2)}
+.chip .n{background:var(--marine-tint);color:var(--marine);border-radius:20px;padding:0 7px;font-size:12px;font-variant-numeric:tabular-nums}
+.chip.on{background:var(--marine);border-color:var(--marine);color:#fff}
+.chip.on .n{background:#ffffff2e;color:#fff}
+
+/* Rappel des filtres posés : un résultat court doit pouvoir s'expliquer. */
+.actifs{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;margin:2px 2px 10px;font-size:12.5px;color:var(--muted)}
+.lien{background:none;border:none;padding:0;font:inherit;font-size:12.5px;font-weight:700;color:var(--brique);cursor:pointer;text-decoration:underline;width:auto;margin:0}
+.lien:hover{color:var(--marine)}
+
+/* Vignette ou bandeau qui ouvre la liste correspondante : il annonce un chiffre,
+   il y mène. Classe distincte de `.lien` : celle-ci remet à zéro fond, marges et
+   bordure pour un bouton en ligne, ce qui effacerait la carte. */
+.clic{cursor:pointer}
+.kpi.clic:hover{border-color:var(--marine-tint);background:var(--surface-2)}
+.banner.clic:hover{filter:brightness(.97)}
+
+/* Cabines rangées sous leur emplacement. */
+.bloc-emp{margin-bottom:12px}
+.sous-liste{margin-left:16px;margin-top:6px}
+
+/* ============================== fenêtre modale ============================= */
+.modal-fond{position:fixed;inset:0;background:rgba(16,26,34,.5);z-index:30;display:flex;align-items:flex-start;justify-content:center;padding:24px 16px;overflow-y:auto}
+.modal{background:var(--surface);border-radius:var(--radius);width:100%;max-width:480px;box-shadow:var(--ombre);margin:auto 0;animation:modal-entre .14s ease-out}
+@keyframes modal-entre{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+.modal-tete{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:15px 16px;border-bottom:1px solid var(--ligne);font-size:16px;font-weight:700;color:var(--nuit)}
+.modal-x{background:none;border:none;color:var(--muted);cursor:pointer;padding:4px;border-radius:8px;display:flex}
+.modal-x:hover{background:var(--surface-2);color:var(--txt)}
+.modal-corps{padding:16px}
+.modal-corps>label:first-child{margin-top:0}
+.modal-texte{margin:0;font-size:14.5px;line-height:1.5;color:var(--txt)}
+.modal-actions{display:flex;flex-direction:column;gap:9px;margin-top:18px}
+.modal-actions .btn{margin-top:0;width:100%}
+
+@media (min-width:1024px){
+  .modal-actions{flex-direction:row-reverse}
+  .modal-actions .btn{width:auto;flex:1;min-width:0}
+  .tete-ecran{margin-bottom:20px}
+  .filtres>summary{max-width:620px}
+  /* Au bureau, l'écran est large : les dix filtres tiennent sur trois colonnes
+     et le panneau reste sous les yeux au lieu de repousser la liste. */
+  .filtres>.grille-filtres,.filtres>label.case{max-width:620px}
+  .filtres>.grille-filtres{grid-template-columns:repeat(3,1fr)}
+  .recherche{max-width:620px}
+}
+@media (prefers-reduced-motion:reduce){
+  .modal{animation:none}
+}
+
+/* --- Aperçu du générateur de racks ----------------------------------------
+   On lit les codes AVANT de créer trente lignes : c'est tout l'intérêt. */
+.actions-tete{display:flex;gap:8px;flex-wrap:wrap}
+.apercu-rack{background:var(--surface-2);border:1px solid var(--ligne);border-radius:var(--radius-s);padding:11px 12px}
+.apercu-total{font-size:13px;font-weight:700;color:var(--nuit);margin-bottom:8px}
+.jetons{display:flex;flex-wrap:wrap;gap:5px;max-height:200px;overflow-y:auto}
+.jeton{font-family:var(--f-data);font-size:12px;background:var(--surface);border:1px solid var(--ligne);border-radius:6px;padding:2px 7px;color:var(--txt)}
+/* Un code déjà pris sera sauté : on le montre barré plutôt que de le taire. */
+.jeton.pris{background:var(--warn-bg);border-color:transparent;color:var(--warn-tx);text-decoration:line-through}
+.muted{color:var(--muted)}
+.small{font-size:12px}
+
+@media (prefers-reduced-motion:reduce){
+  *{transition:none !important}
+}
+
+/* ============================================================================
+   Bloc caméra — le déclencheur qu'on voit du bout de l'entrepôt.
+
+   L'interface fournie par html5-qrcode posait un lien « Request Camera
+   Permissions » en anglais, en corps 12, au centre d'un cadre vide. Ici : une
+   zone pleine largeur, l'icône de l'appareil photo, un bouton orange à la
+   couleur d'accent de la charte, et une phrase qui annonce la demande
+   d'autorisation. Au repos comme en marche, on sait ce que fait l'écran.
+   ========================================================================== */
+.cam{border:1px solid var(--ligne);border-radius:var(--radius);background:var(--surface);
+     overflow:hidden;margin-bottom:12px;box-shadow:var(--ombre)}
+.cam-repos{padding:26px 18px 20px;text-align:center;background:var(--marine-tint)}
+.cam-ico{color:var(--marine);opacity:.85;line-height:1}
+.cam-t{margin-top:8px;font-size:17px;font-weight:800;color:var(--nuit)}
+.cam-st{margin-top:2px;font-size:13px;color:var(--muted)}
+.cam-btn{max-width:340px;margin:16px auto 0;display:flex;align-items:center;justify-content:center;
+         gap:9px;padding:16px;font-size:16px;box-shadow:0 2px 8px rgba(191,78,20,.25)}
+.cam-note{margin-top:10px;font-size:12px;line-height:1.45;color:var(--muted);
+          max-width:340px;margin-left:auto;margin-right:auto}
+.cam-note.erreur{color:var(--danger);font-weight:600}
+
+/* Le flux vidéo n'occupe la place que lorsqu'il tourne : au repos, un cadre vide
+   laissait croire à un écran cassé.
+
+   `min-height` compte : la classe `actif` est posée AVANT `start()` — la
+   bibliothèque mesure le conteneur pour dimensionner la vidéo, et sur un
+   conteneur de hauteur nulle elle ne rend rien. Le fond noir tient la place
+   pendant la seconde d'ouverture de la caméra. */
+.cam-vue{display:none}
+.cam.actif .cam-vue{display:block;min-height:260px;background:#000}
+/* html5-qrcode pose une largeur et une hauteur en style « inline » sur la vidéo,
+   calculées à l'ouverture : sans ce forçage, tourner le téléphone laisse une
+   vidéo à l'ancienne taille, décalée dans son cadre. */
+.cam.actif .cam-vue video{width:100%!important;height:auto!important;display:block}
+.cam.actif .cam-vue #reader__scan_region{min-height:0}
+.cam.actif .cam-vue img[alt="Info icon"],
+.cam.actif .cam-vue #reader__dashboard_section_swaplink{display:none}
+.cam-stop{margin:0;border-radius:0;border:none;border-top:1px solid var(--ligne)}
+
+/* ============================================================================
+   Choix du sous-emplacement — trois cases tactiles au lieu d'un menu déroulant.
+
+   Un <select> demande deux gestes précis (ouvrir, viser la ligne) : c'est
+   l'inverse de ce qu'on peut faire avec des gants, un téléphone dans une main et
+   une cabine dans l'autre. Trois cases de 64 px se touchent du pouce, et
+   l'occupation se lit sans les ouvrir.
+   ========================================================================== */
+.places{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
+.place{min-height:64px;padding:9px 6px;border:2px solid var(--ligne);border-radius:var(--radius-s);
+       background:var(--surface);color:var(--txt);font:inherit;cursor:pointer;text-align:center;
+       display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.place .c{font-size:20px;font-weight:800;color:var(--nuit);line-height:1}
+.place .l{font-size:11px;color:var(--muted)}
+.place:hover:not(:disabled){border-color:var(--marine)}
+.place[aria-pressed="true"]{border-color:var(--brique);background:var(--brique-tint)}
+.place[aria-pressed="true"] .c{color:var(--brique)}
+.place:disabled{opacity:.45;cursor:not-allowed;background:var(--surface-2)}
+.place:disabled .l{color:var(--danger)}
+
+/* Un bouton désactivé doit AVOIR L'AIR désactivé. Repéré en fabriquant les
+   captures du mode opératoire : « Touche une place libre » s'affichait en orange
+   plein, exactement comme un bouton actif. On appuie, rien ne se passe, et on
+   croit que l'application ne répond pas — alors qu'elle attend un geste. */
+.btn:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
+.btn:disabled:hover{filter:none}
+
+/* ============================================================================
+   Déclencheur de photo — un <input type=file> ne se voit pas.
+
+   Le navigateur rend « Choisir un fichier / Aucun fichier sélectionné » en gris,
+   en corps 11, aligné à gauche : rien n'indique qu'il ouvre l'appareil photo.
+   Le champ reste (c'est lui qui ouvre la caméra native, avec sa mise au point et
+   son autofocus, bien meilleurs qu'un flux vidéo), mais il est masqué derrière
+   un vrai bouton.
+   ========================================================================== */
+.fichier{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;
+         padding:16px;margin-top:10px;border-radius:var(--radius-s);border:2px dashed var(--marine);
+         background:var(--marine-tint);color:var(--marine);font-size:16px;font-weight:700;
+         cursor:pointer;text-align:center}
+.fichier:hover{background:#DFE9F0}
+.fichier input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+
+/* Action principale d'un emplacement scanné : elle doit dominer les deux boutons
+   de secours placés dessous. */
+.btn-fiche{display:flex;align-items:center;justify-content:center;gap:9px;
+           padding:17px;font-size:16px;margin-top:14px;
+           box-shadow:0 2px 8px rgba(191,78,20,.25)}
+
+/* `hidden` doit l'emporter : `.cam` et `.fichier` posent un display explicite,
+   qui sinon annule l'attribut et laisse le bloc de prise de vue à l'écran une
+   fois la cabine identifiée. */
+.cam[hidden],.fichier[hidden]{display:none!important}
+
+/* Texte brut rendu par la reconnaissance : consulté seulement quand la lecture
+   a échoué, pour savoir si la photo était floue ou si le moteur a lu autre chose. */
+.ocr-brut{margin:6px 0 0;padding:8px 10px;background:var(--surface-2);border:1px solid var(--ligne);
+          border-radius:var(--radius-s);font:12px/1.5 var(--f-data);color:var(--txt);
+          white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}
+
+/* ============================================================================
+   Boîte de choix du statut — après chaque rangement et chaque sortie.
+
+   Chaque état porte sa conséquence en toutes lettres : au poste, « Levée de
+   quarantaine » ne dit rien à qui ne connaît pas le processus, alors que « le
+   défaut est traité, la cabine repart dans le flux » se comprend sans formation.
+   Des lignes de 64 px, pas un menu déroulant : gants, une seule main.
+   ========================================================================== */
+.statuts{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.statut{display:block;width:100%;min-height:64px;padding:12px 14px;text-align:left;
+        border:2px solid var(--ligne);border-radius:var(--radius-s);background:var(--surface);
+        color:var(--txt);font:inherit;cursor:pointer}
+.statut .n{display:block;font-size:15px;font-weight:700;color:var(--nuit)}
+.statut .a{display:block;margin-top:3px;font-size:12.5px;line-height:1.4;color:var(--muted)}
+.statut:hover{border-color:var(--marine)}
+.statut[aria-pressed="true"]{border-color:var(--brique);background:var(--brique-tint)}
+.statut[aria-pressed="true"] .n{color:var(--brique)}
+/* « Envoyée » vide les emplacements : elle se distingue des trois autres, qui
+   laissent la cabine où elle est. */
+.statut[data-st="envoye"][aria-pressed="true"]{border-color:var(--bordeaux);background:var(--danger-tint)}
+.statut[data-st="envoye"][aria-pressed="true"] .n{color:var(--bordeaux)}
+
+/* ============================ gestes du poste =============================
+   Les trois actions du métier, en grand. Un cariste porte des gants et tient
+   le téléphone d'une main : une cible de 44 px se rate, une bande pleine
+   largeur ne se rate pas.                                                   */
+.gestes{display:grid;gap:10px;margin:14px 0}
+.geste{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;
+  column-gap:14px;align-items:center;width:100%;text-align:left;cursor:pointer;
+  background:var(--surface);border:1px solid var(--ligne);border-radius:var(--radius);
+  padding:16px 18px;box-shadow:var(--ombre);font-family:inherit;color:var(--txt);
+  min-height:76px;transition:border-color .15s,transform .05s}
+.geste:active{transform:scale(.995)}
+.geste:hover{border-color:var(--marine-2)}
+.geste .ic{grid-row:1/3;display:grid;place-items:center;width:48px;height:48px;
+  border-radius:12px;background:var(--marine-tint);color:var(--marine)}
+.geste .t{font-size:17px;font-weight:700;line-height:1.2}
+.geste .s{font-size:13px;color:var(--muted);line-height:1.3}
+.geste[data-geste="rangement"] .ic{background:var(--brique-tint);color:var(--brique)}
+
+/* ============================ fil des étapes ============================== */
+.fil{display:flex;gap:8px;list-style:none;padding:0;margin:12px 0 4px}
+.fil li{flex:1;display:flex;align-items:center;gap:7px;font-size:12.5px;
+  color:var(--muted);border-top:3px solid var(--ligne);padding-top:8px}
+.fil li .n{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;
+  background:var(--ligne);color:var(--muted);font-size:11px;font-weight:700;flex:0 0 auto}
+.fil li.ici{color:var(--txt);font-weight:700;border-top-color:var(--brique)}
+.fil li.ici .n{background:var(--brique);color:#fff}
+.fil li.fait{border-top-color:var(--ok)}
+.fil li.fait .n{background:var(--ok-tint);color:var(--ok)}
+
+/* Rappel de ce qui est déjà acquis dans le parcours. */
+.rappel{border-left:3px solid var(--brique)}
+
+/* ============================ racks ======================================= */
+.racks{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
+.rack{display:grid;gap:6px;text-align:left;cursor:pointer;font-family:inherit;color:var(--txt);
+  background:var(--surface);border:1px solid var(--ligne);border-radius:var(--radius);
+  padding:14px 16px;box-shadow:var(--ombre);transition:border-color .15s}
+.rack:hover{border-color:var(--marine-2)}
+.rack .nom{font-size:18px;font-weight:800;letter-spacing:.02em}
+/* La jauge mesure ce qui RESTE, pas ce qui est pris : devant un rack, la
+   question est toujours « où puis-je encore poser ». Une barre vide serait
+   ambiguë (rien de libre, ou rien de chargé ?) : la piste passe au rouge pâle
+   quand il ne reste plus rien. */
+.rack .jauge{height:6px;border-radius:3px;background:var(--ligne);overflow:hidden}
+.rack .jauge span{display:block;height:100%;background:var(--ok);border-radius:3px}
+.rack .jauge.sature{background:var(--danger-tint);box-shadow:inset 0 0 0 1px #EFC3BD}
+.rack .chiffres b{font-size:17px;font-weight:800}
+.rack .chiffres{font-size:13px;color:var(--txt)}
+.rack .detail{font-size:12px;color:var(--muted)}
+
+/* --- Plan d'un rack -------------------------------------------------------
+   Colonnes en largeur, niveaux en hauteur, le plus haut en haut : c'est ce
+   qu'on a sous les yeux devant le rack. Le plan déborde horizontalement plutôt
+   que de rétrécir les cases — une case illisible ne sert à rien.            */
+.legende{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:var(--muted);margin:2px 0 10px}
+.legende i.pastille{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:0}
+.pastille.ok{background:var(--ok)}
+.pastille.att{background:var(--warn-tx)}
+.pastille.crit{background:var(--danger)}
+.pastille.plein{background:var(--marine)}
+
+.plan{overflow-x:auto;padding-bottom:6px}
+.plan-entete,.plan-ligne{display:grid;grid-template-columns:34px repeat(var(--colonnes),minmax(78px,1fr));gap:6px;margin-bottom:6px}
+.plan-entete .col{font-size:11px;color:var(--muted);text-align:center;font-weight:700}
+.plan-entete .coin{}
+.plan-ligne .niv{display:grid;place-items:center;font-size:11px;font-weight:700;color:var(--muted)}
+.case{display:grid;gap:2px;place-content:center;min-height:52px;padding:6px 4px;cursor:pointer;
+  font-family:inherit;border-radius:var(--radius-s);border:1px solid var(--ligne);
+  background:var(--surface);color:var(--txt);text-align:center;transition:transform .05s}
+.case:active{transform:scale(.97)}
+.case .c{font-size:12.5px;font-weight:700;font-family:var(--f-data)}
+.case .o{font-size:11px;color:var(--muted)}
+/* L'échelle de remplissage : vert, orange, rouge. « Complet » sort du dégradé
+   à dessein — c'est un refus, pas un degré de plus — et se lit à son aplat
+   marine, reconnaissable même du bout de l'allée. */
+.case.vide{background:var(--ok-tint);border-color:#BFE0CD}
+.case.vide .o{color:var(--ok)}
+/* Teintes creusées à dessein : les tons pâles d'origine (#FBE7D6 et #FBE9E6)
+   se ressemblaient trop pour être distingués d'un bout d'allée, alors que
+   c'est précisément à cette distance qu'on lit un rack. Les bordures diffèrent
+   aussi en clarté, pour que l'échelle reste lisible sans percevoir la teinte. */
+.case.une{background:#FADCC0;border-color:#E0A264}
+.case.une .o{color:var(--warn-tx);font-weight:700}
+.case.deux{background:#F7C6C0;border-color:#D4736A}
+.case.deux .o{color:#8E1B15;font-weight:700}
+.case.complet{background:var(--marine);border-color:var(--marine);color:#fff}
+.case.complet .c{color:#fff}
+.case.complet .o{color:#C7D6E0}
+.case.inactif{opacity:.5}
+.case.vide-trou{border:1px dashed var(--ligne);background:transparent;cursor:default;min-height:52px}
+.cases-libres{display:grid;gap:6px;grid-template-columns:repeat(auto-fill,minmax(86px,1fr))}
+
+/* Photographier la fiche est devenu LE geste d'entrée du poste : il doit
+   dominer l'écran, pas ressembler à une zone de dépôt de fichier. Le pointillé
+   marine convenait quand c'était une option parmi d'autres ; ce n'en est plus
+   une. */
+.fichier.btn-fiche{background:var(--brique);border:none;color:#fff;padding:20px 16px;
+  font-size:17px;border-radius:var(--radius);box-shadow:0 2px 10px rgba(191,78,20,.28)}
+.fichier.btn-fiche:hover{background:#A8430F}
+.fichier.btn-fiche:active{transform:scale(.995)}

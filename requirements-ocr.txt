@@ -1,0 +1,13 @@
+# Reconnaissance de texte sur la photo de la fiche cabine (écran « Entrée »).
+#
+# Dépendance OPTIONNELLE, volontairement séparée de requirements.txt : elle pèse
+# environ 100 Mo installée (onnxruntime + opencv + numpy) et n'est utile qu'au poste
+# qui héberge le serveur. Sans elle, le WMS fonctionne entièrement — seul l'envoi de
+# photo répond « reconnaissance indisponible », la saisie manuelle reste possible.
+#
+# Installation :
+#   .venv\Scripts\python.exe -m pip install -r requirements-ocr.txt
+#
+# Aucun binaire système à installer (contrairement à Tesseract) : tout vient de pip.
+# Les modèles (~15 Mo) sont téléchargés à la première photo puis conservés.
+rapidocr-onnxruntime>=1.2,<2

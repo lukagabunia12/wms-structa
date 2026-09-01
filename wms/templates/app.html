@@ -1,0 +1,28 @@
+{% load static %}<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WMS Structa</title>
+<link rel="manifest" href="{% static 'app/manifest.webmanifest' %}">
+<meta name="theme-color" content="#1C394B">
+<link rel="icon" href="{% static 'app/icon-192.png' %}">
+<link rel="stylesheet" href="{% static 'app/app.css' %}?v={{ v }}">
+</head>
+<body>
+<div id="app"></div>
+<div id="toast"></div>
+{# Lecture QR à la caméra + génération des étiquettes. Servies en local dès que
+   `python manage.py telecharger_libs` a été passé une fois : l'entrepôt n'a alors
+   plus besoin d'internet pour scanner ni pour imprimer. Sinon, repli sur le CDN. #}
+{% if libs_locales %}
+<script src="{% static 'app/vendor/html5-qrcode.min.js' %}?v={{ v }}"></script>
+<script src="{% static 'app/vendor/qrcode.min.js' %}?v={{ v }}"></script>
+{% else %}
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+{% endif %}
+<script>window.LIBS_LOCALES = {{ libs_locales|yesno:"true,false" }};</script>
+<script src="{% static 'app/app.js' %}?v={{ v }}"></script>
+</body>
+</html>

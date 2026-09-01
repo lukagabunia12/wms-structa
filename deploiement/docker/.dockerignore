@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+db.sqlite3*
+logs/
+staticfiles/
+.git/
+_sauvegarde-avant-maj-claude/
+cloudflared.exe
+reprise/
+docs/captures/

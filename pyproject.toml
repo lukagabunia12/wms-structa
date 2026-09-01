@@ -1,0 +1,15 @@
+# Outillage du projet. Un seul fichier décrit le style attendu, pour que la même
+# règle s'applique à la main, dans l'éditeur et dans la CI — et qu'une revue de
+# code parle du fond plutôt que des espaces.
+
+[tool.ruff]
+# 119 caractères : la limite que Django applique à son propre code. Le projet
+# s'aligne dessus plutôt que d'inventer un seuil maison.
+line-length = 119
+target-version = "py312"
+extend-exclude = ["*/migrations/*", "wms/static/app/vendor", "_a_supprimer"]
+
+[tool.ruff.lint]
+# E/W : style ; F : erreurs réelles (import mort, nom indéfini, variable inutile).
+# Les migrations sont exclues : elles sont générées, on ne les reformate pas.
+select = ["E", "W", "F"]

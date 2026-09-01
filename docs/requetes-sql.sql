@@ -1,0 +1,307 @@
+-- ============================================================================
+--  WMS STRUCTA - REQUETES PRETES A L'EMPLOI
+--  Ouvrir ce fichier dans DB Browser for SQLite (onglet "Execute SQL"),
+--  ou dans pgAdmin (Query Tool) apres la bascule PostgreSQL.
+--
+--  Selectionner une requete, puis F5 (DB Browser) ou F5 (pgAdmin) pour
+--  l'executer. Rien ne s'execute tant que vous ne le demandez pas.
+--
+--  Les requetes des sections 1 a 4 sont en LECTURE SEULE : elles ne
+--  modifient rien, on peut les lancer sans crainte, meme en production.
+--  La section 5 ecrit : lire son avertissement AVANT de s'en servir.
+--
+--  Les 17 requetes ont ete executees telles quelles sur SQLite ET sur un
+--  vrai PostgreSQL 16 : aucune n'est a adapter. Les tests booleens sont
+--  ecrits "WHERE NOT annule" plutot que "annule = 0", parce que le second
+--  echoue sur PostgreSQL en "operator does not exist: boolean = integer".
+--  Seule difference restante : sur SQLite les dates sont du texte
+--  "AAAA-MM-JJ hh:mm:ss", sur PostgreSQL de vraies dates -- les
+--  comparaisons de la requete 4.2 fonctionnent dans les deux cas.
+-- ============================================================================
+
+
+-- ============================================================================
+--  1. REGARDER - ETAT GENERAL
+-- ============================================================================
+
+-- 1.1  Combien de lignes dans chaque table ?
+--      LA requete a lancer en premier, et celle qui repond a "suis-je bien
+--      sur la bonne base ?". Deux bases peuvent repondre, une seule contient
+--      le travail du jour.
+SELECT 'Emplacements'      AS table_, COUNT(*) AS lignes FROM wms_emplacement
+UNION ALL SELECT 'Zones',             COUNT(*) FROM wms_zone
+UNION ALL SELECT 'Articles',          COUNT(*) FROM wms_article
+UNION ALL SELECT 'Categories',        COUNT(*) FROM wms_categorie
+UNION ALL SELECT 'Stock (lignes)',    COUNT(*) FROM wms_stock
+UNION ALL SELECT 'Mouvements',        COUNT(*) FROM wms_mouvement
+UNION ALL SELECT 'Receptions',        COUNT(*) FROM wms_reception
+UNION ALL SELECT 'Cabines',           COUNT(*) FROM wms_cabine
+UNION ALL SELECT 'Journal cabines',   COUNT(*) FROM wms_mouvementcabine
+UNION ALL SELECT 'Comptes',           COUNT(*) FROM wms_utilisateur;
+
+
+-- 1.2  Les comptes et leurs droits.
+--      Un superutilisateur a TOUS les droits, quelles que soient les cases :
+--      c'est pourquoi elles peuvent etre a 0 sur un compte admin.
+SELECT username, nom, role, is_superuser, is_active,
+       droit_mvt, droit_mvt_corr, droit_inv, droit_cab,
+       droit_ref, droit_data, droit_appro
+FROM wms_utilisateur
+ORDER BY username;
+
+
+-- 1.3  Les emplacements, avec leur zone cabine et leur position dans le rack.
+SELECT e.code, e.zone, z.nom AS zone_cabine, e.rack, e.colonne, e.niveau,
+       e.staging, e.actif, e.description
+FROM wms_emplacement e
+LEFT JOIN wms_zone z ON z.id = e.zone_cabine_id
+ORDER BY e.rack, e.colonne, e.niveau, e.code;
+
+
+-- 1.4  Les racks : combien de cellules, quels niveaux.
+SELECT rack,
+       COUNT(*)            AS emplacements,
+       COUNT(DISTINCT colonne) AS colonnes,
+       MIN(niveau)         AS niveau_bas,
+       MAX(niveau)         AS niveau_haut
+FROM wms_emplacement
+WHERE rack IS NOT NULL AND rack <> ''
+GROUP BY rack
+ORDER BY rack;
+
+
+-- ============================================================================
+--  2. REGARDER - STOCK ET COHERENCE
+-- ============================================================================
+
+-- 2.1  Le stock actuel, article par emplacement.
+SELECT a.ref, a.designation, e.code AS emplacement, s.qte, a.unite
+FROM wms_stock s
+JOIN wms_article a     ON a.id = s.article_id
+JOIN wms_emplacement e ON e.id = s.emplacement_id
+WHERE s.qte <> 0
+ORDER BY a.ref, e.code;
+
+
+-- 2.2  ECART ENTRE LE STOCK ET LE JOURNAL.
+--      *** La requete la plus utile du fichier. ***
+--      Dans ce WMS, la verite du stock est le JOURNAL DES MOUVEMENTS
+--      (wms_mouvement) ; la table wms_stock n'est qu'un cache recalculable.
+--      Si les deux divergent, quelque chose a ete ecrit a la main quelque part.
+--      Un resultat vide = tout va bien.
+SELECT a.ref, e.code AS emplacement,
+       s.qte                                   AS stock_affiche,
+       COALESCE(j.total, 0)                    AS stock_selon_journal,
+       s.qte - COALESCE(j.total, 0)            AS ecart
+FROM wms_stock s
+JOIN wms_article a     ON a.id = s.article_id
+JOIN wms_emplacement e ON e.id = s.emplacement_id
+LEFT JOIN (
+    SELECT article_id, emplacement_id,
+           SUM(CASE WHEN type = 'IN'  THEN qte
+                    WHEN type = 'OUT' THEN -qte
+                    ELSE 0 END) AS total
+    FROM wms_mouvement
+    WHERE NOT annule
+    GROUP BY article_id, emplacement_id
+) j ON j.article_id = s.article_id AND j.emplacement_id = s.emplacement_id
+WHERE s.qte <> COALESCE(j.total, 0)
+ORDER BY ABS(s.qte - COALESCE(j.total, 0)) DESC;
+
+
+-- 2.3  Articles sous le stock minimum (a reapprovisionner).
+SELECT a.ref, a.designation, a.fournisseur,
+       COALESCE(SUM(s.qte), 0) AS stock_total,
+       a.stock_min,
+       a.stock_min - COALESCE(SUM(s.qte), 0) AS manque
+FROM wms_article a
+LEFT JOIN wms_stock s ON s.article_id = a.id
+WHERE a.statut = 'actif'
+GROUP BY a.id, a.ref, a.designation, a.fournisseur, a.stock_min
+HAVING COALESCE(SUM(s.qte), 0) < a.stock_min
+ORDER BY manque DESC;
+
+
+-- 2.4  Les 100 derniers mouvements de stock.
+SELECT m.date, m.type, a.ref, a.designation, e.code AS emplacement,
+       m.qte, m.commande, u.nom AS auteur, m.annule, m.note
+FROM wms_mouvement m
+LEFT JOIN wms_article a     ON a.id = m.article_id
+LEFT JOIN wms_emplacement e ON e.id = m.emplacement_id
+LEFT JOIN wms_utilisateur u ON u.id = m.utilisateur_id
+ORDER BY m.date DESC
+LIMIT 100;
+
+
+-- 2.5  Emplacements vides (candidats au rangement).
+SELECT e.code, e.zone, e.rack, e.colonne, e.niveau
+FROM wms_emplacement e
+LEFT JOIN wms_stock s ON s.emplacement_id = e.id AND s.qte <> 0
+WHERE e.actif AND s.id IS NULL
+ORDER BY e.rack, e.colonne, e.niveau, e.code;
+
+
+-- ============================================================================
+--  3. REGARDER - CABINES
+-- ============================================================================
+
+-- 3.1  Les cabines presentes, avec leur emplacement et leur statut.
+--      Statuts : libre, quarantaine, levee, charge, envoye.
+SELECT c.numero, c.chantier, c.type_cabine, c.statut, c.modele,
+       e.code AS emplacement, c.place, c.client, c.revendeur, c.date
+FROM wms_cabine c
+LEFT JOIN wms_emplacement e ON e.id = c.emplacement_id
+ORDER BY c.statut, c.chantier, c.numero;
+
+
+-- 3.2  Combien de cabines par chantier, et combien deja envoyees.
+SELECT chantier,
+       COUNT(*)                                            AS total,
+       SUM(CASE WHEN statut = 'envoye' THEN 1 ELSE 0 END)  AS envoyees,
+       SUM(CASE WHEN statut <> 'envoye' THEN 1 ELSE 0 END) AS restantes
+FROM wms_cabine
+WHERE chantier <> ''
+GROUP BY chantier
+ORDER BY restantes DESC, chantier;
+
+
+-- 3.3  Le journal complet d'une cabine.
+--      Remplacer le numero ci-dessous par celui qui vous interesse.
+--      Ce journal survit a la suppression de la cabine : c'est lui qui
+--      explique une disparition.
+SELECT date, type, statut_avant, statut_apres, depuis, vers,
+       utilisateur_nom, note
+FROM wms_mouvementcabine
+WHERE cabine_numero = '00_00_00'
+ORDER BY date;
+
+
+-- 3.4  Cabines en quarantaine depuis le plus longtemps.
+SELECT numero, chantier, statut, statut_date, modele, client
+FROM wms_cabine
+WHERE statut = 'quarantaine'
+ORDER BY statut_date;
+
+
+-- ============================================================================
+--  4. EXTRAIRE - LISTES POUR EXCEL
+--
+--  Dans DB Browser : executer, puis clic droit sur le resultat ->
+--  "Copy" (colle directement dans Excel), ou menu Fichier -> Export ->
+--  "Table(s) as CSV file" pour un fichier.
+--  Dans pgAdmin : bouton "Download as CSV" en haut a droite du resultat.
+--
+--  IMPORTANT pour Excel : ouvrir le CSV via Donnees -> "A partir d'un
+--  fichier texte/CSV" en choisissant UTF-8, sinon les accents sont casses.
+-- ============================================================================
+
+-- 4.1  Inventaire complet, une ligne par article et emplacement.
+SELECT a.ref            AS "Reference",
+       a.designation    AS "Designation",
+       cat.nom          AS "Categorie",
+       e.code           AS "Emplacement",
+       e.zone           AS "Zone",
+       s.qte            AS "Quantite",
+       a.unite          AS "Unite",
+       a.fournisseur    AS "Fournisseur",
+       a.prix           AS "Prix unitaire",
+       s.qte * COALESCE(a.prix, 0) AS "Valeur"
+FROM wms_stock s
+JOIN wms_article a       ON a.id = s.article_id
+JOIN wms_emplacement e   ON e.id = s.emplacement_id
+LEFT JOIN wms_categorie cat ON cat.id = a.categorie_id
+WHERE s.qte <> 0
+ORDER BY a.ref, e.code;
+
+
+-- 4.2  Historique des mouvements sur une periode.
+--      Adapter les deux dates ci-dessous.
+SELECT m.date AS "Date", m.type AS "Type", a.ref AS "Reference",
+       a.designation AS "Designation", e.code AS "Emplacement",
+       m.qte AS "Quantite", m.commande AS "Commande",
+       u.nom AS "Auteur", m.note AS "Note"
+FROM wms_mouvement m
+LEFT JOIN wms_article a     ON a.id = m.article_id
+LEFT JOIN wms_emplacement e ON e.id = m.emplacement_id
+LEFT JOIN wms_utilisateur u ON u.id = m.utilisateur_id
+WHERE m.date >= '2026-01-01' AND m.date < '2027-01-01'
+  AND NOT m.annule
+ORDER BY m.date;
+
+
+-- 4.3  Toutes les cabines d'un chantier.
+SELECT c.numero AS "Cabine", c.chantier AS "Chantier",
+       c.type_cabine AS "Type", c.statut AS "Statut",
+       c.modele AS "Modele", e.code AS "Emplacement", c.place AS "Place",
+       c.client AS "Client", c.revendeur AS "Revendeur",
+       c.tissu_bk AS "Tissu BK", c.tissu_aq AS "Tissu AQ",
+       c.fond_cabine AS "Fond", c.envoi_date AS "Date d'envoi"
+FROM wms_cabine c
+LEFT JOIN wms_emplacement e ON e.id = c.emplacement_id
+WHERE c.chantier = '000000'
+ORDER BY c.numero;
+
+
+-- 4.4  Etiquettes : la liste des codes d'emplacement d'un rack,
+--      dans l'ordre d'impression (niveau haut en premier).
+SELECT code, rack, colonne, niveau
+FROM wms_emplacement
+WHERE rack = 'AC'
+ORDER BY colonne, niveau DESC;
+
+
+-- ============================================================================
+--  5. CORRIGER A LA MAIN  ---  A LIRE AVANT D'ECRIRE
+-- ============================================================================
+--
+--  AVANT TOUTE ECRITURE :
+--    1. ARRETER le WMS (fermer la fenetre du serveur). Une ecriture pendant
+--       que l'application tourne peut la bloquer ou etre ecrasee.
+--    2. SAUVEGARDER : copier db.sqlite3 ailleurs, sous un autre nom.
+--    3. Dans DB Browser, rien n'est ecrit tant que vous n'avez pas clique
+--       "Write Changes" (Ecrire les modifications). "Revert Changes" annule
+--       tout. C'est votre filet : ne cliquez "Write Changes" qu'apres avoir
+--       relu le resultat.
+--
+--  CE QU'ON PEUT CORRIGER A LA MAIN SANS RISQUE
+--  Des champs purement descriptifs, sur lesquels aucune regle logistique ne
+--  s'appuie :
+--    wms_article     : designation, fournisseur, prix, ean, poids, dimensions
+--    wms_cabine      : modele, client, revendeur, tissu_bk, tissu_aq, fond_cabine
+--    wms_emplacement : description
+--    wms_zone        : nom, description, ordre
+--
+--  CE QU'IL NE FAUT PAS TOUCHER A LA MAIN
+--    wms_stock          -> ce n'est qu'un CACHE. La verite est wms_mouvement.
+--                          Le modifier cree un ecart que la requete 2.2
+--                          revelera, et que plus personne ne saura expliquer.
+--                          Pour corriger une quantite : passer par le WMS
+--                          (inventaire ou ajustement), qui ecrit un mouvement.
+--    wms_mouvement      -> c'est le journal comptable du stock. On n'efface
+--                          pas une ligne d'historique : le WMS sait annuler
+--                          un mouvement, ce qui laisse une trace.
+--    wms_mouvementcabine-> journal des cabines, meme regle. L'application
+--                          elle-meme s'interdit de le modifier.
+--    wms_utilisateur.password -> mot de passe chiffre. Le remplacer par du
+--                          texte rend le compte inutilisable. Passer par
+--                          /admin/ ou par : manage.py changepassword
+--
+--  Exemple d'une correction legitime : une designation mal saisie.
+--  Toujours REGARDER d'abord ce qu'on s'apprete a changer :
+--
+--     SELECT id, ref, designation FROM wms_article WHERE ref = 'XXX';
+--
+--  puis, seulement si la ligne est la bonne :
+--
+--     UPDATE wms_article SET designation = 'Le bon libelle' WHERE ref = 'XXX';
+--
+--  Toujours un WHERE. Un UPDATE sans WHERE modifie TOUTES les lignes de la
+--  table -- c'est l'accident classique, et il est irreversible sans
+--  sauvegarde.
+--
+--  Verifier apres coup :
+--     SELECT id, ref, designation FROM wms_article WHERE ref = 'XXX';
+--
+--  Enfin, relancer la requete 2.2 : si elle ne renvoie rien, la base est
+--  restee coherente.
+-- ============================================================================

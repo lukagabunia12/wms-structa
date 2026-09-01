@@ -1,0 +1,33 @@
+# Dépendances du WMS Structa — un seul fichier pour le serveur.
+#
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# Il y avait auparavant trois fichiers (base, PostgreSQL, HTTPS). Séparer était
+# utile tant que PostgreSQL et le chiffrement étaient des options ; depuis que
+# le WMS tourne sur PostgreSQL et que la caméra des téléphones exige HTTPS, les
+# trois sont indispensables au même moment. Trois fichiers ne servaient plus
+# qu'à en oublier un, et à découvrir le manque à la mise en service.
+#
+# Reste à part : requirements-ocr.txt (~100 Mo, facultatif — voir ce fichier).
+
+Django>=5.2,<5.3
+djangorestframework>=3.15,<3.17
+django-cors-headers>=4.4,<5
+python-dotenv>=1.0
+
+# Serveur d'application multi-thread, sans dépendance système, stable sur
+# Windows. `manage.py runserver` est l'outil de DÉVELOPPEMENT de Django : il
+# n'est pas prévu pour tenir un poste d'entrepôt à la journée. Les lanceurs
+# prennent waitress quand il est là, et retombent sur runserver sinon.
+waitress>=3.0
+
+# Pilote PostgreSQL. La variante « binary » embarque libpq : rien à compiler,
+# rien à installer côté système — c'est ce qui rend l'installation possible sur
+# un Windows nu.
+psycopg[binary]>=3.1,<4
+
+# Fabrication des certificats HTTPS. Sans HTTPS, les navigateurs mobiles
+# refusent l'accès à la caméra : le scan des QR codes est alors indisponible.
+# La terminaison TLS elle-même n'utilise que la bibliothèque standard de Python
+# (outils/proxy_https.py) : aucun serveur supplémentaire à installer.
+cryptography>=42,<47

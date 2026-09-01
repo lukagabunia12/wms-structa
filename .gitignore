@@ -1,0 +1,43 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+db.sqlite3
+db.sqlite3-journal
+.env
+/staticfiles/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+.DS_Store
+# Binaire de 54 Mo téléchargé pour le tunnel HTTPS : n'a rien à faire dans le dépôt.
+cloudflared.exe
+/logs/
+# Bibliothèques front téléchargées par `manage.py telecharger_libs` : elles se
+# régénèrent, elles n'ont pas à être versionnées.
+/wms/static/app/vendor/
+# Sauvegarde produite avant une mise à jour.
+/_sauvegarde-avant-maj-claude/
+# Export de reprise vers un serveur SQL : contient toutes les données.
+/reprise/
+deploiement/docker/.env
+.env.avant-*
+
+# --- Certificats HTTPS internes ---------------------------------------------
+# La clé privée de l'autorité signe TOUS les certificats du parc : dans un dépôt,
+# quiconque y a accès peut se faire passer pour le serveur auprès de n'importe
+# quel téléphone où l'autorité est installée. Elle ne quitte jamais la machine.
+certificats/
+*.key
+*.pem
+
+# --- Sorties et binaires : rien de tout cela ne se versionne -----------------
+# Dépendances téléchargées pour une installation hors ligne (une vingtaine de Mo
+# de roues Python) : elles se refabriquent avec Preparer-Paquets.bat.
+/paquets/
+# Archive fabriquée par Preparer-Copie.bat pour le poste serveur.
+/WMS-Structa_serveur.zip
+# Corbeille de travail, à quelque profondeur qu'elle soit.
+_a_supprimer/
+*.tgz
