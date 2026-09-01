@@ -3227,8 +3227,7 @@ async function renderCabines() {
         <span>Inclure les cabines envoyées${envoyees ? ` (${envoyees})` : ''}</span></label>
     </details>
     <div id="actifs"></div>
-    ${profil() === 'cariste' ? '' : `<button class="btn ghost" id="fExport"
-      >${icon('in', 17)} Exporter l'inventaire (Excel)</button>`}
+    <button class="btn ghost" id="fExport">${icon('in', 17)} Télécharger l'inventaire (Excel)</button>
     <div id="zone"><div class="empty">Chargement…</div></div>`, 'cabines');
   const boutonExport = $('#fExport');
   if (boutonExport) boutonExport.onclick = exporterInventaire;
@@ -3351,6 +3350,11 @@ function requeteCabines() {
 }
 
 /* --- Export de l'inventaire -------------------------------------------------
+   Le bouton est offert à TOUS ceux qui voient l'écran, cariste compris : le
+   fichier ne contient rien d'autre que la liste affichée au-dessus. Le réserver
+   à un profil n'aurait protégé aucune donnée — et avec un compte partagé, cela
+   revenait à le cacher à tout le monde.
+
    Un lien ordinaire ne peut pas servir ici : l'API n'ouvre rien sans le jeton,
    qui vit en mémoire et ne part pas dans une barre d'adresse. On récupère donc
    le fichier avec le jeton, puis on le remet au navigateur comme s'il venait
