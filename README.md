@@ -74,6 +74,7 @@ wms-structa/
 │   ├── models.py      Les 8 tables du modèle
 │   ├── services.py    Moteur de mouvements (cœur métier)
 │   ├── serializers.py / views.py / urls.py   API REST
+│   ├── export_inventaire.py  Inventaire des cabines en CSV lisible par Excel
 │   ├── management/commands/importer_maquette.py
 │   └── tests/         Tests (dont logique métier des mouvements)
 ├── docs/              Guides utilisateur / admin / développeur / serveur

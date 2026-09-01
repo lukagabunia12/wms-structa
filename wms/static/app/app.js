@@ -3227,7 +3227,11 @@ async function renderCabines() {
         <span>Inclure les cabines envoyées${envoyees ? ` (${envoyees})` : ''}</span></label>
     </details>
     <div id="actifs"></div>
+    ${profil() === 'cariste' ? '' : `<button class="btn ghost" id="fExport"
+      >${icon('in', 17)} Exporter l'inventaire (Excel)</button>`}
     <div id="zone"><div class="empty">Chargement…</div></div>`, 'cabines');
+  const boutonExport = $('#fExport');
+  if (boutonExport) boutonExport.onclick = exporterInventaire;
 
   Object.entries(CHAMPS_CAB).forEach(([cle, sel]) => {
     const n = $(sel);
@@ -3334,13 +3338,58 @@ function resumeFiltresCab() {
   return morceaux.join(' · ');
 }
 
+/** La sélection courante, en paramètres d'URL.
+
+    La liste et l'export s'en servent tous les deux : décrire les filtres à deux
+    endroits, c'est exporter autre chose que ce qui est affiché le jour où l'un
+    des deux évolue. */
+function requeteCabines() {
+  const vide = FILTRES_CAB_VIDE();
+  return Object.entries(FILTRES_CAB)
+    .filter(([k, v]) => v !== '' && !(k === 'ordering' && v === vide.ordering))
+    .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+}
+
+/* --- Export de l'inventaire -------------------------------------------------
+   Un lien ordinaire ne peut pas servir ici : l'API n'ouvre rien sans le jeton,
+   qui vit en mémoire et ne part pas dans une barre d'adresse. On récupère donc
+   le fichier avec le jeton, puis on le remet au navigateur comme s'il venait
+   d'un lien.
+
+   Le nom du fichier est celui que le serveur a choisi (il porte la date) : le
+   relire évite d'en inventer un second, qui divergerait.                      */
+async function exporterInventaire() {
+  const bouton = $('#fExport');
+  const libelle = bouton ? bouton.innerHTML : '';
+  if (bouton) { bouton.disabled = true; bouton.textContent = 'Préparation…'; }
+  try {
+    const q = requeteCabines();
+    const r = await fetch(API + '/cabines/export/' + (q ? '?' + q : ''),
+                          { headers: token ? { Authorization: 'Token ' + token } : {} });
+    if (r.status === 401) { logout(); throw new Error('Session expirée, reconnecte-toi.'); }
+    if (!r.ok) throw new Error('L’export a été refusé (' + r.status + ').');
+    const fichier = await r.blob();
+    const entete = r.headers.get('Content-Disposition') || '';
+    const nom = (entete.match(/filename="?([^";]+)/) || [])[1] || 'inventaire-cabines.csv';
+    const url = URL.createObjectURL(fichier);
+    const lien = document.createElement('a');
+    lien.href = url; lien.download = nom;
+    document.body.appendChild(lien); lien.click(); lien.remove();
+    // Libérer l'URL tout de suite annule le téléchargement sur certains
+    // navigateurs mobiles : on laisse une minute.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    toast('Inventaire exporté : ' + nom, 'ok');
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    if (bouton) { bouton.disabled = false; bouton.innerHTML = libelle; }
+  }
+}
+
 async function listerCabines() {
   const zone = $('#zone');
   if (!zone) return;
-  const vide = FILTRES_CAB_VIDE();
-  const q = Object.entries(FILTRES_CAB)
-    .filter(([k, v]) => v !== '' && !(k === 'ordering' && v === vide.ordering))
-    .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+  const q = requeteCabines();
   await listePaginee(zone, '/cabines/' + (q ? '?' + q : ''), {
     ligne: ligneCabine,
     vide: nbFiltresCab()

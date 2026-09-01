@@ -18,7 +18,7 @@ from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from . import lecture_fiche, ocr_fiche, services, services_cabines
+from . import export_inventaire, lecture_fiche, ocr_fiche, services, services_cabines
 from .models import (Article, Cabine, Categorie, Occupation, Emplacement, EtatCabine,
                      Mouvement, MouvementCabine, Reception, Stock, Zone)
 from .serializers import (ArticleSerializer, CabineSerializer, OccupationSerializer, CategorieSerializer,
@@ -433,7 +433,9 @@ class CabineViewSet(viewsets.ModelViewSet):
         """
         if self.action == "archives" or _actif(p, "archivees"):
             return qs.filter(statut=Cabine.ENVOYE)
-        if self.action == "list" and not _actif(p, "toutes"):
+        # L'export suit la liste : un inventaire du stock ne compte pas ce qui
+        # est déjà parti. Le détail d'une cabine, lui, reste toujours lisible.
+        if self.action in ("list", "export") and not _actif(p, "toutes"):
             return qs.exclude(statut=Cabine.ENVOYE)
         return qs
 
@@ -538,6 +540,17 @@ class CabineViewSet(viewsets.ModelViewSet):
         # Le filtre traverse les occupations : une cabine rangée deux fois dans
         # la même zone ressortirait deux fois sans `distinct()`.
         return qs.filter(self._filtre_etape(etape)).distinct()
+
+    @action(detail=False, methods=["get"], url_path="export")
+    def export(self, request):
+        """L'inventaire des cabines, tel que l'écran l'affiche, en fichier Excel.
+
+        Le point d'entrée reprend `get_queryset` et les filtres de l'écran : on
+        exporte ce qu'on voit. Sans cela, il faudrait redécrire les filtres dans
+        l'URL de l'export, et les deux finiraient par diverger.
+        """
+        cabines = self.filter_queryset(self.get_queryset())
+        return export_inventaire.reponse(cabines)
 
     @staticmethod
     def _filtre_etape(etape):
