@@ -1429,7 +1429,7 @@ let CABINE_A_RANGER = null;
    était pourtant affichée telle quelle, avec le statut et la position figés au
    moment du clic. Résultat au poste : des cabines déjà envoyées présentées comme
    étant en stock, des cabines supprimées d'une remise à zéro toujours proposées,
-   et un badge « Libre » alors que ce statut s'appelle « Rien à signaler » depuis
+   et un badge « Libre » alors que ce statut s'appelle « Conforme » depuis
    son renommage — trois manières de faire croire à un stock qui n'existe pas.
 
    La liste est donc relue auprès du serveur avant d'être montrée. Ce qui a
@@ -1863,12 +1863,12 @@ async function lireFichePourRangement(fichier, emp, d, redessiner) {
 
 //: Ce que la boîte propose. L'ordre est celui du poste : le cas courant d'abord.
 const STATUTS_PROPOSES = [
-  // Lever une quarantaine, c'est revenir ici : « Rien à signaler » dit exactement
-  // qu'il n'y a plus rien à signaler. Un statut « Levée de quarantaine » distinct
+  // Lever une quarantaine, c'est revenir ici : la cabine redevient conforme.
+  // Un statut « Levée de quarantaine » distinct
   // laissait des cabines saines marquées d'un libellé alarmant pendant des
   // semaines, sans rien apprendre de plus — le passage par la quarantaine est
   // écrit au journal, avec son motif et sa date.
-  ['libre',       'Rien à signaler',        'Conforme, ou quarantaine levée : elle reste en stock.'],
+  ['libre',       'Conforme',              'Aucun défaut, ou quarantaine levée : elle reste en stock.'],
   ['quarantaine', 'En quarantaine',         'Bloquée : un défaut à traiter avant tout départ.'],
   ['envoye',      'Envoyée',                'Elle quitte l’entrepôt : ses emplacements se libèrent, le journal garde la trace.'],
 ];

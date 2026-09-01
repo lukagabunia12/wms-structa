@@ -240,7 +240,7 @@ class RelectureParIdentifiantsTest(TestCase):
         self.assertIn("ids", str(r.data))
 
     def test_le_libelle_de_statut_vient_du_serveur(self):
-        """Le renommage « Libre » → « Rien à signaler » doit se propager tout seul."""
+        """Le renommage d'un libellé de statut doit se propager tout seul."""
         r = self.c.get(f"/api/cabines/?ids={self.a.pk}")
         self.assertEqual(r.data["results"][0]["statut_libelle"],
                          dict(Cabine.STATUTS)[Cabine.LIBRE])

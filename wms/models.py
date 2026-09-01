@@ -290,13 +290,16 @@ class Cabine(models.Model):
     #: une cabine marquée « Rangé » qui n'est nulle part — et plus personne ne
     #: saurait laquelle des deux informations croire.
     #: « Levée de quarantaine » a été retiré : une quarantaine levée rend la cabine
-    #: conforme, c'est-à-dire « Rien à signaler ». En faire un statut distinct
+    #: conforme — c'est exactement ce que dit « Conforme ». En faire un statut distinct
     #: créait un troisième état qui ne disait rien de plus sur la cabine, et
     #: laissait des cabines parfaitement saines marquées d'un libellé alarmant
     #: pendant des semaines. Le passage par la quarantaine reste lisible : il est
     #: écrit dans le journal, avec son motif et sa date.
     LIBRE, QUARANTAINE, ENVOYE = ("libre", "quarantaine", "envoye")
-    STATUTS = [(LIBRE, "Rien à signaler"), (QUARANTAINE, "En quarantaine"),
+    #: Le CODE stocké ne bouge pas — « libre » reste « libre » en base, et tout
+    #: l'historique déjà écrit reste lisible. Seul le libellé affiché change :
+    #: « Conforme » est le mot du terrain, celui de la fiche de contrôle.
+    STATUTS = [(LIBRE, "Conforme"), (QUARANTAINE, "En quarantaine"),
                (ENVOYE, "Envoyée")]
 
     GAUCHE, MILIEU, DROITE = "G", "M", "D"

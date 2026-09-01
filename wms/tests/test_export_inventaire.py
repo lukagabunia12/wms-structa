@@ -87,7 +87,7 @@ class ExportInventaireTest(TestCase):
 
     def test_les_libelles_sont_en_clair(self):
         ligne = self.lignes()[0]
-        self.assertEqual(ligne["Statut"], "Rien à signaler")
+        self.assertEqual(ligne["Statut"], "Conforme")
         self.assertEqual(ligne["Type"], "Normale")
 
     # --- l'export suit les filtres de l'écran -------------------------------

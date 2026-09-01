@@ -438,7 +438,7 @@ class RechercheCabinesTest(BaseCabines):
         fiche = self.client.get(f"/api/cabines/{self.c1.id}/").data
         self.assertEqual(fiche["position"], "C001·M")
         self.assertEqual(fiche["zone_nom"], "À ranger cabines")
-        self.assertEqual(fiche["statut_libelle"], "Rien à signaler")
+        self.assertEqual(fiche["statut_libelle"], "Conforme")
         self.assertEqual(fiche["type_libelle"], "Normale")
 
     def test_journal_filtrable_par_chantier(self):
@@ -805,7 +805,7 @@ class MotifTest(BaseCabines):
         c = self.cabine(numero="00_00_02", chantier="000002")
         services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE,
                                         utilisateur=self.user, motif="Choc à réception")
-        # Lever la quarantaine, c'est revenir à « Rien à signaler » : le motif de
+        # Lever la quarantaine, c'est revenir à « Conforme » : le motif de
         # la levée doit rester consigné au journal, c'est la seule trace qu'il
         # s'est passé quelque chose sur cette cabine.
         services_cabines.changer_statut(cabine=c, statut=Cabine.LIBRE,
@@ -864,7 +864,7 @@ class TypesEtStatutsTest(BaseCabines):
                                         utilisateur=self.user, motif="Retouchée")
         c.refresh_from_db()
         self.assertEqual(c.statut, Cabine.LIBRE)
-        self.assertEqual(c.get_statut_display(), "Rien à signaler")
+        self.assertEqual(c.get_statut_display(), "Conforme")
         # Le passage par la quarantaine reste lisible dans le journal : c'est
         # là qu'on va le chercher, pas dans le statut courant.
         notes = list(MouvementCabine.objects.filter(cabine=c, type=MouvementCabine.STATUT)
