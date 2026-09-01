@@ -51,8 +51,10 @@ python manage.py importer_maquette /chemin/vers/wms.json --purge
 
 ## Tests et style
 ```bash
-python manage.py test          # 469 tests
-ruff check .                   # style et erreurs de code (pip install ruff)
+python manage.py test           # 469 tests côté serveur
+ruff check .                    # style et erreurs de code (pip install ruff)
+node outils/verifier_interface.js   # les écrans de l'interface existent et sont joignables
+node outils/tester_interface.js     # le comportement de l'interface, sans navigateur
 ```
 Règle permanente du projet : **toute évolution rejoue les tests et en ajoute de nouveaux.**
 

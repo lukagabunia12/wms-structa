@@ -59,5 +59,11 @@ jobs:
         # disparu passe sans broncher et ne casse qu'au clic sur le menu.
         run: node outils/verifier_interface.js
 
+      - name: Tester le comportement de l'interface
+        # `verifier_interface.js` contrôle la structure ; celui-ci exécute des
+        # fonctions réelles d'app.js et compare les résultats. Sans navigateur :
+        # Node seul, rien à installer.
+        run: node outils/tester_interface.js
+
       - name: Lancer les tests
         run: python manage.py test -v 2
