@@ -672,7 +672,7 @@ function grosBoutons() {
     b.push(['rangement', 'in', 'Ranger une cabine', 'Photographier la fiche, puis scanner l’emplacement']);
     b.push(['sortie-cabine', 'out', 'Sortir une cabine', 'Elle est marquée envoyée — définitif']);
   }
-  b.push(['scanner', 'search', 'Chercher', 'Une cabine, un emplacement, un chantier']);
+  b.push(['scanner', 'search', 'Trouver une cabine', 'Par son numéro, ou en scannant un emplacement']);
   return `<div class="gestes">${b.map(([cle, ic, titre, sous]) =>
     `<button class="geste" data-geste="${cle}">
        <span class="ic">${icon(ic, 26)}</span>
