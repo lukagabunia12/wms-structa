@@ -41,3 +41,6 @@ certificats/
 # Corbeille de travail, à quelque profondeur qu'elle soit.
 _a_supprimer/
 *.tgz
+
+# Fichiers de verrouillage laisses par Word quand un document est ouvert
+~$*
