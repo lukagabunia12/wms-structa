@@ -333,14 +333,14 @@ function profil() {
 // et le parcours « Ranger » y mène déjà. Un sixième onglet réduirait toutes les
 // cibles pour un écran qu'on n'ouvre pas en tenant une cabine.
 const ONGLETS = {
-  cariste: [['home','Accueil','home'],['rangement','Ranger','in'],
-            ['scanner','Trouver','search'],['cabines','Parc','build'],
+  cariste: [['home','Accueil','home'],['scanner','Scanner','scan'],
+            ['rangement','Ranger','in'],['trouver','Trouver','search'],
             ['more','Plus','menu']],
-  gestion: [['home','Accueil','home'],['rangement','Ranger','in'],
-            ['scanner','Trouver','search'],['cabines','Parc','build'],
+  gestion: [['home','Accueil','home'],['scanner','Scanner','scan'],
+            ['rangement','Ranger','in'],['trouver','Trouver','search'],
             ['more','Plus','menu']],
-  lecture: [['home','Accueil','home'],['scanner','Trouver','search'],
-            ['cabines','Parc','build'],['more','Plus','menu']],
+  lecture: [['home','Accueil','home'],['scanner','Scanner','scan'],
+            ['trouver','Trouver','search'],['more','Plus','menu']],
 };
 
 function navBar(active) {
@@ -371,7 +371,8 @@ const MENU_CABINES = [
   ['Opérations', [['rangement','Ranger une cabine','in'],
                   ['sortie-cabine','Sortir une cabine','out'],
                   ['entree','Créer une cabine (saisie)','plus'],
-                  ['scanner','Trouver une cabine (scan)','search']]],
+                  ['scanner','Scanner un QR ou une fiche','scan'],
+                  ['trouver','Trouver une cabine','search']]],
   ['Suivi', [['archives','Cabines envoyées','journal'], ['journal','Journal','history']]],
   // « Emplacements » ouvre l'écran unique : occupation, création, réglages et
   // suppression au même endroit. Il est ici, dans le référentiel, parce que
@@ -393,8 +394,8 @@ const MENU_ARTICLES = [
    une cabine ; il n'a pas à naviguer dans le référentiel, qu'il ne peut pas
    modifier de toute façon — le serveur refuserait. */
 const MENU_PAR_PROFIL = {
-  cariste: ['home', 'rangement', 'sortie-cabine', 'scanner', 'cabines', 'chantier'],
-  lecture: ['home', 'scanner', 'cabines', 'chantier', 'emplacements'],
+  cariste: ['home', 'scanner', 'rangement', 'sortie-cabine', 'trouver', 'cabines', 'chantier'],
+  lecture: ['home', 'scanner', 'trouver', 'cabines', 'chantier', 'emplacements'],
 };
 
 function menuLateral() {
@@ -437,7 +438,10 @@ function go(name) {
   arreterCamera();
   const ecrans = {
     // Cabines
-    home: renderHome, suivi: renderSuivi, entree: renderEntree, scanner: renderScanner,
+    home: renderHome, suivi: renderSuivi, entree: renderEntree,
+    scanner: renderEntreeScan, trouver: renderTrouver,
+    // Même écran de scan, autre titre : on sait ce qu'on est venu lire.
+    'scan-travee': () => renderTrouver('Scanner une travée'),
     rangement: renderRangement, 'sortie-cabine': renderSortieCabine,
     rack: renderEmplacements,
     cabines: renderCabines, chantier: renderChantier, emplacements: renderEmplacements,
@@ -672,7 +676,7 @@ function grosBoutons() {
     b.push(['rangement', 'in', 'Ranger une cabine', 'Photographier la fiche, puis scanner l’emplacement']);
     b.push(['sortie-cabine', 'out', 'Sortir une cabine', 'Elle est marquée envoyée — définitif']);
   }
-  b.push(['scanner', 'search', 'Trouver une cabine', 'Par son numéro, ou en scannant un emplacement']);
+  b.push(['trouver', 'search', 'Trouver une cabine', 'Par son numéro, ou en scannant un emplacement']);
   return `<div class="gestes">${b.map(([cle, ic, titre, sous]) =>
     `<button class="geste" data-geste="${cle}">
        <span class="ic">${icon(ic, 26)}</span>
@@ -713,7 +717,7 @@ function brancherRappelEnCours() {
 function vignettesAccueil() {
   const v = [];
   if (peut('cab')) v.push(tile('in', 'Entrée', 'créer une cabine', 'entree'));
-  v.push(tile('scan', 'Scanner', 'emplacement ou cabine', 'scanner'));
+  v.push(tile('scan', 'Scanner', 'un QR code ou une fiche cabine', 'scanner'));
   v.push(tile('build', 'Parc', 'chercher, filtrer, agir', 'cabines'));
   v.push(tile('box', 'Emplacements', peut('ref')
     ? 'occupation, ajout et réglages' : 'occupation des racks', 'emplacements'));
@@ -2881,7 +2885,7 @@ async function ficheCabine(cabine, retour) {
     };
 
     // Retient la cabine, puis renvoie au scanner : le scan de l'emplacement la range.
-    $('#fScanEmp').onclick = () => { CABINE_A_RANGER = c; go('scanner'); };
+    $('#fScanEmp').onclick = () => { CABINE_A_RANGER = c; go('trouver'); };
 
     // Saisie du code au clavier : indispensable quand la caméra ne peut pas servir
     // (étiquette abîmée, gants, éclairage) — c'est le repli du scan, pas un luxe.
@@ -4369,7 +4373,7 @@ async function creerCabineDepuisEntree() {
       <div id="aZone"></div></div>`;
     $('#aEtiq').onclick = () => printCabineLabel(c);
     $('#aPlus').onclick = renderEntree;
-    $('#aScan').onclick = () => { CABINE_A_RANGER = c; go('scanner'); };
+    $('#aScan').onclick = () => { CABINE_A_RANGER = c; go('trouver'); };
     $('#aFiche').onclick = () => ficheCabine(c, renderEntree);
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -4693,10 +4697,37 @@ function brancherCamera(surLecture) {
   stop.onclick = eteindre;
 }
 
-async function renderScanner() {
+/* --- « Scanner » : par où l'on entre ----------------------------------------
+   « Ranger » ne disait pas comment on y entre : faut-il scanner ? photographier ?
+   Le geste physique, lui, est toujours le même — on lit quelque chose. Cet écran
+   pose donc la seule question qui se pose devant la cabine : qu'est-ce que vous
+   avez sous les yeux, une étiquette de travée ou une fiche papier ?
+
+   Il ne fait rien d'autre que conduire aux écrans qui existent déjà. C'est un
+   point d'entrée, pas une quatrième façon de ranger.                          */
+function renderEntreeScan() {
+  layout(`<h2 class="title">Scanner</h2>
+    <div class="meta" style="margin:-4px 0 12px">Qu'avez-vous sous les yeux ?</div>
+    <div class="gestes">
+      <button class="geste" data-go="scan-travee">
+        <span class="ic">${icon('scan', 26)}</span>
+        <span class="t">Un QR code sur une travée</span>
+        <span class="s">Voir ce qu'elle contient, ou y ranger une cabine</span>
+      </button>
+      <button class="geste" data-go="rangement">
+        <span class="ic">${icon('clip', 26)}</span>
+        <span class="t">Une fiche papier sur une cabine</span>
+        <span class="s">La photographier : l'application propose la suite</span>
+      </button>
+    </div>
+    <button class="btn ghost" data-go="trouver">
+      ${icon('search', 17)} Rien à scanner : chercher un n° de cabine</button>`, 'scanner');
+}
+
+async function renderTrouver(titre = 'Trouver une cabine') {
   const secure = window.isSecureContext;
   const hasLib = typeof Html5Qrcode !== 'undefined';
-  layout(`<h2 class="title">Trouver une cabine</h2>
+  layout(`<h2 class="title">${esc(titre)}</h2>
     ${(secure && hasLib) ? blocCameraHTML('Scanner un QR code', 'Emplacement, cabine ou article')
       : `<div class="banner">${!hasLib
           ? 'Lecteur de QR non chargé : ce poste n’a pas accès à internet. Un administrateur doit lancer une fois « python manage.py telecharger_libs » sur le serveur pour rendre le scan et les étiquettes autonomes. En attendant, saisie manuelle ci-dessous.'
@@ -4705,7 +4736,7 @@ async function renderScanner() {
       <input id="code" placeholder="${VOLET_ARTICLES ? 'Ex. VITR. — les propositions s’affichent en tapant' : 'Ex. 00_00_01 ou C001 — les propositions s’affichent en tapant'}">
       <div class="list" id="sugg"></div>
       <button class="btn" id="go">Valider</button></div>
-    <div id="zone"></div>`, 'home');
+    <div id="zone"></div>`, 'trouver');
 
   const champ = $('#code');
   champ.setAttribute('autocomplete', 'off');
@@ -4715,7 +4746,7 @@ async function renderScanner() {
     $('#sugg').innerHTML = '';
     champ.value = e.code;
     // Volet cabines : l'emplacement scanné propose ranger / sortir avec les places G-M-D.
-    if (VOLET_ARTICLES) showLocation(e); else montrerEmplacement(e, { retour: () => go('scanner') });
+    if (VOLET_ARTICLES) showLocation(e); else montrerEmplacement(e, { retour: () => go('trouver') });
   };
   const choisirCabine = (c) => {
     $('#sugg').innerHTML = '';
