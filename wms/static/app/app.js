@@ -2114,11 +2114,13 @@ function etapeRangement() {
   // cariste de marcher jusqu'à la travée, de scanner et de toucher une place
   // pour n'apprendre qu'à la fin que le geste était impossible.
   if (RANGEMENT.cabine && RANGEMENT.cabine.statut === 'envoye') { poser(1); return etapeEnvoyee(); }
-  // Cabine déjà dans une travée : scanner sa fiche ne veut plus dire « range-la ».
-  // Trois intentions se valent — la sortir, signaler son état, la déplacer — et
-  // l'écran filait vers la seule troisième, en silence.
+  // Cabine déjà rangée : on ne barre pas la route, on prévient. Le rangement
+  // continue normalement et le nouvel emplacement S'AJOUTE — l'actuel n'est
+  // jamais libéré sans qu'on le demande. Un écran de choix intercalé ici
+  // obligeait à répondre à une question que la plupart du temps on ne se pose
+  // pas : dans l'immense majorité des cas, on vient poser la cabine quelque part.
   if (RANGEMENT.cabine && cabineRangee(RANGEMENT.cabine) && !RANGEMENT.intention) {
-    poser(1); return etapeDejaRangee();
+    RANGEMENT.intention = 'ajouter';
   }
   if (!RANGEMENT.emp) { poser(2); return etapeEmplacement(); }
   poser(3);
@@ -2133,8 +2135,9 @@ function rappelRangement() {
   const lignes = [`<div class="r">${esc(numero)}${c ? ' ' + badgeStatut(c) : ' <span class="pill">nouvelle</span>'}</div>`];
   const chantier = c ? c.chantier : (b ? b.chantier : '');
   lignes.push(`<div class="d">Chantier ${chantier ? esc(chantier) : '<em>à affecter</em>'}</div>`);
-  if (RANGEMENT.intention === 'ajouter') {
-    lignes.push('<div class="meta"><b>Emplacement supplémentaire</b> — l’actuel est conservé</div>');
+  if (RANGEMENT.intention === 'ajouter' && c && c.position) {
+    lignes.push(`<div class="meta">Déjà rangée en <b>${esc(c.position)}</b> —
+      ce nouvel emplacement s’<b>ajoute</b>, l’actuel est conservé.</div>`);
   }
   if (RANGEMENT.d) lignes.push(`<div class="meta">Emplacement ${esc(RANGEMENT.d.code)} · ${esc(RANGEMENT.d.zone || 'sans zone')}</div>`);
   return `<div class="card rappel">${lignes.join('')}
@@ -2431,61 +2434,6 @@ function dateCourte(iso) {
    la question n'est donc pas « où la ranger ? » mais « qu'est-ce que tu en
    fais ? ». Trois réponses, trois boutons, dans l'ordre de fréquence réelle au
    poste : on descend une cabine bien plus souvent qu'on ne la déplace.       */
-function etapeDejaRangee() {
-  const zone = $('#zone');
-  if (!zone) return;
-  const c = RANGEMENT.cabine;
-  const ou = c.position || c.emplacement_code || '';
-  const n = emplacementsDe(c).length;
-  zone.innerHTML = `<div class="card rappel">
-      <div class="r" style="font-size:17px;font-weight:700">${esc(c.numero)} ${badgeStatut(c)} ${pastilleType(c)}</div>
-      <div class="d">Chantier ${c.chantier ? esc(c.chantier) : '<em>à affecter</em>'}${c.modele ? ' · ' + esc(c.modele) : ''}</div>
-      <div class="meta">Rangée en ${esc(ou)}${n > 1 ? ` — ${n} emplacements` : ''}</div>
-    </div>
-    <div class="card">
-      <div class="sec" style="margin-top:0">Cette cabine est déjà rangée — que fais-tu ?</div>
-      <div class="gestes" id="djGestes">
-        <button type="button" class="geste" data-dj="ajouter">
-          <span class="ic">${icon('plus', 26)}</span>
-          <span class="t">Ajouter un emplacement</span>
-          <span class="s">elle ne tient pas ici : ${esc(ou)} est conservé</span></button>
-        <button type="button" class="geste" data-dj="deplacer">
-          <span class="ic">${icon('transfer', 26)}</span>
-          <span class="t">La déplacer</span>
-          <span class="s">${esc(ou)} sera libéré</span></button>
-        <button type="button" class="geste" data-dj="sortir">
-          <span class="ic">${icon('out', 26)}</span>
-          <span class="t">Sortir la cabine</span>
-          <span class="s">elle quitte l’entrepôt, tout se libère</span></button>
-        <button type="button" class="geste" data-dj="statut">
-          <span class="ic">${icon('fiche', 26)}</span>
-          <span class="t">Changer le statut</span>
-          <span class="s">rien à signaler, ou mise en quarantaine</span></button>
-      </div>
-      <button class="btn ghost" id="djAutre">Autre cabine</button>
-    </div>`;
-
-  $('#djAutre').onclick = () => { arreterCamera(); repartirRangement(); etapeRangement(); };
-  zone.querySelectorAll('[data-dj]').forEach(b => b.onclick = () => {
-    const quoi = b.dataset.dj;
-    // « Ajouter » et « Déplacer » mènent tous deux au scan d'une travée. Les
-    // confondre libérerait une place où la cabine se trouve encore : l'intention
-    // est donc retenue jusqu'à la validation.
-    if (quoi === 'ajouter' || quoi === 'deplacer') {
-      RANGEMENT.intention = quoi; etapeRangement(); return;
-    }
-    if (quoi === 'sortir') { arreterCamera(); ouvrirSortie(c); return; }
-    // Statut : même liste qu'au rangement — on constate un état, on n'expédie pas.
-    ouvrirStatut(c, `Rangée en ${ou}. Quel est son état ?`, () => {
-      repartirRangement();
-      etapeRangement();
-      const z = $('#zone');
-      if (z) z.insertAdjacentHTML('afterbegin',
-        `<div class="banner" style="background:var(--ok-tint);color:var(--ok)">
-           ${esc(c.numero)} : statut enregistré. Cabine suivante ?</div>`);
-    }, { statuts: ['libre', 'quarantaine'] });
-  });
-}
 
 /* --- Étape 2 : quel emplacement ? ------------------------------------------ */
 function etapeEmplacement() {
@@ -2554,8 +2502,12 @@ function etapePlace() {
       ${ailleurs ? `<div class="banner">Cette cabine est actuellement en
         <b>${esc(cabine.position)}</b>. La ranger ici la <b>déplace</b> — sa place
         actuelle sera libérée.</div>` : ''}
-      ${ajout ? `<div class="banner" style="background:var(--ok-tint);color:var(--ok)">
-        Elle reste en <b>${esc(cabine.position)}</b> ; cette place s'y ajoute.</div>` : ''}
+      ${ajout ? `<div class="banner">
+        <div>Cette cabine est déjà rangée en <b>${esc(cabine.position)}</b>.
+          Elle y reste : cette place s'y ajoute.</div>
+        <div style="margin-top:6px"><button type="button" class="lien" id="pLiberer"
+          >Elle n'y est plus — libérer ${esc(cabine.position)}</button></div>
+        </div>` : ''}
       ${d.illimite
         ? '<div class="meta">Capacité illimitée : aucune place à désigner.</div>'
         : placesHTML(d)}
@@ -2564,6 +2516,10 @@ function etapePlace() {
     </div>`;
   brancherRappel();
   $('#rAutre').onclick = () => { RANGEMENT.emp = null; RANGEMENT.d = null; etapeRangement(); };
+  // Le seul cas où l'ajout n'est pas le bon geste : la cabine a réellement été
+  // déplacée. Un lien, pas une question posée à tout le monde d'avance.
+  const liberer = $('#pLiberer');
+  if (liberer) liberer.onclick = () => { RANGEMENT.intention = 'deplacer'; etapePlace(); };
 
   const bouton = $('#rOk');
   const libelle = bouton.textContent;
