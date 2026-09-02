@@ -111,3 +111,132 @@ et il marche aussi bien sur SQLite que sur PostgreSQL. Il applique en plus les
 règles du modèle — notamment l'interdiction de modifier le journal des cabines.
 
 Adresse : `http://<adresse-du-serveur>:8000/admin/`
+
+## Dans pgAdmin — voir les mouvements des cabines
+
+### Avant tout : l'écran de l'application
+
+Le WMS a déjà cet écran : **onglet « Plus » → « Journal »**. Il montre tous les
+événements, du plus récent au plus ancien, avec un filtre par numéro de cabine,
+par chantier ou par auteur, et une liste déroulante par type d'événement. Pour
+« qu'est-ce qui s'est passé sur cette cabine ? », c'est plus rapide que pgAdmin,
+et ça marche depuis le téléphone.
+
+pgAdmin sert à ce que l'écran ne sait pas faire : **compter**, **croiser**,
+**exporter vers Excel**.
+
+### 1. Choisir la bonne base
+
+Dans **Object Explorer**, à gauche : `Servers` → `PostgreSQL 18` → `Databases`.
+Trois bases y répondent :
+
+| Base | Ce qu'elle contient |
+|---|---|
+| `wms` | **La base du WMS.** C'est celle que `.env` désigne (`DJANGO_DB_NAME=wms`). |
+| `wms_essai` | Une base d'essai. Elle répond aux mêmes requêtes, avec d'autres chiffres. |
+| `postgres` | La base technique de PostgreSQL. Rien du WMS dedans. |
+
+**Cliquer sur `wms`** pour la sélectionner : tout ce qui suit s'exécute sur la
+base sélectionnée, et deux bases qui répondent toutes les deux est la meilleure
+façon de se tromper sans le voir. En cas de doute, lancer la requête 1.1 de
+`docs/requetes-sql.sql` : elle compte les lignes de chaque table. La bonne base
+est celle où le nombre de cabines correspond à ce que vous voyez dans le WMS.
+
+### 2. Ouvrir la fenêtre des requêtes
+
+Base `wms` sélectionnée → menu **Tools → Query Tool** (ou l'icône en forme
+d'éclair dans la barre de gauche). Un onglet s'ouvre avec une zone de saisie en
+haut et la grille des résultats en bas.
+
+### 3. Coller une requête et l'exécuter
+
+Coller le texte de la requête, puis **F5** (ou le bouton ▶). Le résultat
+s'affiche en dessous. Rien ne s'exécute tant que vous n'appuyez pas.
+
+Pour n'exécuter qu'une requête d'un fichier qui en contient plusieurs :
+**sélectionner ses lignes à la souris**, puis F5. C'est ce qui permet d'ouvrir
+`docs/requetes-sql.sql` en entier et de ne lancer que ce qu'on veut.
+
+### 4. Les requêtes prêtes à l'emploi
+
+Dans `docs/requetes-sql.sql`, section **3 bis** :
+
+| N° | Ce qu'elle répond |
+|---|---|
+| **3.5** | Les 100 derniers mouvements, en français. **Celle à lancer en premier.** |
+| **3.6** | Ce qui s'est passé aujourd'hui, dans l'ordre des heures. |
+| **3.7** | Combien de mouvements par type sur sept jours. |
+| **3.8** | Qui a fait quoi sur sept jours, et combien de cabines chacun a touchées. |
+| **3.9** | Le journal complet d'une cabine, du premier au dernier événement. |
+| **3.10** | Les cabines dont le journal parle et qui n'existent plus. |
+
+La 3.5 en entier, pour l'avoir sous la main :
+
+```sql
+SELECT to_char(m.date, 'DD/MM/YYYY HH24:MI')        AS "Quand",
+       m.cabine_numero                              AS "Cabine",
+       CASE m.type
+         WHEN 'creation'    THEN 'Création'
+         WHEN 'rangement'   THEN 'Rangement'
+         WHEN 'transfert'   THEN 'Transfert'
+         WHEN 'retrait'     THEN 'Sortie d''emplacement'
+         WHEN 'statut'      THEN 'Changement de statut'
+         WHEN 'envoi'       THEN 'Envoi'
+         WHEN 'correction'  THEN 'Correction de fiche'
+         WHEN 'suppression' THEN 'Suppression de la cabine'
+         ELSE m.type END                            AS "Événement",
+       NULLIF(m.depuis, '')                         AS "Depuis",
+       NULLIF(m.vers, '')                           AS "Vers",
+       CASE m.statut_apres
+         WHEN 'libre'       THEN 'Conforme'
+         WHEN 'quarantaine' THEN 'En quarantaine'
+         WHEN 'envoye'      THEN 'Envoyée' END      AS "Nouveau statut",
+       COALESCE(NULLIF(m.utilisateur_nom, ''), 'compte supprimé') AS "Par qui",
+       NULLIF(m.chantier, '')                       AS "Chantier",
+       NULLIF(m.note, '')                           AS "Note"
+FROM wms_mouvementcabine m
+ORDER BY m.date DESC
+LIMIT 100;
+```
+
+### 5. Lire le résultat
+
+Une ligne = un geste fait dans l'application. Les colonnes ne sont pas toutes
+remplies à chaque fois, et **ce n'est pas un trou** : un rangement n'a pas de
+statut, un changement de statut n'a pas d'emplacement.
+
+| Colonne | Ce qu'elle dit |
+|---|---|
+| `type` | Le geste. `rangement`, `transfert`, `envoi`, `statut`, `correction`, `creation`, `retrait`, `suppression`. |
+| `depuis` / `vers` | Les positions, sous la forme `AC5601·G`. Un rangement n'a qu'un `vers` ; un transfert a les deux. |
+| `statut_avant` / `statut_apres` | Remplis seulement sur un changement de statut ou un envoi. `libre` s'affiche « Conforme » dans le WMS. |
+| `cabine_numero` | Le numéro écrit **en dur** dans la ligne. Il survit à la suppression de la cabine — c'est ce qui permet la requête 3.10. |
+| `utilisateur_nom` | Le nom au moment du geste, figé lui aussi. Vide veut dire que le compte a été supprimé depuis. |
+| `note` | Le motif d'une quarantaine, la raison d'une correction. Facultatif, donc souvent vide. |
+
+### 6. Regarder sans écrire de SQL
+
+`wms` → `Schemas` → `public` → `Tables` → **`wms_mouvementcabine`** → clic droit
+→ **View/Edit Data → Last 100 Rows**. La grille s'ouvre ; un clic sur un en-tête
+de colonne trie, l'icône en forme d'entonnoir filtre.
+
+C'est pratique pour jeter un œil. Les dates y sont brutes et les types en
+anglais interne : pour quelque chose de lisible, la requête 3.5 vaut mieux.
+
+### 7. Sortir vers Excel
+
+Au-dessus de la grille de résultats, le bouton **Download** (flèche vers le bas)
+enregistre un CSV. **Ne pas double-cliquer le fichier** : dans Excel, passer par
+**Données → À partir d'un fichier texte/CSV**, encodage **UTF-8**, sinon les
+accents sont cassés.
+
+### 8. Ce journal ne se modifie pas
+
+`wms_mouvementcabine` est la vérité du WMS : les positions, les listes et les
+compteurs sont recalculés depuis lui. Une ligne effacée ou retouchée à la main,
+et l'application affichera pour toujours autre chose que ce que vous croyez
+avoir corrigé. L'application elle-même s'interdit d'y toucher.
+
+Pour rattraper une erreur, il y a un geste dans le WMS : corriger la fiche,
+changer le statut, remettre en stock. Chacun **ajoute** une ligne au journal —
+rien ne s'efface, et on sait qui a corrigé quoi.

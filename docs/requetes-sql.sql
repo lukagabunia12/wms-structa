@@ -183,6 +183,147 @@ WHERE statut = 'quarantaine'
 ORDER BY statut_date;
 
 
+
+
+-- ============================================================================
+--  3 bis. LES MOUVEMENTS DES CABINES - LE JOURNAL
+--
+--  Ce journal est la verite du WMS : les listes, les positions et les
+--  compteurs sont recalcules depuis lui. Chaque ligne dit qui a fait quoi,
+--  quand, et sur quelle cabine. Rien ne s'y efface.
+--
+--  Les huit types d'evenement, et leur nom a l'ecran :
+--    creation    -> Creation                rangement -> Rangement
+--    transfert   -> Transfert               retrait   -> Sortie d'emplacement
+--    statut      -> Changement de statut    envoi     -> Envoi
+--    correction  -> Correction de fiche     suppression -> Suppression
+--
+--  Les trois statuts : libre -> Conforme, quarantaine -> En quarantaine,
+--  envoye -> Envoyee.
+--
+--  Les requetes 3.5 a 3.10 ont ete executees sur un vrai PostgreSQL. Elles
+--  n'utilisent que du SQL standard (to_char, date_trunc, interval) : rien
+--  qui depende de la version du serveur.
+-- ============================================================================
+
+-- 3.5  LES 100 DERNIERS MOUVEMENTS, en francais.
+--      LA requete a lancer pour "qu'est-ce qui s'est passe ?". Les colonnes
+--      vides ne sont pas des trous : un rangement n'a pas de statut, un
+--      changement de statut n'a pas d'emplacement.
+SELECT to_char(m.date, 'DD/MM/YYYY HH24:MI')        AS "Quand",
+       m.cabine_numero                              AS "Cabine",
+       CASE m.type
+         WHEN 'creation'    THEN 'Creation'
+         WHEN 'rangement'   THEN 'Rangement'
+         WHEN 'transfert'   THEN 'Transfert'
+         WHEN 'retrait'     THEN 'Sortie d''emplacement'
+         WHEN 'statut'      THEN 'Changement de statut'
+         WHEN 'envoi'       THEN 'Envoi'
+         WHEN 'correction'  THEN 'Correction de fiche'
+         WHEN 'suppression' THEN 'Suppression de la cabine'
+         ELSE m.type END                            AS "Evenement",
+       NULLIF(m.depuis, '')                         AS "Depuis",
+       NULLIF(m.vers, '')                           AS "Vers",
+       CASE m.statut_apres
+         WHEN 'libre'       THEN 'Conforme'
+         WHEN 'quarantaine' THEN 'En quarantaine'
+         WHEN 'envoye'      THEN 'Envoyee' END      AS "Nouveau statut",
+       COALESCE(NULLIF(m.utilisateur_nom, ''), 'compte supprime') AS "Par qui",
+       NULLIF(m.chantier, '')                       AS "Chantier",
+       NULLIF(m.note, '')                           AS "Note"
+FROM wms_mouvementcabine m
+ORDER BY m.date DESC
+LIMIT 100;
+
+
+-- 3.6  CE QUI S'EST PASSE AUJOURD'HUI, dans l'ordre.
+--      Pour la reunion du matin, ou pour verifier qu'une equipe a bien
+--      saisi sa journee. Remplacer 'day' par 'week' pour la semaine.
+SELECT to_char(date, 'HH24:MI')                     AS "Heure",
+       cabine_numero                                AS "Cabine",
+       CASE type
+         WHEN 'creation'    THEN 'Creation'
+         WHEN 'rangement'   THEN 'Rangement'
+         WHEN 'transfert'   THEN 'Transfert'
+         WHEN 'retrait'     THEN 'Sortie d''emplacement'
+         WHEN 'statut'      THEN 'Changement de statut'
+         WHEN 'envoi'       THEN 'Envoi'
+         WHEN 'correction'  THEN 'Correction de fiche'
+         WHEN 'suppression' THEN 'Suppression de la cabine'
+         ELSE type END                              AS "Evenement",
+       NULLIF(vers, '')                             AS "Vers",
+       COALESCE(NULLIF(utilisateur_nom, ''), 'compte supprime') AS "Par qui",
+       NULLIF(note, '')                             AS "Note"
+FROM wms_mouvementcabine
+WHERE date >= date_trunc('day', now())
+ORDER BY date;
+
+
+-- 3.7  COMBIEN DE MOUVEMENTS PAR TYPE, sur sept jours.
+--      Dit d'un coup d'oeil ce que les gens font vraiment de l'application.
+--      Beaucoup de 'correction' ou de 'transfert' est un signal : quelque
+--      chose se saisit mal du premier coup.
+SELECT CASE type
+         WHEN 'creation'    THEN 'Creation'
+         WHEN 'rangement'   THEN 'Rangement'
+         WHEN 'transfert'   THEN 'Transfert'
+         WHEN 'retrait'     THEN 'Sortie d''emplacement'
+         WHEN 'statut'      THEN 'Changement de statut'
+         WHEN 'envoi'       THEN 'Envoi'
+         WHEN 'correction'  THEN 'Correction de fiche'
+         WHEN 'suppression' THEN 'Suppression de la cabine'
+         ELSE type END                              AS "Evenement",
+       COUNT(*)                                     AS "Combien"
+FROM wms_mouvementcabine
+WHERE date >= now() - interval '7 days'
+GROUP BY 1
+ORDER BY 2 DESC;
+
+
+-- 3.8  QUI A FAIT QUOI, sur sept jours.
+--      Pendant la campagne de test, tout le monde partage le compte TEST :
+--      cette requete ne separe alors pas les personnes. Elle reprend son
+--      sens le jour ou chacun a son compte.
+SELECT COALESCE(NULLIF(utilisateur_nom, ''), 'compte supprime') AS "Par qui",
+       COUNT(*)                                     AS "Mouvements",
+       COUNT(DISTINCT cabine_numero)                AS "Cabines touchees",
+       to_char(MIN(date), 'DD/MM HH24:MI')          AS "Premier",
+       to_char(MAX(date), 'DD/MM HH24:MI')          AS "Dernier"
+FROM wms_mouvementcabine
+WHERE date >= now() - interval '7 days'
+GROUP BY 1
+ORDER BY 2 DESC;
+
+
+-- 3.9  LE JOURNAL D'UNE CABINE, du premier au dernier evenement.
+--      Remplacer le numero. C'est la vue qui explique une position
+--      surprenante : on lit l'histoire dans l'ordre ou elle s'est ecrite.
+SELECT to_char(date, 'DD/MM/YYYY HH24:MI')          AS "Quand",
+       type                                         AS "Type",
+       NULLIF(depuis, '')                           AS "Depuis",
+       NULLIF(vers, '')                             AS "Vers",
+       NULLIF(statut_avant, '')                     AS "Statut avant",
+       NULLIF(statut_apres, '')                     AS "Statut apres",
+       COALESCE(NULLIF(utilisateur_nom, ''), 'compte supprime') AS "Par qui",
+       NULLIF(note, '')                             AS "Note"
+FROM wms_mouvementcabine
+WHERE cabine_numero = '00_00_00'
+ORDER BY date;
+
+
+-- 3.10 LES CABINES DONT LE JOURNAL PARLE ET QUI N'EXISTENT PLUS.
+--      Une cabine supprimee laisse son journal derriere elle : c'est lui qui
+--      explique une disparition, et cette requete les liste toutes.
+SELECT m.cabine_numero                              AS "Cabine disparue",
+       COUNT(*)                                     AS "Evenements",
+       to_char(MAX(m.date), 'DD/MM/YYYY HH24:MI')   AS "Dernier evenement"
+FROM wms_mouvementcabine m
+LEFT JOIN wms_cabine c ON c.numero = m.cabine_numero
+WHERE c.id IS NULL
+GROUP BY m.cabine_numero
+ORDER BY MAX(m.date) DESC;
+
+
 -- ============================================================================
 --  4. EXTRAIRE - LISTES POUR EXCEL
 --
