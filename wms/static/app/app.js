@@ -4870,17 +4870,33 @@ function renderMore() {
   $('#logout').onclick = logout;
 }
 
+/* --- Accès des testeurs -----------------------------------------------------
+   On entre dans l'application en scannant un QR code collé dans l'entrepôt. On
+   arrivait alors devant deux champs vides : le testeur, téléphone en main devant
+   une cabine, n'a aucune raison de connaître l'identifiant du compte d'essai.
+
+   Le serveur peut donc les pré-remplir — `WMS_ACCES_TEST=identifiant:motdepasse`
+   dans le .env. Il reste un bouton à appuyer : on voit sous quel compte on entre,
+   et « Se déconnecter » ne reboucle pas sur une reconnexion automatique. Sans la
+   variable, l'écran est celui de toujours, et rien n'est écrit dans la page.   */
+function accesTest() {
+  const bloc = document.getElementById('acces-test');
+  if (!bloc) return null;
+  try { return JSON.parse(bloc.textContent); } catch (_) { return null; }
+}
+
 function renderLogin() {
+  const essai = accesTest();
   el().innerHTML = `<div class="login"><div class="logo">WMS Structa</div><div class="sub">Connexion</div>
-    <div class="card"><label>Identifiant</label>
-    <input id="u" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false">
+    <div class="card">${essai ? `<div class="banner">Campagne de test : le compte d’essai est déjà renseigné. Appuyer sur « Se connecter ».</div>` : ''}<label>Identifiant</label>
+    <input id="u" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" value="${esc(essai && essai.identifiant)}">
     <label>Mot de passe</label>
-    <input id="p" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false">
+    <input id="p" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" value="${esc(essai && essai.motdepasse)}">
     <button class="btn" id="go">Se connecter</button></div></div>`;
   const submit = async () => { try { await doLogin(el().querySelector('#u').value.trim(), el().querySelector('#p').value); await boot(); } catch (e) { toast(e.message, 'err'); } };
   el().querySelector('#go').onclick = submit;
   el().querySelector('#p').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
-  el().querySelector('#u').focus();
+  el().querySelector(essai ? '#go' : '#u').focus();
 }
 
 async function boot() {

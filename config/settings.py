@@ -175,6 +175,27 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # IIS sert `staticfiles/` directement.
 SERVIR_STATIQUES = _bool("DJANGO_SERVIR_STATIQUES", True)
 
+
+# --- Accès des testeurs pendant une campagne ---------------------------------
+# On entre dans l'application en scannant un QR code collé dans l'entrepôt. Le
+# testeur arrivait devant deux champs vides : il n'a aucune raison de connaître
+# l'identifiant du compte d'essai, et la campagne s'arrêtait là.
+# `WMS_ACCES_TEST=identifiant:motdepasse` pré-remplit l'écran de connexion.
+#
+# À savoir avant de l'écrire : le mot de passe part alors dans la page, en clair.
+# Quiconque connaît l'adresse entre avec ce compte — sur un tunnel public, c'est
+# le seul rempart qui tombe. Réglage de campagne, à retirer du .env le jour où
+# les tests s'arrêtent. Vide par défaut : sans la variable, rien n'est publié.
+def _acces_test():
+    identifiant, separateur, motdepasse = os.environ.get("WMS_ACCES_TEST", "").partition(":")
+    identifiant, motdepasse = identifiant.strip(), motdepasse.strip()
+    if not (separateur and identifiant and motdepasse):
+        return None
+    return {"identifiant": identifiant, "motdepasse": motdepasse}
+
+
+ACCES_TEST = _acces_test()
+
 # --- Durcissement en exploitation -------------------------------------------
 if not DEBUG:
     # Cloudflare (ou tout reverse-proxy) termine le TLS et transmet l'entête.

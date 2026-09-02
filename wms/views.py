@@ -9,6 +9,7 @@ from django.db.models import (Count, IntegerField, Max, OuterRef, Prefetch, Q,
 from django.db.models.functions import Coalesce
 from django.db.models.deletion import ProtectedError
 import time
+from django.conf import settings
 from django.shortcuts import render
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -1153,4 +1154,7 @@ def app_index(request):
         # Vrai seulement si les DEUX fichiers sont là : un mélange local/CDN
         # échouerait à moitié, sans message clair pour l'opérateur.
         "libs_locales": all((_VENDOR / nom).is_file() for nom in LIBS_FRONT),
+        # Campagne de test : de quoi pré-remplir l'écran de connexion. Vide
+        # en dehors des campagnes — voir ACCES_TEST dans les réglages.
+        "acces_test": settings.ACCES_TEST,
     })
