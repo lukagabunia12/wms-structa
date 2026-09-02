@@ -441,7 +441,7 @@ function go(name) {
     home: renderHome, suivi: renderSuivi, entree: renderEntree,
     scanner: renderEntreeScan, trouver: renderTrouver,
     // Même écran de scan, autre titre : on sait ce qu'on est venu lire.
-    'scan-travee': () => renderTrouver('Scanner une travée'),
+    'scan-colonne': () => renderTrouver('Scanner une colonne'),
     rangement: renderRangement, 'sortie-cabine': renderSortieCabine,
     rack: renderEmplacements,
     cabines: renderCabines, chantier: renderChantier, emplacements: renderEmplacements,
@@ -4657,7 +4657,7 @@ function brancherCamera(surLecture) {
    « Ranger » ne disait pas comment on y entre : faut-il scanner ? photographier ?
    Le geste physique, lui, est toujours le même — on lit quelque chose. Cet écran
    pose donc la seule question qui se pose devant la cabine : qu'est-ce que vous
-   avez sous les yeux, une étiquette de travée ou une fiche papier ?
+   avez sous les yeux, une étiquette de colonne ou une fiche papier ?
 
    Il ne fait rien d'autre que conduire aux écrans qui existent déjà. C'est un
    point d'entrée, pas une quatrième façon de ranger.                          */
@@ -4665,9 +4665,9 @@ function renderEntreeScan() {
   layout(`<h2 class="title">Scanner</h2>
     <div class="meta" style="margin:-4px 0 12px">Qu'avez-vous sous les yeux ?</div>
     <div class="gestes">
-      <button class="geste" data-go="scan-travee">
+      <button class="geste" data-go="scan-colonne">
         <span class="ic">${icon('scan', 26)}</span>
-        <span class="t">Un QR code sur une travée</span>
+        <span class="t">Un QR code sur une colonne</span>
         <span class="s">Voir ce qu'elle contient, ou y ranger une cabine</span>
       </button>
       <button class="geste" data-go="rangement">

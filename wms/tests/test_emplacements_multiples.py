@@ -258,7 +258,7 @@ class FiltresTest(BaseMulti):
 
 
 class SuppressionEmplacementTest(BaseMulti):
-    def test_une_travee_occupee_ne_se_supprime_pas(self):
+    def test_un_emplacement_occupe_ne_se_supprime_pas(self):
         cabine = self.cabine()
         services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
                                 utilisateur=self.u)
