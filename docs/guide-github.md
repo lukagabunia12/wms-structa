@@ -67,14 +67,51 @@ place — il décrit les gestes, une fois la décision prise.
 > s'envoie sans rien négocier.
 
 La page qui s'affiche ensuite propose « …or push an existing repository from
-the command line » et donne l'adresse du dépôt. C'est celle de l'étape 2.
+the command line » et donne l'adresse du dépôt. C'est celle de l'étape 3.
 
-## 2. Relier le dossier du projet au dépôt
+## 2. Ouvrir un terminal dans le dossier du projet
 
-Ouvrir un terminal **dans le dossier du projet** : dans l'explorateur Windows,
-aller dans `C:\Users\lgabunia\Claude\Projects\WMS Structa\wms-structa`, clic
-droit dans le fond de la fenêtre → **Git Bash Here** (ou *Ouvrir dans le
-Terminal*).
+Git est déjà installé sur ce poste (`C:\Program Files\Git`) : rien à installer.
+
+**La méthode qui marche toujours**, sans dépendre d'aucun menu :
+
+1. Ouvrir le dossier du projet dans l'explorateur Windows
+   (`C:\Users\lgabunia\Claude\Projects\WMS Structa\wms-structa`).
+2. Cliquer dans la **barre d'adresse**, là où s'affiche le chemin — le texte
+   se sélectionne.
+3. Taper `powershell` par-dessus, puis Entrée.
+
+Un terminal s'ouvre, **déjà positionné dans le dossier**. Pour le vérifier :
+
+```powershell
+git --version
+```
+
+Une version doit s'afficher (`git version 2.x.x`). Si Windows répond que la
+commande est introuvable, c'est le seul cas où il faut réinstaller Git depuis
+<https://git-scm.com/download/win>.
+
+**Le clic droit → « Git Bash Here »** existe aussi, mais **Windows 11 le
+cache** : le menu court qui s'affiche au clic droit ne montre plus les entrées
+des logiciels installés. Il faut d'abord **« Afficher plus d'options »** en bas
+du menu — ou appuyer sur **Maj+F10** au lieu du clic droit, ce qui ouvre
+directement le menu complet.
+
+Troisième voie : menu Démarrer → taper « Git Bash » → l'ouvrir, puis se placer
+dans le dossier (les guillemets sont obligatoires, le chemin contient une
+espace) :
+
+```bash
+cd "/c/Users/lgabunia/Claude/Projects/WMS Structa/wms-structa"
+```
+
+> **Une différence à connaître.** Les commandes `git` sont identiques dans
+> PowerShell et dans Git Bash. En revanche `>>` n'a pas le même effet : dans
+> PowerShell il écrit en UTF-16 et **abîmerait** un fichier comme
+> `.gitignore`. Pour y ajouter une ligne, ouvrez-le dans le Bloc-notes, ou
+> passez par Git Bash.
+
+## 3. Relier le dossier du projet au dépôt
 
 ```bash
 git remote add origin https://github.com/VOTRE-COMPTE/wms-structa.git
@@ -87,18 +124,24 @@ exacte est celle affichée par GitHub à la fin de l'étape 1.
 
 En cas d'erreur de frappe : `git remote remove origin`, puis recommencer.
 
-## 3. Premier envoi
+## 4. Premier envoi
 
 ```bash
 git status
 ```
 
 Doit afficher `nothing to commit, working tree clean` — à part
-`docs/Archive/`, un ancien PRO 225 en double qui n'est ni suivi ni ignoré. Deux
-choix : l'ignorer (`echo "/docs/Archive/" >> .gitignore`) ou le versionner
-(`git add docs/Archive && git commit -m "Archive PRO 225"`). Ne laissez pas la
-question ouverte : un `git add -A` distrait l'emporterait sans que vous l'ayez
-décidé.
+`docs/Archive/`, un ancien PRO 225 en double qui n'est ni suivi ni ignoré.
+Deux choix :
+
+- **l'ignorer** : ouvrir `.gitignore` dans le Bloc-notes, ajouter une ligne
+  `/docs/Archive/` à la fin, enregistrer. (Pas avec `>>` depuis PowerShell,
+  voir l'avertissement de l'étape 2.)
+- **le versionner** : `git add docs/Archive` puis
+  `git commit -m "Archive PRO 225"`.
+
+Ne laissez pas la question ouverte : un `git add -A` distrait l'emporterait
+sans que vous l'ayez décidé.
 
 Puis :
 
@@ -116,7 +159,7 @@ L'envoi transfère plusieurs dizaines de Mo : l'historique contient les PRO 220
 à 226 en `.docx` **et** en `.pdf`, plusieurs Mo par version, et chaque version
 successive y est. Comptez une à deux minutes.
 
-## 4. Ce qui se passe tout de suite après : les contrôles partent seuls
+## 5. Ce qui se passe tout de suite après : les contrôles partent seuls
 
 Le projet contient déjà `.github/workflows/ci.yml`. Dès le premier envoi,
 GitHub lance treize étapes sur ses propres machines, en trois minutes environ :
@@ -162,7 +205,7 @@ pas.
 | `Updates were rejected because the remote contains work…` | le dépôt GitHub a été créé **avec** un README | `git pull --rebase origin main` puis `git push`, ou supprimer le dépôt sur GitHub et le recréer vide |
 | `remote: warning: File … is 52.00 MB` | un fichier volumineux | avertissement seulement ; GitHub **refuse** au-delà de 100 Mo. Aucun fichier du projet n'en approche |
 | `Could not resolve host: github.com` | réseau ou proxy d'entreprise | vérifier l'accès à github.com dans un navigateur ; si un proxy est nécessaire, c'est une question pour l'informatique |
-| `fatal: not a git repository` | le terminal n'est pas dans le bon dossier | `cd` dans le dossier du projet, ou refaire le clic droit dedans |
+| `fatal: not a git repository` | le terminal n'est pas dans le bon dossier | refaire l'étape 2 (barre d'adresse → `powershell`) |
 | `index.lock: Permission denied` | un fichier de verrouillage resté en place | `mv .git/index.lock .git/_a_supprimer/` puis recommencer |
 
 Le dossier `.git` pèse 73 Mo alors que son archive compressée n'en fait que 12 :
