@@ -68,10 +68,21 @@ const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = se
 const typeLabel = (t) => ({ IN: 'Entrée', OUT: 'Sortie', AJUST: 'Ajustement' }[t] || t);
 const empOpts = (extra) => EMPS.filter(e => !e.staging).map(e => `<option value="${e.id}">${esc(e.code)}</option>`).join('') + (extra || '');
 
+/* Une vibration courte, quand l'appareil en a une. `navigator.vibrate` n'existe
+   ni sur ordinateur ni sur iPhone, et Chrome la refuse avant la première
+   interaction de l'utilisateur : son absence n'est pas une erreur, on l'enveloppe. */
+function vibrer(ms) {
+  try { if (navigator.vibrate) navigator.vibrate(ms); } catch (_) {}
+}
+
+/* Le bandeau vert disait « Rangé » à qui regardait l'écran. Devant le rack, avec
+   du bruit et des gants, on ne regarde pas : on vibre donc à la réussite. Un seul
+   endroit à modifier — les 39 gestes qui réussissent passent tous par `'ok'`. */
 function toast(msg, type) {
   const t = document.getElementById('toast');
   t.textContent = msg; t.className = (type || '') + ' show';
   clearTimeout(t._t); t._t = setTimeout(() => { t.className = (type || ''); }, 2900);
+  if (type === 'ok') vibrer(60);
 }
 
 const ICON = {
@@ -240,10 +251,27 @@ function messageErreur(data, status) {
   return m || ('Erreur ' + status);
 }
 
+/* Un `fetch` qui n'aboutit pas lève « TypeError: Failed to fetch ». Ce message
+   anglais arrivait tel quel dans le bandeau rouge : au fond d'un rack, avec le
+   Wi-Fi qui décroche, le cariste lisait une phrase qu'il ne comprend pas et ne
+   savait pas si son geste était passé. Toutes les requêtes traversent maintenant
+   cette fonction : une seule phrase, en français, la même partout.
+
+   Un abandon volontaire (délai dépassé, `AbortController`) est laissé passer :
+   l'appelant qui a posé le minuteur dit mieux ce qui s'est passé.            */
+async function fetchReseau(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw e;
+    throw new Error('Pas de réseau');
+  }
+}
+
 async function api(path, opt = {}) {
   const h = { 'Content-Type': 'application/json' };
   if (token) h['Authorization'] = 'Token ' + token;
-  const r = await fetch(API + path, { method: opt.method || 'GET', headers: h, body: opt.body ? JSON.stringify(opt.body) : undefined });
+  const r = await fetchReseau(API + path, { method: opt.method || 'GET', headers: h, body: opt.body ? JSON.stringify(opt.body) : undefined });
   if (r.status === 401) { logout(); throw new Error('Session expirée, reconnecte-toi.'); }
   if (r.status === 403) throw new Error(messageErreur(await r.json().catch(() => null), 403) || 'Droit insuffisant pour cette opération.');
   const txt = await r.text();
@@ -1802,7 +1830,7 @@ async function lireFichePourRangement(fichier, emp, d, redessiner) {
   const etat = $('#fEtat');
   etat.innerHTML = '<div class="meta">Lecture de la photo en cours… (quelques secondes)</div>';
   try {
-    const r = await fetch(API + '/cabines/lire-fiche/', {
+    const r = await fetchReseau(API + '/cabines/lire-fiche/', {
       method: 'POST',
       headers: token ? { Authorization: 'Token ' + token } : {},
       body: (() => { const c = new FormData(); c.append('photo', fichier); return c; })(),
@@ -2342,7 +2370,7 @@ async function lireFiche(fichier, surCabine, surInconnue, chercher) {
     } catch (e) {
       throw new Error(e && e.name === 'AbortError'
         ? 'Le serveur n’a pas répondu en 45 secondes.'
-        : 'Réseau indisponible.');
+        : 'Pas de réseau');
     } finally { clearTimeout(stop); }
     const txt = await r.text();
     let rep = null;
@@ -3466,7 +3494,7 @@ async function exporterInventaire() {
   if (bouton) { bouton.disabled = true; bouton.textContent = 'Préparation…'; }
   try {
     const q = requeteCabines();
-    const r = await fetch(API + '/cabines/export/' + (q ? '?' + q : ''),
+    const r = await fetchReseau(API + '/cabines/export/' + (q ? '?' + q : ''),
                           { headers: token ? { Authorization: 'Token ' + token } : {} });
     if (r.status === 401) { logout(); throw new Error('Session expirée, reconnecte-toi.'); }
     if (!r.ok) throw new Error('L’export a été refusé (' + r.status + ').');
@@ -4464,8 +4492,13 @@ async function renderZones() {
 
   const charger = async () => {
     const zs = await apiAll('/zones/').catch(() => []);
-    if (gerer) $('#zNouvelle').onclick = () => ouvrirNouvelleZone(roles, zs.length + 1, charger);
+    // Sur un réseau lent, la réponse arrive parfois après que l'opérateur a
+    // quitté l'écran : les nœuds n'existent plus. Sans cette sortie, la console
+    // levait « Cannot set properties of null (setting 'onclick') ».
     const zone = $('#zone');
+    if (!zone) return;
+    const nouvelle = $('#zNouvelle');
+    if (gerer && nouvelle) nouvelle.onclick = () => ouvrirNouvelleZone(roles, zs.length + 1, charger);
     zone.innerHTML = `<div class="list">${zs.length ? zs.map(z => `<div class="item" data-zone="${z.id}">
         <div class="r">${esc(z.nom)} <span class="pill">${esc(libelleRole(z.role))}</span>${z.actif ? '' : '<span class="etat att">inactive</span>'}</div>
         <div class="meta">${z.nb_emplacements} emplacement${z.nb_emplacements === 1 ? '' : 's'}${z.description ? ' · ' + esc(z.description) : ''}</div>
@@ -4508,7 +4541,7 @@ async function envoyerPhotoFiche(fichier) {
   const corps = new FormData();
   corps.append('photo', fichier);
   try {
-    const r = await fetch(API + '/cabines/lire-fiche/', {
+    const r = await fetchReseau(API + '/cabines/lire-fiche/', {
       method: 'POST',
       headers: token ? { Authorization: 'Token ' + token } : {},
       body: corps,   // pas de Content-Type : le navigateur pose la frontière multipart
@@ -4801,7 +4834,7 @@ function blocCameraHTML(titre, sousTitre) {
    l'écran : elle dit « c'est lu », sans obliger à fixer le téléphone.        */
 function confirmerLecture(texte, surLecture) {
   const lu = (texte || '').trim();
-  try { if (navigator.vibrate) navigator.vibrate(40); } catch (_) {}
+  vibrer(40);
   const bloc = $('#camLu');
   // Un écran qui n'a pas de zone de confirmation garde l'ancien comportement :
   // mieux vaut enchaîner que perdre la lecture.

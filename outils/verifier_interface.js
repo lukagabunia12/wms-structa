@@ -97,6 +97,36 @@ if (!bloc) {
   if (!declares.has('envoyerCabine')) erreurs.push('envoyerCabine() a disparu.');
 }
 
+/** 4. Toute requête réseau passe par fetchReseau().
+
+    Un `fetch` nu qui échoue lève « TypeError: Failed to fetch » : ce message
+    anglais arrivait tel quel sous les yeux du cariste, au fond d'un rack, sans
+    lui dire s'il devait recommencer. `fetchReseau()` le remplace par « Pas de
+    réseau ». Trois appels nus sont légitimes et nommés ci-dessous ; tout autre
+    est une régression, silencieuse jusqu'au jour où le Wi-Fi décroche. */
+{
+  const TOLERES = new Set([
+    'fetchReseau',   // c'est lui qui enveloppe
+    'doLogin',       // dit mieux : « le serveur ne répond pas, vérifie l'adresse »
+    'lireFiche',     // distingue le délai de 45 s dépassé de l'absence de réseau
+  ]);
+  // Fonction englobante = la dernière déclaration de premier niveau avant l'appel.
+  const debuts = [...source.matchAll(/^(?:async\s+)?function\s+([A-Za-z0-9_]+)/gm)]
+    .map(m => ({ index: m.index, nom: m[1] }));
+  const englobante = (position) => {
+    let nom = '(premier niveau)';
+    for (const d of debuts) { if (d.index > position) break; nom = d.nom; }
+    return nom;
+  };
+  for (const appel of source.matchAll(/\bfetch\(/g)) {
+    const nom = englobante(appel.index);
+    if (!TOLERES.has(nom)) {
+      erreurs.push(`${nom}() appelle fetch() directement : passe par fetchReseau(), `
+        + 'sinon une panne réseau affiche « Failed to fetch » à l\'opérateur.');
+    }
+  }
+}
+
 /** 3. Les fonctions appelées par les menus du bas et de « Plus » existent aussi. */
 for (const nom of ['layout', 'go', 'api', 'toast', 'modale', 'confirmer', 'listePaginee']) {
   if (!declares.has(nom)) erreurs.push(`Fonction de base manquante : ${nom}()`);
