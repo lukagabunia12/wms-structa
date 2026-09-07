@@ -31,3 +31,8 @@ psycopg[binary]>=3.1,<4
 # La terminaison TLS elle-même n'utilise que la bibliothèque standard de Python
 # (outils/proxy_https.py) : aucun serveur supplémentaire à installer.
 cryptography>=42,<47
+
+# Lecture du fichier de production (.xlsx) : l'import des cabines attendues.
+# Python pur, aucune dépendance système — s'installe sur un Windows nu comme le
+# reste. Sert aussi, à terme, à relire les exports produits par le WMS.
+openpyxl>=3.1,<4

@@ -305,9 +305,15 @@ class Cabine(models.Model):
     GAUCHE, MILIEU, DROITE = "G", "M", "D"
     PLACES = [(GAUCHE, "Gauche"), (MILIEU, "Milieu"), (DROITE, "Droite")]
 
+    #: Le dernier groupe va de 1 à 3 chiffres. Il en exigeait exactement deux, et
+    #: refusait donc les 94 cabines « 25_49_400 » du fichier de production : une
+    #: semaine qui dépasse 99 cabines existe, la règle ne le prévoyait pas. Les
+    #: deux premiers groupes restent stricts — ce sont l'année et la semaine.
+    MOTIF_NUMERO = r"^\d{2}_\d{2}_\d{1,3}$"
+
     numero = models.CharField(
         max_length=16, unique=True,
-        validators=[RegexValidator(r"^\d{2}_\d{2}_\d{2}$", "Format attendu : xx_xx_xx")])
+        validators=[RegexValidator(MOTIF_NUMERO, "Format attendu : xx_xx_xx (jusqu'à 3 chiffres à la fin)")])
     # Facultatif en base : une cabine express se range sans chantier. L'obligation est
     # portée par clean() pour les cabines normales, et par le service pour la sortie.
     chantier = models.CharField(max_length=6, blank=True, default="",
@@ -613,3 +619,109 @@ class MouvementCabine(models.Model):
 
     def __str__(self):
         return f"{self.cabine_numero} — {self.get_type_display()} — {self.date:%d/%m/%Y %H:%M}"
+
+class CabineAttendue(models.Model):
+    """Spécifications des cabines à venir, importées du fichier de production.
+
+    Cette table ne dit PAS ce qui est en stock : elle dit ce qu'on ATTEND, et à
+    quoi chaque cabine ressemble. Une cabine entre en stock quand elle arrive
+    physiquement ; l'opérateur saisit alors son numéro, et tout le reste vient
+    d'ici — plus besoin de lire la fiche papier collée dessus.
+
+    Deux niveaux de champs, délibérément :
+
+    - **explicites** : ceux qu'une requête cherche ou qu'une `Cabine` reprend à
+      l'entrée. Ils ont leur colonne, leur index, leur validateur.
+    - **`specifications`** : le reste de la ligne, colonne par colonne, tel quel.
+      Le fichier de production compte 67 colonnes tenues à la main ; en figer 45
+      dans le schéma imposerait une migration à chaque colonne ajoutée ou
+      renommée. Rien dans la logique du WMS ne s'appuie dessus : c'est de la
+      donnée à afficher. Voir `docs/requetes-sql.sql` pour l'interroger en SQL.
+
+    Le montant net produit n'est jamais importé. L'entrepôt n'en a aucun usage,
+    et le compte de test est partagé entre tous les testeurs.
+    """
+
+    numero = models.CharField(
+        "n° de cabine", max_length=16, unique=True,
+        validators=[RegexValidator(Cabine.MOTIF_NUMERO,
+                                   "Format attendu : xx_xx_xx (jusqu'à 3 chiffres à la fin)")])
+    #: Colonne « NUM UNIQUE » du fichier : un compteur de production (1133), ou
+    #: une référence fournisseur (AF-3164). Trois formats y cohabitent, il ne peut
+    #: donc pas servir de clé — mais on le cherche, il est parfois le seul repère
+    #: dont l'atelier dispose.
+    num_unique = models.CharField("n° unique production", max_length=32, blank=True,
+                                  default="", db_index=True)
+
+    chantier = models.CharField(max_length=6, blank=True, default="",
+                                validators=[RegexValidator(r"^\d{6}$",
+                                            "Le chantier doit comporter 6 chiffres.")])
+    #: Le fichier écrit parfois « 251213-1 » : le chantier 251213, lot 1. Le WMS
+    #: n'accepte que 6 chiffres — la valeur brute est conservée ici pour ne pas
+    #: perdre l'information, et `chantier` reste vide. L'écran d'import le signale,
+    #: l'opérateur saisira le chantier à l'entrée.
+    chantier_brut = models.CharField("chantier tel qu'écrit", max_length=32, blank=True,
+                                     default="")
+
+    gamme = models.CharField(max_length=60, blank=True, default="")
+    modele = models.CharField(max_length=120, blank=True, default="")
+    quantite = models.PositiveSmallIntegerField("quantité", default=1)
+    semaine_production = models.CharField("semaine de production", max_length=16,
+                                          blank=True, default="")
+    jour = models.CharField(max_length=16, blank=True, default="")
+    semaine_estimee = models.CharField("semaine estimée", max_length=16, blank=True,
+                                       default="")
+
+    revendeur = models.CharField(max_length=120, blank=True, default="")
+    client = models.CharField(max_length=120, blank=True, default="")
+    tissu_bk = models.CharField("tissu BK", max_length=32, blank=True, default="")
+    tissu_aq = models.CharField("tissu AQ", max_length=32, blank=True, default="")
+    tissu_ext = models.CharField("tissu extérieur", max_length=32, blank=True, default="")
+    fond_cabine = models.CharField("fond de cabine", max_length=64, blank=True, default="")
+
+    specifications = models.JSONField("spécifications", default=dict, blank=True)
+
+    fichier = models.CharField("fichier d'origine", max_length=200, blank=True, default="")
+    importe_le = models.DateTimeField("importé le", auto_now=True)
+    importe_par = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="imports_cabines", verbose_name="importé par")
+
+    class Meta:
+        verbose_name = "cabine attendue"
+        verbose_name_plural = "cabines attendues"
+        ordering = ["numero"]
+
+    def save(self, *args, **kwargs):
+        self.numero = (self.numero or "").strip()
+        # `full_clean` n'est pas appelé par `save()` : sans cela un numéro hors
+        # format entrerait en base par l'import, et le WMS refuserait ensuite la
+        # cabine qu'il a lui-même annoncée.
+        self.clean_fields()
+        super().save(*args, **kwargs)
+
+    @property
+    def chantier_a_saisir(self):
+        """Vrai quand le fichier portait un chantier que le WMS ne peut pas stocker."""
+        return bool(self.chantier_brut and not self.chantier)
+
+    def champs_cabine(self):
+        """Les champs à recopier dans la `Cabine` créée à l'entrée.
+
+        Un seul endroit décide de cette correspondance : l'écran d'entrée et le
+        service d'import la lisaient sinon chacun de leur côté, et un champ ajouté
+        ici était oublié là.
+        """
+        return {
+            "numero": self.numero,
+            "chantier": self.chantier,
+            "modele": self.modele,
+            "revendeur": self.revendeur,
+            "client": self.client,
+            "tissu_bk": self.tissu_bk,
+            "tissu_aq": self.tissu_aq,
+            "fond_cabine": self.fond_cabine,
+        }
+
+    def __str__(self):
+        return f"{self.numero} — attendue (chantier {self.chantier or self.chantier_brut or '—'})"

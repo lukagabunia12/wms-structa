@@ -584,3 +584,18 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
   font-size:17px;border-radius:var(--radius);box-shadow:0 2px 10px rgba(191,78,20,.28)}
 .fichier.btn-fiche:hover{background:#A8430F}
 .fichier.btn-fiche:active{transform:scale(.995)}
+
+/* ==================== tableau de caractéristiques ==========================
+   Deux colonnes, libellé à gauche, valeur à droite : la forme des spécifications
+   d'une cabine et du rapport d'import. Le tableau défile SEUL en largeur — une
+   valeur longue ne doit pas faire déborder la page entière.                  */
+.specs{overflow-x:auto;margin-top:8px;border:1px solid var(--ligne);border-radius:var(--radius-s);background:var(--surface)}
+.specs table{width:100%;border-collapse:collapse;font-size:13px}
+.specs th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);padding:8px 11px;border-bottom:1px solid var(--ligne);background:var(--surface-2)}
+.specs td{padding:7px 11px;border-bottom:1px solid var(--ligne);vertical-align:top}
+.specs tr:last-child td{border-bottom:none}
+.specs td:first-child{color:var(--muted);white-space:nowrap;width:1%}
+/* Rapport d'import : la ligne et le numéro lu ne se coupent pas en deux
+   (« AF-\A 3164 » se lisait comme deux valeurs). Seul le motif s'enroule. */
+.specs .court{white-space:nowrap;width:1%;font-family:var(--f-data)}
+.specs td:last-child{font-family:var(--f-data);color:var(--txt);word-break:break-word}

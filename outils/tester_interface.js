@@ -63,7 +63,13 @@ const cas = [
   ['collé d’un bloc', '260347', '26_03_47'],
   ['déjà formaté', '26_03_47', '26_03_47'],
   ['lettres ignorées', '26aa03zz47', '26_03_47'],
-  ['septième chiffre refusé', '2603479', '26_03_47'],
+  // La règle a changé : le dernier groupe va de 1 à 3 chiffres. Le fichier de
+  // production compte des semaines à plus de 99 cabines (« 25_49_400 »), que le
+  // masque tronquait silencieusement en un numéro valide — celui d'une AUTRE
+  // cabine. Le septième chiffre est donc accepté, le huitième toujours refusé.
+  ['septième chiffre accepté', '2603479', '26_03_479'],
+  ['huitième chiffre refusé', '26034799', '26_03_479'],
+  ['trois chiffres du fichier de production', '2549400', '25_49_400'],
   ['saisie encore partielle', '2603', '26_03'],
 ];
 for (const [nom, saisi, attendu] of cas) {

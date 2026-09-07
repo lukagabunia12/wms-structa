@@ -5,6 +5,10 @@ let EMPS = [];
 let STAGING = null;
 let CATS = [];
 let DROITS = {};
+// Compte administrateur : au-delà des 7 droits fins. Seul l'import du fichier de
+// production s'y appuie — il réécrit les caractéristiques de milliers de cabines
+// d'un coup, ce n'est pas un geste de poste.
+let ADMIN = false;
 
 // N'affiche pas une commande que le serveur refusera : sans ce contrôle, l'opérateur
 // remplit un formulaire pour découvrir un 403 à la validation.
@@ -23,8 +27,12 @@ const FORMAT_NUMERO = /^\d{2}_\d{2}_\d{2}$/;
 
 /** « 260347 » → « 26_03_47 ». Tout ce qui n'est pas un chiffre est ignoré. */
 function formaterNumero(brut) {
-  const c = String(brut || '').replace(/\D/g, '').slice(0, 6);
-  return c.replace(/^(\d{2})(\d{0,2})(\d{0,2}).*$/,
+  // Sept chiffres, pas six : le dernier groupe va de 1 à 3 chiffres. Le fichier
+  // de production compte des semaines à plus de 99 cabines (« 25_49_400 »), que
+  // le masque tronquait silencieusement en « 25_49_40 » — un numéro valide, mais
+  // celui d'une autre cabine.
+  const c = String(brut || '').replace(/\D/g, '').slice(0, 7);
+  return c.replace(/^(\d{2})(\d{0,2})(\d{0,3}).*$/,
     (_, a, b, d) => a + (b ? '_' + b : '') + (d ? '_' + d : ''));
 }
 
@@ -36,7 +44,7 @@ function masquerNumero(champ) {
   champ.setAttribute('inputmode', 'numeric');
   champ.setAttribute('autocomplete', 'off');
   champ.setAttribute('autocapitalize', 'off');
-  champ.setAttribute('maxlength', '8');
+  champ.setAttribute('maxlength', '9');   // 7 chiffres + 2 tirets bas
   champ.dataset.masqueNumero = champ.dataset.masqueNumero || 'on';
   const poser = () => {
     if (champ.dataset.masqueNumero === 'off') return;
@@ -415,7 +423,9 @@ const MENU_CABINES = [
   // suppression au même endroit. Il est ici, dans le référentiel, parce que
   // c'est là qu'on vient quand on cherche à ajouter ou corriger une travée.
   ['Référentiel', [['emplacements','Emplacements','box'],
-                   ['zones','Zones','tag'], ['etiquettes','Étiquettes','print']]],
+                   ['zones','Zones','tag'], ['etiquettes','Étiquettes','print'],
+                   // Administrateurs seulement — voir `menuLateral`.
+                   ['import','Fichier de production','clip']]],
 ];
 
 const MENU_ARTICLES = [
@@ -438,9 +448,12 @@ const MENU_PAR_PROFIL = {
 function menuLateral() {
   const base = VOLET_ARTICLES ? MENU_CABINES.concat(MENU_ARTICLES) : MENU_CABINES;
   const permis = MENU_PAR_PROFIL[profil()];
-  if (!permis) return base;   // gestion : tout
+  // L'import ne dépend pas du profil mais du compte : un responsable logistique a
+  // le profil « gestion » sans être administrateur. Le serveur refuse de toute
+  // façon (403) ; ceci évite seulement de proposer un bouton sans effet.
+  const ouvert = (cle) => (cle !== 'import' || ADMIN) && (!permis || permis.includes(cle));
   return base
-    .map(([titre, liens]) => [titre, liens.filter(([cle]) => permis.includes(cle))])
+    .map(([titre, liens]) => [titre, liens.filter(([cle]) => ouvert(cle))])
     .filter(([, liens]) => liens.length);
 }
 
@@ -484,6 +497,7 @@ function go(name) {
     cabines: renderCabines, chantier: renderChantier, emplacements: renderEmplacements,
     gestionEmplacements: renderGestionEmplacements, archives: renderArchives,
     journal: renderJournal, zones: renderZones, etiquettes: renderEtiquettes, more: renderMore,
+    import: renderImport,
     // Volet articles — archivé, joignable seulement si VOLET_ARTICLES est réactivé
     reception: renderReception, sortie: renderSortie, search: renderSearch,
     transfert: renderTransfert, ranger: renderRanger, inventaire: renderInventaire,
@@ -4572,17 +4586,145 @@ async function envoyerPhotoFiche(fichier) {
   }
 }
 
+/* ===========================================================================
+   ENTRÉE D'UNE CABINE — le numéro d'abord, le reste vient du fichier
+
+   L'écran demandait la photo de la fiche papier, puis onze champs à relire.
+   Depuis que la production fournit ses spécifications (écran « Fichier de
+   production »), tout est déjà connu : la seule chose que l'opérateur a à
+   apporter, c'est QUELLE cabine il a devant lui.
+
+   Le chemin manuel n'a pas disparu, et ne doit pas disparaître : une cabine
+   absente du fichier — un salon, une occasion, une ligne oubliée — doit pouvoir
+   entrer en stock. Elle prend alors l'ancien parcours, photo comprise.
+   =========================================================================== */
+
+const MOTIF_NUMERO_CABINE = /^\d{2}_\d{2}_\d{1,3}$/;
+
 async function renderEntree() {
   await refsCabine();
   layout(`<h2 class="title">Entrée d'une cabine</h2>
     <div class="card">
-      <div class="sec">1 · Photographier la fiche</div>
+      <div class="sec">1 · Quelle cabine ?</div>
+      <label for="eNum">N° de cabine</label>
+      <input id="eNum" placeholder="Ex. 26_02_49" autocomplete="off">
+      <div class="meta" style="margin-top:6px">Celui de la fiche ou de l'étiquette. Les caractéristiques viennent du fichier de production.</div>
+      <div id="eEtat" style="margin-top:10px"></div>
+    </div>
+    <div id="eSuite"></div>`, 'entree');
+
+  masquerNumero($('#eNum'));
+  const champ = $('#eNum');
+  const chercher = debounce(() => interrogerAttendue(champ.value.trim()), 350);
+  champ.oninput = chercher;
+  champ.onkeydown = (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); interrogerAttendue(champ.value.trim()); }
+  };
+  champ.focus();
+}
+
+/** Le numéro saisi est-il déjà en stock, annoncé par la production, ou inconnu ?
+    Trois réponses, trois écrans. L'ordre compte : une cabine déjà en stock ne se
+    recrée pas, et le dire tout de suite évite un 400 après onze champs remplis. */
+async function interrogerAttendue(numero) {
+  const etat = $('#eEtat'), suite = $('#eSuite');
+  if (!etat || !suite) return;
+  if (!numero) { etat.innerHTML = ''; suite.innerHTML = ''; return; }
+  if (!MOTIF_NUMERO_CABINE.test(numero)) {
+    etat.innerHTML = `<div class="meta">Format attendu : 26_02_49 (jusqu'à 3 chiffres à la fin).</div>`;
+    suite.innerHTML = '';
+    return;
+  }
+
+  etat.innerHTML = '<div class="meta">Recherche…</div>';
+  // Déjà en stock ? La question se pose d'abord : `?numero=` cherche « contient »,
+  // on retient donc la correspondance exacte et rien d'autre.
+  try {
+    const d = await api('/cabines/?numero=' + encodeURIComponent(numero));
+    const deja = (d.results || []).find(c => c.numero === numero);
+    if (deja) {
+      etat.innerHTML = `<div class="banner">La cabine ${esc(numero)} est <b>déjà enregistrée</b>${deja.position ? ` — rangée en ${esc(deja.position)}` : ''}.</div>`;
+      suite.innerHTML = `<div class="card" style="margin-top:12px">
+        <button class="btn" id="eVoir">Ouvrir sa fiche</button></div>`;
+      $('#eVoir').onclick = () => ouvrirEcran(() => ficheCabine(deja, renderEntree), 'fiche');
+      return;
+    }
+  } catch (e) { etat.innerHTML = `<div class="banner">${esc(e.message)}</div>`; return; }
+
+  let attendue = null;
+  try {
+    attendue = await api('/cabines-attendues/' + encodeURIComponent(numero) + '/');
+  } catch (_) { attendue = null; }   // 404 : pas dans le fichier, saisie manuelle
+
+  if (attendue) { etat.innerHTML = ''; blocAttendue(attendue); return; }
+  etat.innerHTML = `<div class="banner">${esc(numero)} n'est pas dans le fichier de production.
+    ${peut('data') ? 'Vérifie que le dernier fichier a bien été importé. ' : ''}Les caractéristiques sont à saisir.</div>`;
+  blocSaisieManuelle(numero);
+}
+
+const LIGNES_ATTENDUE = [
+  ['chantier', 'Chantier'], ['gamme', 'Gamme'], ['modele', 'Modèle'],
+  ['semaine_production', 'Semaine de production'], ['jour', 'Jour'],
+  ['revendeur', 'Revendeur'], ['client', 'Client'],
+  ['tissu_bk', 'Tissu BK'], ['tissu_aq', 'Tissu AQ'], ['tissu_ext', 'Tissu extérieur'],
+  ['fond_cabine', 'Fond de cabine'], ['num_unique', 'N° unique production'],
+];
+
+/** La cabine est annoncée : on montre ce qu'on sait, on ne le fait pas resaisir.
+
+    Les valeurs ne sont pas dans des champs de saisie, et c'est volontaire : les
+    rendre modifiables ferait de cet écran une seconde source de vérité, qui
+    divergerait du fichier au premier import suivant. Une caractéristique fausse
+    se corrige dans le fichier — ou après création, par « Corriger la fiche ». */
+function blocAttendue(a) {
+  const lignes = LIGNES_ATTENDUE
+    .filter(([cle]) => (a[cle] || '') !== '')
+    .map(([cle, lib]) => `<tr><td>${esc(lib)}</td><td><b>${esc(a[cle])}</b></td></tr>`).join('');
+  const specs = Object.entries(a.specifications || {});
+
+  $('#eSuite').innerHTML = `<div class="card" style="margin-top:12px">
+    <div class="banner" style="background:var(--ok-tint);color:var(--ok)">
+      Cabine reconnue dans le fichier de production. Rien à recopier.</div>
+    <div class="specs"><table><tbody>${lignes}</tbody></table></div>
+    ${specs.length ? `<details style="margin-top:10px"><summary class="meta">Toutes les caractéristiques (${specs.length})</summary>
+      <div class="specs"><table><tbody>${specs
+        .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
+    ${a.chantier_a_saisir ? `<div class="banner" style="margin-top:12px">
+        Le fichier porte le chantier « ${esc(a.chantier_brut)} », que le WMS ne peut pas
+        enregistrer tel quel : il attend 6 chiffres. Saisis le n° de chantier.</div>
+      <label for="eChantier">N° de chantier</label>
+      <input id="eChantier" placeholder="6 chiffres" inputmode="numeric" autocomplete="off" maxlength="6">` : ''}
+    <label for="e_type" style="margin-top:12px">Type de cabine</label>
+    <select id="e_type">${REFS_CABINE.types.map(t =>
+      `<option value="${t.code}">${esc(t.libelle)}</option>`).join('')}</select>
+    <div class="meta" style="margin-top:6px">${esc(aideChantier())}</div>
+    <button class="btn orange" id="eCreer">Créer la cabine ${esc(a.numero)}</button>
+  </div>
+  <div id="apres"></div>`;
+
+  $('#eCreer').onclick = async (ev) => {
+    const bouton = ev.currentTarget;
+    const corps = { ...a.champs_cabine, type_cabine: $('#e_type').value };
+    const saisi = $('#eChantier');
+    if (saisi) corps.chantier = saisi.value.trim();
+    bouton.disabled = true;
+    try {
+      await creerCabine(corps);
+    } catch (e) { bouton.disabled = false; toast(e.message, 'err'); }
+  };
+}
+
+/** Chemin manuel, inchangé : photo de la fiche puis relecture des champs.
+    Sert aux cabines absentes du fichier — salon, occasion, ligne oubliée. */
+function blocSaisieManuelle(numero) {
+  $('#eSuite').innerHTML = `<div class="card" style="margin-top:12px">
+      <div class="sec">2 · Photographier la fiche (facultatif)</div>
       <input type="file" id="photo" accept="image/*" capture="environment">
       <div class="meta" style="margin-top:6px">Cadre le tableau bien à plat. La photo est lue par le serveur : rien à installer sur le téléphone.</div>
       <div id="ocrEtat"></div>
     </div>
     <div class="card" style="margin-top:12px">
-      <div class="sec">2 · Vérifier et compléter</div>
+      <div class="sec">3 · Vérifier et compléter</div>
       <div id="champs">${CHAMPS_ENTREE.map(([cle, lib, ph]) =>
         `<label>${esc(lib)}</label><input id="e_${cle}" placeholder="${esc(ph)}" autocomplete="off">`).join('')}
         <label>Type de cabine</label>
@@ -4591,9 +4733,10 @@ async function renderEntree() {
       </div>
       <button class="btn orange" id="eCreer">Créer la cabine</button>
     </div>
-    <div id="apres"></div>`, 'entree');
+    <div id="apres"></div>`;
 
   masquerNumero($('#e_numero'));
+  $('#e_numero').value = numero;
   $('#photo').onchange = (ev) => envoyerPhotoFiche(ev.target.files[0]);
   $('#eCreer').onclick = creerCabineDepuisEntree;
 }
@@ -4602,28 +4745,33 @@ async function creerCabineDepuisEntree() {
   const corps = { type_cabine: $('#e_type').value };
   CHAMPS_ENTREE.forEach(([cle]) => { corps[cle] = $('#e_' + cle).value.trim(); });
   if (!corps.numero) { toast('Le n° de cabine est obligatoire.', 'err'); return; }
-  try {
-    const c = await api('/cabines/', { method: 'POST', body: corps });
-    toast('Cabine ' + c.numero + ' créée', 'ok');
-    noterRecentCabine(c);
-    // Enchaîner sur le rangement : c'est le geste suivant au poste.
-    $('#apres').innerHTML = `<div class="card" style="margin-top:12px">
-      <div class="r">${esc(c.numero)} — ${esc(c.chantier || 'sans chantier')}</div>
-      <div class="sec" style="margin-top:12px">2 · Coller l'étiquette</div>
-      <button class="btn" id="aEtiq">Imprimer l'étiquette QR</button>
-      <div class="meta" style="margin-top:6px">À coller sur la fiche ou sur la cabine : c'est elle qui rend le scan possible ensuite.</div>
-      <div class="sec" style="margin-top:14px">3 · Ranger</div>
-      <div class="row">
-        <button class="btn ghost" id="aScan" style="margin-top:0">Scanner l'emplacement</button>
-        <button class="btn ghost" id="aFiche" style="margin-top:0">Saisir le code</button>
-      </div>
-      <button class="btn ghost" id="aPlus">Entrer une autre cabine</button>
-      <div id="aZone"></div></div>`;
-    $('#aEtiq').onclick = () => printCabineLabel(c);
-    $('#aPlus').onclick = renderEntree;
-    $('#aScan').onclick = () => { CABINE_A_RANGER = c; go('trouver'); };
-    $('#aFiche').onclick = () => ficheCabine(c, renderEntree);
-  } catch (e) { toast(e.message, 'err'); }
+  try { await creerCabine(corps); } catch (e) { toast(e.message, 'err'); }
+}
+
+/** Création, puis les deux gestes qui suivent au poste : coller l'étiquette,
+    ranger. Un seul endroit crée une cabine — les deux chemins d'entrée
+    aboutissaient sinon à deux enchaînements différents. */
+async function creerCabine(corps) {
+  const c = await api('/cabines/', { method: 'POST', body: corps });
+  toast('Cabine ' + c.numero + ' créée', 'ok');
+  noterRecentCabine(c);
+  $('#apres').innerHTML = `<div class="card" style="margin-top:12px">
+    <div class="r">${esc(c.numero)} — ${esc(c.chantier || 'sans chantier')}</div>
+    <div class="sec" style="margin-top:12px">Coller l'étiquette</div>
+    <button class="btn" id="aEtiq">Imprimer l'étiquette QR</button>
+    <div class="meta" style="margin-top:6px">À coller sur la fiche ou sur la cabine : c'est elle qui rend le scan possible ensuite.</div>
+    <div class="sec" style="margin-top:14px">Ranger</div>
+    <div class="row">
+      <button class="btn ghost" id="aScan" style="margin-top:0">Scanner l'emplacement</button>
+      <button class="btn ghost" id="aFiche" style="margin-top:0">Saisir le code</button>
+    </div>
+    <button class="btn ghost" id="aPlus">Entrer une autre cabine</button>
+    <div id="aZone"></div></div>`;
+  $('#aEtiq').onclick = () => printCabineLabel(c);
+  $('#aPlus').onclick = renderEntree;
+  $('#aScan').onclick = () => { CABINE_A_RANGER = c; go('trouver'); };
+  $('#aFiche').onclick = () => ficheCabine(c, renderEntree);
+  return c;
 }
 
 /* --- Gestion des emplacements : fusionnée dans « Emplacements » -------------
@@ -5246,6 +5394,7 @@ async function boot() {
     api('/moi/').catch(() => null),
   ]);
   DROITS = (moi && moi.droits) || {};
+  ADMIN = Boolean(moi && moi.administrateur);
   // Le nom affiché vient du serveur : depuis que la casse de l'identifiant est
   // tolérée, ce qui a été tapé n'est pas forcément l'orthographe du compte.
   if (moi && (moi.nom || moi.username)) {
@@ -5267,3 +5416,207 @@ async function categories() {
 }
 
 if (token) { boot(); } else { renderLogin(); }
+
+/* ===========================================================================
+   FICHIER DE PRODUCTION — l'import des cabines attendues
+
+   La production tient un classeur Excel des cabines à venir, avec toutes leurs
+   caractéristiques. L'importer ici évite de recopier onze champs à chaque
+   entrée : l'opérateur n'aura plus qu'à saisir le numéro.
+
+   Deux temps, jamais un seul : on ANALYSE le fichier, on montre ce qui va se
+   passer, et on n'écrit qu'après confirmation. Le fichier réel contient de
+   vraies erreurs de saisie — découvrir après coup qu'on a importé le mauvais
+   classeur n'est pas une option.
+
+   Écran réservé aux administrateurs. Le serveur le refuse aussi (403) : ce
+   n'est pas l'interface qui protège, elle évite seulement de proposer un
+   bouton qui ne marcherait pas.
+   =========================================================================== */
+
+let IMPORT = { fichier: null, rapport: null };
+
+async function renderImport() {
+  if (!ADMIN) {
+    layout(`<h2 class="title">Fichier de production</h2>
+      <div class="banner">L'import du fichier de production est réservé aux comptes
+      administrateurs.</div>`, 'import');
+    return;
+  }
+  IMPORT = { fichier: null, rapport: null };
+  layout(`<h2 class="title">Fichier de production</h2>
+    <div id="impEtatBase"><div class="empty">Chargement…</div></div>
+    <div class="card" style="margin-top:12px">
+      <div class="sec">Importer un classeur</div>
+      <input type="file" id="impFichier" accept=".xlsx,.xlsm">
+      <div class="meta" style="margin-top:6px">Le classeur Excel de la production
+        (.xlsx). La colonne <b>CABINE</b> identifie chaque ligne. Rien n'est écrit
+        avant que vous ne confirmiez.</div>
+    </div>
+    <div id="impRapport"></div>`, 'import');
+
+  $('#impFichier').onchange = (ev) => analyserFichierImport(ev.target.files[0]);
+  etatCabinesAttendues();
+}
+
+/** Ce que la table contient déjà. Sans ce repère, on ne sait pas si un import a
+    jamais eu lieu, ni de quel fichier vient ce qui est en base. */
+async function etatCabinesAttendues() {
+  const zone = $('#impEtatBase');
+  if (!zone) return;
+  try {
+    const d = await api('/cabines-attendues/?ordering=-importe_le&page=1');
+    const derniere = (d.results || [])[0];
+    zone.innerHTML = `<div class="card">
+      <div class="r" style="font-size:18px;font-weight:700">${d.count} cabine${d.count === 1 ? '' : 's'} attendue${d.count === 1 ? '' : 's'}</div>
+      <div class="meta" style="margin-top:4px">${derniere
+        ? `Dernier import : ${esc(derniere.fichier || 'fichier sans nom')}, le
+           ${new Date(derniere.importe_le).toLocaleString('fr-FR')}${derniere.importe_par_nom ? ' par ' + esc(derniere.importe_par_nom) : ''}`
+        : 'Aucun import pour l’instant : les entrées se font entièrement à la main.'}</div>
+      <div class="meta" style="margin-top:6px">Ces lignes ne sont pas du stock : elles
+        décrivent ce qu'on attend. Une cabine entre en stock quand elle arrive.</div>
+    </div>`;
+  } catch (e) { zone.innerHTML = `<div class="banner">${esc(e.message)}</div>`; }
+}
+
+async function analyserFichierImport(fichier) {
+  const zone = $('#impRapport');
+  if (!fichier || !zone) return;
+  IMPORT = { fichier, rapport: null };
+  zone.innerHTML = `<div class="card" style="margin-top:12px"><div class="meta">Lecture de
+    ${esc(fichier.name)} (${ko(fichier.size)} Ko)… quelques secondes.</div></div>`;
+  try {
+    const corps = new FormData();
+    corps.append('fichier', fichier);
+    const r = await fetchReseau(API + '/cabines-attendues/analyser/', {
+      method: 'POST',
+      headers: token ? { Authorization: 'Token ' + token } : {},
+      body: corps,
+    });
+    const txt = await r.text();
+    let d = null;
+    try { d = txt ? JSON.parse(txt) : null; }
+    catch (_) { throw new Error('Réponse illisible du serveur.'); }
+    if (!r.ok) throw new Error(messageErreur(d, r.status));
+    IMPORT.rapport = d;
+    dessinerRapportImport(d);
+  } catch (e) {
+    zone.innerHTML = `<div class="card" style="margin-top:12px">
+      <div class="banner">${esc(e.message)}</div></div>`;
+  }
+}
+
+const LIGNE_RAPPORT = (libelle, valeur, fort) =>
+  `<tr><td>${esc(libelle)}</td><td>${fort ? '<b>' + valeur + '</b>' : valeur}</td></tr>`;
+
+function dessinerRapportImport(d) {
+  const zone = $('#impRapport');
+  if (!zone) return;
+  const erreurs = d.erreurs || [];
+  const MONTRE = 60;
+
+  zone.innerHTML = `<div class="card" style="margin-top:12px">
+    <div class="sec">Ce que cet import ferait</div>
+    <div class="meta" style="margin-bottom:8px">${esc(d.fichier)} — ${d.lignes} ligne${d.lignes === 1 ? '' : 's'}, ${d.colonnes} colonnes</div>
+    <div class="specs"><table><tbody>
+      ${LIGNE_RAPPORT('Lignes retenues', d.retenues, true)}
+      ${LIGNE_RAPPORT('· nouvelles', d.nouvelles)}
+      ${LIGNE_RAPPORT('· à mettre à jour', d.modifiees)}
+      ${LIGNE_RAPPORT('· inchangées', d.inchangees)}
+      ${LIGNE_RAPPORT('Lignes refusées', erreurs.length, erreurs.length > 0)}
+      ${d.sans_chantier ? LIGNE_RAPPORT('Sans n° de chantier exploitable', d.sans_chantier) : ''}
+      ${d.absentes_du_fichier ? LIGNE_RAPPORT('Déjà en base et absentes de ce fichier', d.absentes_du_fichier + ' — conservées') : ''}
+    </tbody></table></div>
+
+    ${d.sans_chantier ? `<div class="banner" style="margin-top:12px">
+      ${d.sans_chantier} ligne${d.sans_chantier === 1 ? '' : 's'} porte${d.sans_chantier === 1 ? '' : 'nt'} un chantier
+      que le WMS ne peut pas enregistrer — « 251213-1 » au lieu de 6 chiffres. La
+      cabine est quand même importée avec toutes ses caractéristiques ; le n° de
+      chantier sera demandé à l'entrée.</div>` : ''}
+
+    ${erreurs.length ? `<details style="margin-top:12px" open>
+      <summary class="meta"><b>${erreurs.length} ligne${erreurs.length === 1 ? '' : 's'} refusée${erreurs.length === 1 ? '' : 's'}</b> — à corriger dans le classeur</summary>
+      <div class="specs" style="max-height:320px;overflow:auto"><table><thead>
+        <tr><th>Ligne</th><th>N° lu</th><th>Motif</th></tr></thead><tbody>
+        ${erreurs.slice(0, MONTRE).map(e => `<tr><td class="court">${e.ligne}</td>
+          <td class="court">${esc(e.numero || e.indice || '—')}</td>
+          <td>${esc(e.motif)}</td></tr>`).join('')}
+      </tbody></table></div>
+      ${erreurs.length > MONTRE ? `<div class="meta" style="margin-top:6px">${erreurs.length - MONTRE} autres non affichées — la liste complète est dans le fichier ci-dessous.</div>` : ''}
+      <button class="btn ghost" id="impCsv">${icon('in', 17)} Télécharger la liste des refus (CSV)</button>
+    </details>` : ''}
+
+    ${d.colonnes_libres && d.colonnes_libres.length ? `<details style="margin-top:8px">
+      <summary class="meta">${d.colonnes_libres.length} colonnes conservées telles quelles</summary>
+      <div class="meta" style="margin-top:6px">${esc(d.colonnes_libres.join(' · '))}</div>
+      <div class="meta" style="margin-top:6px">Elles sont enregistrées et affichées sur
+        la fiche, sans que le WMS s'appuie dessus. « MONTANT NET PRODUIT » est la seule
+        colonne volontairement ignorée.</div></details>` : ''}
+
+    ${d.retenues ? `<button class="btn orange" id="impOk">Importer ${d.retenues} ligne${d.retenues === 1 ? '' : 's'}</button>`
+      : `<div class="banner" style="margin-top:12px">Aucune ligne exploitable dans ce
+         fichier. Rien à importer.</div>`}
+    <button class="btn ghost" id="impAnnul">Choisir un autre fichier</button>
+  </div>`;
+
+  const csv = $('#impCsv');
+  if (csv) csv.onclick = () => telechargerRefus(d);
+  const annul = $('#impAnnul');
+  if (annul) annul.onclick = renderImport;
+  const ok = $('#impOk');
+  if (ok) ok.onclick = () => appliquerImport(ok);
+}
+
+/** La liste des refus en CSV : c'est dans Excel qu'on les corrige, pas à l'écran.
+    Point-virgule et BOM — Excel en français ouvre le reste en une seule colonne. */
+function telechargerRefus(d) {
+  const lignes = [['Ligne', 'N° lu', 'Indice', 'Motif']]
+    .concat((d.erreurs || []).map(e => [e.ligne, e.numero || '', e.indice || '', e.motif]));
+  const texte = '﻿' + lignes
+    .map(l => l.map(v => `"${String(v).replace(/"/g, '""')}"`).join(';')).join('\r\n');
+  const url = URL.createObjectURL(new Blob([texte], { type: 'text/csv;charset=utf-8' }));
+  const lien = document.createElement('a');
+  lien.href = url;
+  lien.download = 'lignes-refusees.csv';
+  document.body.appendChild(lien); lien.click(); lien.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+async function appliquerImport(bouton) {
+  if (!IMPORT.fichier || !IMPORT.rapport) return;
+  const d = IMPORT.rapport;
+  const ok = await confirmer({
+    titre: `Importer ${d.retenues} ligne(s) ?`,
+    texte: `${d.nouvelles} cabine(s) ajoutée(s), ${d.modifiees} mise(s) à jour, `
+         + `${d.inchangees} inchangée(s).\n\n`
+         + 'Les cabines attendues déjà en base et absentes de ce fichier sont '
+         + 'conservées : un import n’efface jamais.\n\n'
+         + 'Aucune cabine en stock n’est modifiée.',
+    ok: 'Importer',
+    annuler: 'Non',
+  });
+  if (!ok) return;
+
+  bouton.disabled = true;
+  bouton.textContent = 'Import en cours…';
+  try {
+    const corps = new FormData();
+    corps.append('fichier', IMPORT.fichier);
+    const r = await fetchReseau(API + '/cabines-attendues/importer/', {
+      method: 'POST',
+      headers: token ? { Authorization: 'Token ' + token } : {},
+      body: corps,
+    });
+    const txt = await r.text();
+    let rep = null;
+    try { rep = txt ? JSON.parse(txt) : null; }
+    catch (_) { throw new Error('Réponse illisible du serveur.'); }
+    if (!r.ok) throw new Error(messageErreur(rep, r.status));
+    toast(`${rep.importees} ligne(s) importée(s)`, 'ok');
+    renderImport();
+  } catch (e) {
+    bouton.disabled = false;
+    bouton.textContent = `Importer ${d.retenues} ligne(s)`;
+    toast(e.message, 'err');
+  }
+}

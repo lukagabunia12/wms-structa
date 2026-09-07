@@ -12,13 +12,21 @@
 <body>
 <div id="app"></div>
 <div id="toast"></div>
-{# Campagne de test : le serveur pré-remplit l'écran de connexion pour que les
+{% comment %}
+   Campagne de test : le serveur pré-remplit l'écran de connexion pour que les
    testeurs entrent d'un seul geste après avoir scanné le QR code. Absent en
-   dehors des campagnes — voir WMS_ACCES_TEST. #}
+   dehors des campagnes — voir WMS_ACCES_TEST.
+
+   `{# … #}` de Django ne tient QUE sur une ligne : sur plusieurs, il n'est pas
+   un commentaire et s'affichait tel quel en bas de chaque écran, sous les yeux
+   de l'opérateur. C'est `{% comment %}` qu'il faut ici.
+{% endcomment %}
 {% if acces_test %}{{ acces_test|json_script:"acces-test" }}{% endif %}
-{# Lecture QR à la caméra + génération des étiquettes. Servies en local dès que
+{% comment %}
+   Lecture QR à la caméra + génération des étiquettes. Servies en local dès que
    `python manage.py telecharger_libs` a été passé une fois : l'entrepôt n'a alors
-   plus besoin d'internet pour scanner ni pour imprimer. Sinon, repli sur le CDN. #}
+   plus besoin d'internet pour scanner ni pour imprimer. Sinon, repli sur le CDN.
+{% endcomment %}
 {% if libs_locales %}
 <script src="{% static 'app/vendor/html5-qrcode.min.js' %}?v={{ v }}"></script>
 <script src="{% static 'app/vendor/qrcode.min.js' %}?v={{ v }}"></script>

@@ -19,10 +19,14 @@ from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from . import export_inventaire, lecture_fiche, ocr_fiche, services, services_cabines
-from .models import (Article, Cabine, Categorie, Occupation, Emplacement, EtatCabine,
-                     Mouvement, MouvementCabine, Reception, Stock, Zone)
-from .serializers import (ArticleSerializer, CabineSerializer, OccupationSerializer, CategorieSerializer,
+from . import (export_inventaire, lecture_fiche, ocr_fiche, services, services_cabines,
+               services_import)
+from .models import (Article, Cabine, CabineAttendue, Categorie, Occupation,
+                     Emplacement, EtatCabine, Mouvement, MouvementCabine, Reception,
+                     Stock, Zone)
+from .permissions import EstAdministrateur
+from .serializers import (ArticleSerializer, CabineAttendueSerializer, CabineSerializer,
+                          OccupationSerializer, CategorieSerializer,
                           EmplacementSerializer, EtatCabineSerializer,
                           MouvementCabineSerializer, MouvementSerializer,
                           ReceptionSerializer, StockSerializer, ZoneSerializer)
@@ -1062,6 +1066,10 @@ def moi(request):
         "nom": u.nom or u.username,
         "role": u.role,
         "is_superuser": u.is_superuser,
+        # Au-delà des 7 droits fins : l'import du fichier de production n'est pas
+        # une case à cocher. Le front en a besoin pour ne pas proposer un écran
+        # que le serveur refusera.
+        "administrateur": u.est_administrateur,
         "droits": u.droits_effectifs(),
     })
 
@@ -1192,3 +1200,79 @@ def app_index(request):
         # en dehors des campagnes — voir ACCES_TEST dans les réglages.
         "acces_test": settings.ACCES_TEST,
     })
+
+
+class CabineAttendueViewSet(viewsets.ReadOnlyModelViewSet):
+    """Les cabines annoncées par la production, et l'import du fichier.
+
+    Cette table ne dit pas ce qui est en stock : elle dit ce qu'on attend. À
+    l'entrée, l'opérateur saisit le numéro et tout se pré-remplit — c'est la
+    raison d'être de l'écran, et pourquoi la lecture est ouverte à tout compte.
+
+    L'écriture, elle, ne passe que par les deux actions d'import, réservées aux
+    administrateurs : un fichier réécrit les caractéristiques de milliers de
+    cabines d'un coup. Aucune création ni modification à l'unité n'est exposée —
+    la source est le fichier, et lui seul, sans quoi la table divergerait de la
+    production sans que personne ne sache laquelle des deux croire.
+    """
+
+    queryset = CabineAttendue.objects.select_related("importe_par").all()
+    serializer_class = CabineAttendueSerializer
+    permission_classes = [EstAdministrateur]
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ["numero", "num_unique", "chantier", "chantier_brut", "client",
+                     "revendeur", "modele", "gamme"]
+    ordering_fields = ["numero", "chantier", "semaine_production", "importe_le"]
+    #: Le numéro porte des tirets bas : sans cette expression, le routeur de DRF
+    #: ne reconnaît pas « /cabines-attendues/26_02_49/ » et rend un 404 muet.
+    lookup_field = "numero"
+    lookup_value_regex = r"[0-9_]+"
+
+    #: 10 Mo : le fichier de production en fait un demi aujourd'hui, et grossit
+    #: d'une semaine à l'autre. Au-delà, ce n'est plus lui.
+    TAILLE_MAX = 10 * 1024 * 1024
+
+    def _fichier(self, request):
+        fichier = request.FILES.get("fichier")
+        if fichier is None:
+            raise ErreurAPI({"erreur": [
+                "Aucun fichier reçu. Choisissez le fichier Excel de production."]})
+        if fichier.size > self.TAILLE_MAX:
+            raise ErreurAPI({"erreur": [
+                f"Fichier trop lourd ({fichier.size // (1024 * 1024)} Mo). "
+                "10 Mo au maximum."]})
+        if not fichier.name.lower().endswith((".xlsx", ".xlsm")):
+            raise ErreurAPI({"erreur": [
+                f"« {fichier.name} » n'est pas un classeur Excel. Attendu : .xlsx. "
+                "Un .xls ou un .csv doit d'abord être enregistré au format .xlsx."]})
+        return fichier
+
+    @action(detail=False, methods=["post"])
+    def analyser(self, request):
+        """Ce qu'un import ferait, sans rien écrire.
+
+        Personne ne devrait découvrir qu'un fichier était le mauvais après
+        l'avoir importé : l'écran montre d'abord ce compte, et n'écrit qu'après
+        confirmation.
+        """
+        fichier = self._fichier(request)
+        try:
+            rapport = services_import.analyser(fichier, nom=fichier.name)
+        except services_import.ErreurImport as e:
+            raise ErreurAPI({"erreur": [str(e)]})
+        return Response(services_import.rapport_public(rapport))
+
+    @action(detail=False, methods=["post"])
+    def importer(self, request):
+        """Applique le fichier. Tout ou rien."""
+        fichier = self._fichier(request)
+        try:
+            rapport = services_import.importer(
+                fichier, utilisateur=request.user, nom=fichier.name)
+        except services_import.ErreurImport as e:
+            raise ErreurAPI({"erreur": [str(e)]})
+        logger.info("Import cabines attendues par %s : %s ligne(s) retenue(s), "
+                    "%s refusee(s), fichier %s",
+                    request.user, rapport["retenues"], len(rapport["erreurs"]),
+                    rapport["fichier"])
+        return Response(rapport)

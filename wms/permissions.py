@@ -35,3 +35,25 @@ class DroitWMS(BasePermission):
         if par_action:
             return par_action.get(getattr(view, "action", None))
         return getattr(view, "droit_ecriture", None)
+
+
+class EstAdministrateur(BasePermission):
+    """Écriture réservée aux comptes administrateurs, au-delà des 7 droits fins.
+
+    L'import du fichier de production réécrit les caractéristiques de milliers de
+    cabines d'un coup. Ce n'est pas un geste de poste : aucune case à cocher ne
+    l'ouvre, seul le rôle « Administrateur » (ou un superutilisateur) y donne
+    accès. La lecture reste ouverte — l'écran d'entrée a besoin d'y lire la
+    cabine qu'il pré-remplit.
+    """
+
+    message = ("L'import du fichier de production est réservé aux comptes "
+               "administrateurs.")
+
+    def has_permission(self, request, view):
+        utilisateur = request.user
+        if not (utilisateur and utilisateur.is_authenticated):
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        return bool(getattr(utilisateur, "est_administrateur", False))

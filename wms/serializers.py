@@ -2,8 +2,9 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 
-from .models import (Occupation, Article, Cabine, Categorie, Emplacement, EtatCabine,
-                     Mouvement, MouvementCabine, Reception, Stock, Zone)
+from .models import (Occupation, Article, Cabine, CabineAttendue, Categorie,
+                     Emplacement, EtatCabine, Mouvement, MouvementCabine, Reception,
+                     Stock, Zone)
 
 
 class ChampNormalise(serializers.CharField):
@@ -433,3 +434,29 @@ class MouvementCabineSerializer(serializers.ModelSerializer):
 
     def get_statut_apres_libelle(self, obj):
         return self._libelle_statut(obj.statut_apres)
+
+
+class CabineAttendueSerializer(serializers.ModelSerializer):
+    """Une cabine annoncée par la production, pas encore en stock.
+
+    `chantier_a_saisir` est rendu au front : c'est lui qui décide d'afficher
+    « chantier à saisir » plutôt qu'un champ vide sans explication.
+    """
+
+    chantier_a_saisir = serializers.BooleanField(read_only=True)
+    champs_cabine = serializers.SerializerMethodField()
+    importe_par_nom = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CabineAttendue
+        fields = "__all__"
+        read_only_fields = ["importe_le", "importe_par", "fichier"]
+
+    def get_champs_cabine(self, obj):
+        """Ce que l'écran d'entrée recopie. Calculé par le modèle, jamais par le front :
+        deux définitions de la même correspondance finiraient par diverger."""
+        return obj.champs_cabine()
+
+    def get_importe_par_nom(self, obj):
+        u = obj.importe_par
+        return (u.nom or u.username) if u else ""
