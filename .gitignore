@@ -44,3 +44,6 @@ _a_supprimer/
 
 # Fichiers de verrouillage laisses par Word quand un document est ouvert
 ~$*
+
+# Correctifs de travail deposes a la racine, jamais du code du projet
+*.patch

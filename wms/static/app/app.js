@@ -145,17 +145,26 @@ function modale(titre, corps, opts = {}) {
    sur le téléphone. Renvoie true (bouton principal), false (annulation ou
    fermeture), ou la valeur du bouton `extra` s'il y en a un.                  */
 function confirmer({ titre = 'Confirmer', texte = '', ok = 'Confirmer',
-                     annuler = 'Annuler', danger = false, extra = null }) {
+                     annuler = 'Annuler', danger = false, extra = null,
+                     champ = null }) {
   return new Promise((resoudre) => {
     let reponse = false;
     const corps = modale(titre, `
       <p class="modal-texte">${esc(texte)}</p>
+      ${champ ? `<label for="cfChamp">${esc(champ.libelle)}</label>
+        <input id="cfChamp" placeholder="${esc(champ.placeholder || '')}" autocomplete="off">` : ''}
       <div class="modal-actions">
         <button class="btn ${danger ? 'danger' : 'orange'}" type="button" data-oui>${esc(ok)}</button>
         ${extra ? `<button class="btn ${extra.danger ? 'danger' : 'ghost'}" type="button" data-extra>${esc(extra.libelle)}</button>` : ''}
         ${annuler ? `<button class="btn ghost" type="button" data-non>${esc(annuler)}</button>` : ''}
       </div>`, { surFermeture: () => resoudre(reponse) });
-    corps.querySelector('[data-oui]').onclick = () => { reponse = true; fermerModale(); };
+    // Avec un champ, la reponse porte ce qui a ete saisi : `{ok, valeur}`. Sans
+    // champ, elle reste le `true` que tous les appels connaissent deja.
+    corps.querySelector('[data-oui]').onclick = () => {
+      const saisi = corps.querySelector('#cfChamp');
+      reponse = champ ? { ok: true, valeur: (saisi ? saisi.value : '').trim() } : true;
+      fermerModale();
+    };
     const nonBouton = corps.querySelector('[data-non]');
     if (nonBouton) nonBouton.onclick = fermerModale;
     const extraBouton = corps.querySelector('[data-extra]');
@@ -1873,6 +1882,45 @@ const STATUTS_PROPOSES = [
   ['envoye',      'Envoyée',                'Elle quitte l’entrepôt : ses emplacements se libèrent, le journal garde la trace.'],
 ];
 
+/** Le geste, du point de vue de l'operateur : « lever » plutot que « conforme ».
+
+    Un etat se nomme au repos ; une action se nomme par son verbe. Le bouton dit
+    ce qu'il va faire, ce qui est la seule chose qu'on lise avant d'appuyer. */
+function verbeStatut(cabine, code) {
+  if (code === 'quarantaine') return 'Mettre en quarantaine';
+  if (code === 'libre') {
+    return cabine.statut === 'quarantaine' ? 'Lever la quarantaine' : 'Déclarer conforme';
+  }
+  const ref = STATUTS_PROPOSES.find(s => s[0] === code);
+  return ref ? ref[1] : code;
+}
+
+/** Change le statut, mais seulement apres confirmation.
+
+    Il y avait sur la fiche une liste deroulante qui, le statut courant et
+    l'envoi retires, ne contenait jamais qu'UN choix : on deroulait pour tomber
+    sur une seule ligne, et le bouton d'a cote ecrivait aussitot. Un bouton par
+    etat possible, nomme par son verbe, et une confirmation qui rappelle ce que
+    l'etat veut dire — le motif se saisit la, au moment ou on sait pourquoi. */
+async function confirmerChangementStatut(cabine, code, apres) {
+  const ref = STATUTS_PROPOSES.find(s => s[0] === code) || [code, code, ''];
+  const rep = await confirmer({
+    titre: verbeStatut(cabine, code) + ' ?',
+    texte: `${cabine.numero} — ${ref[2]}`,
+    ok: 'Confirmer',
+    danger: code === 'quarantaine',
+    champ: { libelle: 'Motif (facultatif, conservé dans l’historique)',
+             placeholder: 'Ex. rayure sur la paroi' },
+  });
+  if (!rep || !rep.ok) return;
+  try {
+    await api(`/cabines/${cabine.id}/statut/`, { method: 'POST',
+      body: { statut: code, motif: rep.valeur } });
+    toast(`${cabine.numero} : ${ref[1]}`, 'ok');
+    if (apres) apres();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 /**
  * Ouvre la boîte de choix du statut.
  * `contexte` : phrase d'introduction. `apres` : rappelé quand c'est fait ou passé.
@@ -2781,12 +2829,12 @@ async function ficheCabine(cabine, retour) {
         <div class="meta" style="margin-top:4px">Étape : <b>${esc(c.etape_libelle)}</b>${c.envoyee ? '' : ` · sans mouvement depuis ${c.jours_immobile} jour${c.jours_immobile === 1 ? '' : 's'}`}</div>
         ${c.envoyee ? `<div class="banner" style="margin:12px 0 0">Cabine envoyée le ${new Date(c.envoi_date).toLocaleString('fr-FR')} — fiche archivée. La fiche reste corrigeable, et la cabine peut être remise en stock si elle revient.</div>
           ${peut('cab') ? `<button class="btn orange" id="fReprendre">La remettre en stock</button>` : ''}` : ''}
+        <div id="fAct"></div>
         <button class="btn ghost" id="fEtiq">${icon('print', 17)} Imprimer l'étiquette QR à coller</button>
         ${peut('cab') ? `<div class="row" style="margin-top:10px">
           <button class="btn ghost" id="fCorriger" style="margin-top:0">${icon('edit', 17)} Corriger la fiche</button>
           <button class="btn danger" id="fSupprimer" style="margin-top:0">${icon('trash', 17)} Supprimer</button>
         </div>` : ''}
-        <div id="fAct"></div>
       </div>
       <div class="sec">Historique — ${hist.length} événement${hist.length === 1 ? '' : 's'}</div>
       <div class="list">${hist.length ? hist.map(m => `<div class="item" style="cursor:default">
@@ -2816,12 +2864,10 @@ async function ficheCabine(cabine, retour) {
 
     const statutsPossibles = REFS_CABINE.statuts.filter(s => s.code !== c.statut && s.code !== 'envoye');
     $('#fAct').innerHTML = `
-      <label>Statut</label>
-      <select id="fStatut">${statutsPossibles.map(s => `<option value="${s.code}">${esc(s.libelle)}</option>`).join('')}</select>
-      <label>Motif (facultatif, conservé dans l'historique)</label>
-      <input id="fMotif" placeholder="Ex. rayure sur le vitrage, ou PV de contrôle n°…">
-      <button class="btn" id="fStatutOk">Changer le statut</button>
-      <div class="sec" style="margin-top:14px">${c.position ? 'Déplacer' : 'Ranger'} cette cabine</div>
+      <div class="sec">État de la cabine</div>
+      ${statutsPossibles.map(s => `<button class="btn ghost" data-vers="${s.code}"
+        >${esc(verbeStatut(c, s.code))}</button>`).join('')}
+      <div class="sec" style="margin-top:14px">${c.position ? 'Changer d’emplacement' : 'Ranger cette cabine'}</div>
       <div class="row">
         <button class="btn ghost" id="fScanEmp" style="margin-top:0">Scanner l'emplacement</button>
         <button class="btn ghost" id="fCodeEmp" style="margin-top:0">Saisir le code</button>
@@ -2831,14 +2877,8 @@ async function ficheCabine(cabine, retour) {
       <button class="btn orange" id="fEnvoyer">Envoyer (définitif)</button>
       <div id="fZone"></div>`;
 
-    $('#fStatutOk').onclick = async () => {
-      try {
-        await api(`/cabines/${c.id}/statut/`, { method: 'POST', body: {
-          statut: $('#fStatut').value, motif: $('#fMotif').value.trim() } });
-        toast('Statut mis à jour', 'ok');
-        ficheCabine(c, retour);
-      } catch (e) { toast(e.message, 'err'); }
-    };
+    $('#fAct').querySelectorAll('[data-vers]').forEach(b => b.onclick =
+      () => confirmerChangementStatut(c, b.dataset.vers, () => ficheCabine(c, retour)));
 
     // Retient la cabine, puis renvoie au scanner : le scan de l'emplacement la range.
     $('#fScanEmp').onclick = () => { CABINE_A_RANGER = c; go('trouver'); };
@@ -3705,9 +3745,20 @@ async function listerRacks() {
   }
 }
 
+/* --- Cocher plusieurs cases -------------------------------------------------
+   Il n'existait que deux extremes : supprimer UN emplacement depuis sa fiche, ou
+   TOUT un rack d'un geste. Demonter une demi-colonne demandait donc autant de
+   passages par la fiche qu'il y avait de cases.
+
+   La selection est un mode, pas un etat permanent : hors de ce mode, un appui
+   sur une case ouvre sa fiche comme avant. Elle appartient au rack ouvert et se
+   remet a zero quand on en change.                                            */
+let SELECTION_RACK = { rack: null, actif: false, ids: new Set() };
+
 /** Deuxième niveau : le plan du rack. */
 function ouvrirRack(nom, emps) {
   RACK_OUVERT = nom;
+  if (SELECTION_RACK.rack !== nom) SELECTION_RACK = { rack: nom, actif: false, ids: new Set() };
   const zone = $('#zone');
   if (!zone) return;
   const liste = emps.filter(e => ((e.rack || '').trim() || '(hors rack)') === nom);
@@ -3721,9 +3772,16 @@ function ouvrirRack(nom, emps) {
   liste.forEach(e => { if (e.colonne != null && e.niveau != null) parPosition.set(e.colonne + '/' + e.niveau, e); });
   const orphelins = liste.filter(e => e.colonne == null || e.niveau == null);
 
+  // Le rafraîchissement automatique peut avoir fait disparaître une case cochée —
+  // un autre poste l'a supprimée entre-temps. On ne garde que ce qui est là.
+  const presents = new Set(liste.map(e => e.id));
+  SELECTION_RACK.ids = new Set([...SELECTION_RACK.ids].filter(id => presents.has(id)));
+
   const cellule = (e) => {
     if (!e) return '<span class="case vide-trou"></span>';
-    return `<button class="case ${etatEmplacement(e)}" data-emp="${e.id}" title="${esc(e.code)}">
+    const coche = SELECTION_RACK.actif
+      ? ` aria-pressed="${String(SELECTION_RACK.ids.has(e.id))}"` : '';
+    return `<button class="case ${etatEmplacement(e)}" data-emp="${e.id}" title="${esc(e.code)}"${coche}>
       <span class="c">${esc(e.code)}</span>
       <span class="o">${occupationCourte(e)}</span>
     </button>`;
@@ -3752,17 +3810,120 @@ function ouvrirRack(nom, emps) {
     ${plan}
     ${orphelins.length ? `<div class="sec">Sans position dans le rack</div>
       <div class="cases-libres">${orphelins.map(cellule).join('')}</div>` : ''}
-    ${(peut('ref') && nom !== '(hors rack)') ? `<button class="btn danger" id="rSupp"
-        style="margin-top:22px">${icon('trash', 17)} Supprimer le rack ${esc(nom)}</button>` : ''}`;
+    ${peut('ref') ? `<button class="btn ghost" id="selMode" style="margin-top:22px">
+        ${SELECTION_RACK.actif ? 'Quitter la sélection'
+          : icon('grille', 17) + ' Sélectionner plusieurs emplacements'}</button>` : ''}
+    ${(peut('ref') && !SELECTION_RACK.actif && nom !== '(hors rack)') ? `<button class="btn danger" id="rSupp"
+        style="margin-top:10px">${icon('trash', 17)} Supprimer le rack ${esc(nom)}</button>` : ''}
+    ${SELECTION_RACK.actif ? barreSelection() : ''}`;
 
   const retour = $('#rRetour');
   if (retour) retour.onclick = () => { RACK_OUVERT = null; listerRacks(); };
   zone.querySelectorAll('[data-emp]').forEach(b => b.onclick = () => {
     const e = liste.find(x => String(x.id) === b.dataset.emp);
-    if (e) ficheEmplacement(e, () => renderEmplacements());
+    if (!e) return;
+    if (!SELECTION_RACK.actif) { ficheEmplacement(e, () => renderEmplacements()); return; }
+    if (SELECTION_RACK.ids.has(e.id)) SELECTION_RACK.ids.delete(e.id);
+    else SELECTION_RACK.ids.add(e.id);
+    // Redessiner le plan entier plutôt que la seule case : le compte de la barre
+    // et l'état des boutons suivent alors tout seuls, sans code de synchronisation.
+    ouvrirRack(nom, emps);
   });
+  const mode = $('#selMode');
+  if (mode) mode.onclick = () => {
+    SELECTION_RACK.actif = !SELECTION_RACK.actif;
+    SELECTION_RACK.ids = new Set();
+    ouvrirRack(nom, emps);
+  };
+  const bSupp = $('#selSupp');
+  if (bSupp) bSupp.onclick = () => ouvrirSuppressionSelection(nom, emps);
+  const bVider = $('#selVider');
+  if (bVider) bVider.onclick = () => { SELECTION_RACK.ids = new Set(); ouvrirRack(nom, emps); };
   const supp = $('#rSupp');
   if (supp) supp.onclick = () => ouvrirSuppressionRack(nom);
+}
+
+/** La barre qui compte les cases cochées et porte leur suppression. */
+function barreSelection() {
+  const n = SELECTION_RACK.ids.size;
+  return `<div class="selbar">
+    <div class="sel-n">${n === 0 ? 'Touchez les emplacements à sélectionner'
+      : `${n} emplacement${n > 1 ? 's' : ''} sélectionné${n > 1 ? 's' : ''}`}</div>
+    <div class="row">
+      <button class="btn danger" id="selSupp" style="margin-top:0"${n ? '' : ' disabled'}
+        >${icon('trash', 17)} Supprimer la sélection</button>
+      <button class="btn ghost" id="selVider" style="margin-top:0"${n ? '' : ' disabled'}
+        >Tout décocher</button>
+    </div>
+  </div>`;
+}
+
+/* --- Supprimer une sélection -----------------------------------------------
+   Mêmes précautions que pour un rack entier, et pour la même raison : on
+   demande d'abord au serveur CE QUI SERAIT EFFACÉ, on l'affiche, et la
+   suppression est ENTIÈRE ou NULLE. Une sélection dont la moitié disparaît
+   laisse l'opérateur devant son plan sans savoir laquelle des six cases a
+   résisté — c'est exactement ce qu'il ne faut pas.                           */
+async function ouvrirSuppressionSelection(nom, emps) {
+  const ids = [...SELECTION_RACK.ids];
+  if (!ids.length) return;
+  modale(`Supprimer ${ids.length} emplacement${ids.length > 1 ? 's' : ''}`,
+         '<div class="empty">Analyse en cours…</div>');
+  let etat;
+  try {
+    etat = await api('/emplacements/lot-diagnostic/?ids=' + ids.join(','));
+  } catch (e) {
+    fermerModale();
+    toast(e.message, 'err');
+    return;
+  }
+
+  // Le compte d'emplacements est déjà dans la phrase : ne reste ici que ce qui
+  // s'y trouve encore, et qui est la seule information qui puisse surprendre.
+  const detail = [
+    etat.cabines ? `${etat.cabines} cabine${etat.cabines > 1 ? 's' : ''} rangée${etat.cabines > 1 ? 's' : ''}` : null,
+    etat.lignes_stock ? `${etat.lignes_stock} ligne${etat.lignes_stock > 1 ? 's' : ''} de stock` : null,
+  ].filter(Boolean).join(' · ');
+  const un = etat.emplacements === 1;
+
+  const corps = etat.supprimable
+    ? `<div class="banner">${un ? 'Cet emplacement va être supprimé' : `Ces ${etat.emplacements} emplacements vont être supprimés`} — c'est <b>définitif</b>.${detail ? ` Il ${un ? 'porte' : 'y a'} encore ${detail}.` : ''}</div>
+       <div class="meta" style="margin-top:10px;word-break:break-word">${esc(etat.codes.join(' · '))}</div>
+       <label style="margin-top:12px">Motif (facultatif)</label>
+       <input id="lMotif" placeholder="Ex. colonne démontée" autocomplete="off">
+       <div class="row modal-actions">
+         <button class="btn danger" id="lGo" style="margin-top:0">Supprimer définitivement</button>
+         <button class="btn ghost" id="lNon" style="margin-top:0">Annuler</button>
+       </div>`
+    : `<div class="banner">Rien ne sera supprimé : ${etat.bloquants.length} emplacement${etat.bloquants.length > 1 ? 's' : ''} de la sélection s'y oppose${etat.bloquants.length > 1 ? 'nt' : ''}${detail ? ` — ${detail}` : ''}.</div>
+       <div class="list" style="margin-top:10px">${etat.bloquants.slice(0, 6).map(b =>
+         `<div class="item" style="cursor:default"><div class="r">${esc(b.code)}</div>
+            <div class="d">${esc(b.message)}</div></div>`).join('')}
+         ${etat.bloquants.length > 6 ? `<div class="meta" style="padding:6px 2px">et ${etat.bloquants.length - 6} autre(s)</div>` : ''}</div>
+       <div class="row modal-actions">
+         <button class="btn ghost" id="lNon" style="margin-top:0">Fermer</button>
+       </div>`;
+  const boite = modale(`Supprimer ${etat.emplacements} emplacement${etat.emplacements > 1 ? 's' : ''}`, corps);
+  boite.querySelector('#lNon').onclick = fermerModale;
+  const go = boite.querySelector('#lGo');
+  if (!go) return;
+  go.onclick = async () => {
+    go.disabled = true;
+    try {
+      const r = await api('/emplacements/supprimer-lot/', { method: 'POST', body: {
+        ids, motif: (boite.querySelector('#lMotif').value || '').trim() } });
+      fermerModale();
+      toast(`${r.supprimes} emplacement${r.supprimes > 1 ? 's' : ''} supprimé${r.supprimes > 1 ? 's' : ''}`, 'ok');
+      // On quitte le mode : la sélection est consommée. Y rester ferait revenir
+      // sur le plan avec des cases qui se cochent au premier appui, alors qu'on
+      // pensait juste ouvrir une fiche.
+      SELECTION_RACK = { rack: nom, actif: false, ids: new Set() };
+      renderEmplacements();
+    } catch (e) {
+      go.disabled = false;
+      toast(e.message, 'err');
+    }
+  };
 }
 
 /* --- Supprimer un rack entier ----------------------------------------------
@@ -4522,7 +4683,47 @@ function blocCameraHTML(titre, sousTitre) {
       <div class="cam-note" id="camNote">Le navigateur va demander l’autorisation. Elle n’est demandée qu’une fois.</div>
     </div>
     <button class="btn ghost cam-stop" id="camStop" hidden>Arrêter la caméra</button>
+    <div class="cam-lu" id="camLu" hidden></div>
   </div>`;
+}
+
+/* --- Ce qui a été lu, avant d'agir -----------------------------------------
+   Le décodage est immédiat, et l'application enchaînait aussitôt : la caméra
+   s'éteignait, l'écran suivant s'ouvrait, et personne n'avait vu passer le code.
+   Au poste, cela donnait des gens qui ne savaient pas quel emplacement ils
+   venaient de scanner — trois étiquettes empilées sur le même montant, et rien
+   à l'écran pour dire laquelle avait été prise.
+
+   On s'arrête donc un instant : le code en grand, et deux boutons. « Continuer »
+   fait exactement ce que faisait la lecture avant, « Rescanner » rallume la
+   caméra. Le décodage n'est pas ralenti d'une milliseconde — c'est
+   l'enchaînement qui demande un appui, et c'est tout ce qui manquait.
+
+   La vibration sert au cas où la lecture arrive alors qu'on ne regarde pas
+   l'écran : elle dit « c'est lu », sans obliger à fixer le téléphone.        */
+function confirmerLecture(texte, surLecture) {
+  const lu = (texte || '').trim();
+  try { if (navigator.vibrate) navigator.vibrate(40); } catch (_) {}
+  const bloc = $('#camLu');
+  // Un écran qui n'a pas de zone de confirmation garde l'ancien comportement :
+  // mieux vaut enchaîner que perdre la lecture.
+  if (!bloc) { surLecture(lu); return; }
+  bloc.hidden = false;
+  bloc.innerHTML = `<div class="lu-t">Code lu</div>
+    <div class="lu-code">${esc(lu.replace(/^(LOC|CAB|ART):/i, ''))}</div>
+    <div class="row">
+      <button class="btn orange" id="luOk" style="margin-top:0">Continuer</button>
+      <button class="btn ghost" id="luNon" style="margin-top:0">Rescanner</button>
+    </div>`;
+  const fermer = () => { bloc.hidden = true; bloc.innerHTML = ''; };
+  const ok = bloc.querySelector('#luOk');
+  ok.onclick = () => { fermer(); surLecture(lu); };
+  bloc.querySelector('#luNon').onclick = () => {
+    fermer();
+    const go = $('#camGo');
+    if (go) go.click();          // on rallume : la visée reprend là où elle était
+  };
+  ok.focus();
 }
 
 /** Traduit l'échec du navigateur en geste à faire, plutôt qu'en nom d'erreur. */
@@ -4624,7 +4825,13 @@ function brancherCamera(surLecture) {
           // Cadre de visée calculé sur la vidéo réelle. Une valeur fixe de 250 px
           // dépasse la largeur d'un téléphone tenu en portrait, et html5-qrcode
           // refuse alors de démarrer.
-          qrbox: (l, h) => { const c = Math.floor(Math.min(l, h) * 0.8); return { width: c, height: c }; },
+          //
+          // 0,6 et non 0,8 : sur un montant, Y500, Y501 et Y502 sont collées à
+          // quelques centimètres l'une de l'autre. Un cadre large les prenait
+          // toutes les trois dans le champ, et c'est celle qui entrait la
+          // première qui gagnait. Un cadre plus serré oblige à viser — et sur un
+          // flux de 1280 px de large, il reste 768 px pour le code : bien assez.
+          qrbox: (l, h) => { const c = Math.floor(Math.min(l, h) * 0.6); return { width: c, height: c }; },
           // `aspectRatio: 1` forçait un flux carré. Android n'en produit pas :
           // il rendait alors sa plus petite définition, souvent 480 px de large,
           // sur laquelle un QR d'étiquette ne fait plus assez de pixels pour être
@@ -4637,7 +4844,7 @@ function brancherCamera(surLecture) {
             advanced: [{ focusMode: 'continuous' }],
           },
         },
-        (texte) => { eteindre(); surLecture(texte); },
+        (texte) => { eteindre(); confirmerLecture(texte, surLecture); },
         () => {});                       // échecs de décodage : normaux, image par image
       if (!$('#cam')) { await arreterCamera(); return; }
       repos.hidden = true; stop.hidden = false;

@@ -76,7 +76,12 @@ h2.title{font-size:17px;margin:2px 2px 12px;font-weight:700;color:var(--nuit)}
 .kpi.warn{background:var(--warn-bg);border-color:transparent}
 .kpi.warn .l,.kpi.warn .v{color:var(--warn-tx)}
 
-.banner{display:flex;gap:8px;align-items:center;background:var(--warn-bg);color:var(--warn-tx);border-radius:12px;padding:11px 13px;font-size:13px;margin-bottom:14px}
+/* Bloc et non flex : un bandeau contient du TEXTE, avec ses mots en gras et ses
+   retours à la ligne. En flex, chaque `<b>` et chaque `<br>` devenait un
+   élément à part, séparé de 8 px — la phrase s'affichait en escalier, le mot
+   important repoussé au bout de la ligne. Aucun bandeau de l'application ne
+   porte d'icône : il n'y avait rien à aligner. */
+.banner{display:block;line-height:1.45;background:var(--warn-bg);color:var(--warn-tx);border-radius:12px;padding:11px 13px;font-size:13px;margin-bottom:14px}
 
 .tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:11px}
 .tile{background:var(--surface);border:1px solid var(--ligne);border-radius:var(--radius);padding:15px 14px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:5px;min-height:88px;transition:transform .06s,border-color .12s}
@@ -367,6 +372,16 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
 .cam.actif .cam-vue #reader__dashboard_section_swaplink{display:none}
 .cam-stop{margin:0;border-radius:0;border:none;border-top:1px solid var(--ligne)}
 
+/* Ce qui vient d'être lu. Le code est la seule chose qui compte ici : il se lit
+   en grand, dans la police des données, sans avoir à approcher le téléphone.
+   Trois étiquettes se touchent sur un montant — c'est cette ligne qui dit
+   laquelle a été prise. */
+.cam-lu{padding:16px 14px;border-top:1px solid var(--ligne);background:var(--marine-tint);text-align:center}
+.cam-lu .lu-t{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.cam-lu .lu-code{margin:6px 0 14px;font-family:var(--f-data);font-size:30px;font-weight:800;
+  line-height:1.1;color:var(--nuit);word-break:break-all}
+.cam-lu .row{max-width:340px;margin:0 auto}
+
 /* ============================================================================
    Choix du sous-emplacement — trois cases tactiles au lieu d'un menu déroulant.
 
@@ -538,6 +553,21 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
 .case.complet .c{color:#fff}
 .case.complet .o{color:#C7D6E0}
 .case.inactif{opacity:.5}
+/* Une case cochée. Le contour épais et l'encoche se voient sur les cinq fonds
+   de l'échelle — un simple changement de teinte se serait perdu sur le marine
+   de « complet ». */
+.case[aria-pressed]{position:relative}
+.case[aria-pressed="true"]{outline:3px solid var(--brique);outline-offset:-3px}
+.case[aria-pressed="true"]::after{content:'✓';position:absolute;top:2px;right:4px;
+  font-size:12px;font-weight:800;color:var(--brique)}
+.case.complet[aria-pressed="true"]::after{color:#fff}
+
+/* La barre de sélection : elle reste sous la main, en bas de l'écran, pendant
+   qu'on coche des cases en haut du plan. */
+.selbar{position:sticky;bottom:0;margin-top:18px;padding:12px 14px;
+  background:var(--surface);border:1px solid var(--ligne);border-radius:var(--radius);
+  box-shadow:0 -6px 18px rgba(28,57,75,.10)}
+.selbar .sel-n{font-size:13px;font-weight:700;color:var(--nuit);margin-bottom:10px}
 .case.vide-trou{border:1px dashed var(--ligne);background:transparent;cursor:default;min-height:52px}
 .cases-libres{display:grid;gap:6px;grid-template-columns:repeat(auto-fill,minmax(86px,1fr))}
 
