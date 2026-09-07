@@ -9,7 +9,13 @@ jobs:
   controle-et-tests:
     runs-on: ubuntu-latest
     env:
-      DJANGO_SECRET_KEY: ci-secret-non-sensible
+      # Cinquante caractères au minimum. L'étape « profil durci » lance
+      # `check --deploy --fail-level WARNING`, et Django lève W009 — donc
+      # échoue — sur toute clé plus courte. L'ancienne valeur en faisait 22 :
+      # la CI aurait échoué au premier envoi, sur un contrôle qui n'a rien à
+      # voir avec le code. Cette clé ne protège rien, aucune donnée réelle ne
+      # passe par le runner ; celle du serveur vit dans `.env`, jamais ici.
+      DJANGO_SECRET_KEY: cle-de-controle-github-actions-sans-aucune-valeur-de-secret
       DJANGO_DEBUG: "False"
     steps:
       - uses: actions/checkout@v4
