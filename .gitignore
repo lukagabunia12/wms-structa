@@ -47,3 +47,13 @@ _a_supprimer/
 
 # Correctifs de travail deposes a la racine, jamais du code du projet
 *.patch
+
+# --- Donnees de production deposees dans le dossier ------------------------
+# Les classeurs de la production portent les clients, les chantiers ET la
+# colonne MONTANT NET PRODUIT. Ils s'importent par l'ecran « Fichier de
+# production » ; ils n'ont rien a faire dans un depot, encore moins sur GitHub.
+*.xlsx
+*.xlsm
+!docs/**/*.xlsx
+# Dossier cree par l'application Claude pour ses fichiers de travail.
+/Claude outputs/
