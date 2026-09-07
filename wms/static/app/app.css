@@ -476,6 +476,11 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
   min-height:76px;transition:border-color .15s,transform .05s}
 .geste:active{transform:scale(.995)}
 .geste:hover{border-color:var(--marine-2)}
+/* Un geste momentanément impossible reste LISIBLE : sa ligne d'explication dit
+   ce qui manque. Le masquer laisserait chercher une option dont on a entendu
+   parler ; le laisser cliquable ferait échouer le geste après coup. */
+.geste:disabled{opacity:.55;cursor:not-allowed}
+.geste:disabled:hover{border-color:var(--ligne)}
 .geste .ic{grid-row:1/3;display:grid;place-items:center;width:48px;height:48px;
   border-radius:12px;background:var(--marine-tint);color:var(--marine)}
 .geste .t{font-size:17px;font-weight:700;line-height:1.2}
