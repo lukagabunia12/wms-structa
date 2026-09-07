@@ -219,6 +219,40 @@ class EmplacementViewSet(viewsets.ModelViewSet):
         except ValidationError as e:
             return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
 
+    @action(detail=False, methods=["get"], url_path="lot-diagnostic")
+    def lot_diagnostic(self, request):
+        """Ce que la suppression d'une sélection effacerait — sans rien écrire.
+
+        Les identifiants arrivent en une liste séparée par des virgules :
+        `?ids=12,13,14`. En lecture, donc ouvert comme `rack-diagnostic` — voir
+        les conséquences d'une suppression n'est pas la faire.
+        """
+        brut = request.query_params.get("ids") or ""
+        try:
+            return Response(services.diagnostic_lot(brut.split(","), request.user))
+        except ValidationError as e:
+            return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=["post"], url_path="supprimer-lot")
+    def supprimer_lot(self, request):
+        """Supprime une sélection d'emplacements, ou aucun. Droit « référentiel »."""
+        d = request.data
+        ids = d.get("ids")
+        if isinstance(ids, str):
+            ids = ids.split(",")
+        try:
+            resultat = services.supprimer_lot(
+                ids,
+                force=bool(d.get("force")),
+                utilisateur=request.user,
+                motif=(d.get("motif") or "")[:180])
+        except ValidationError as e:
+            return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
+        except ProtectedError:
+            return Response({"erreur": ["Un emplacement de la sélection est encore référencé."]},
+                            status=status.HTTP_400_BAD_REQUEST)
+        return Response(resultat)
+
     @action(detail=False, methods=["post"], url_path="supprimer-rack")
     def supprimer_rack(self, request):
         """Supprime tout un rack, ou rien. Exige le droit « référentiel »."""

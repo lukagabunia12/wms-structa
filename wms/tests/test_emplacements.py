@@ -341,6 +341,104 @@ class SuppressionRackTest(BaseEmplacement):
         self.assertEqual(Emplacement.objects.filter(rack="AC").count(), 6)
 
 
+class SuppressionLotTest(BaseEmplacement):
+    """Supprimer une sélection cochée à la main.
+
+    Entre « un emplacement » et « tout un rack », il n'existait rien. Le risque
+    est le même que pour un rack, et la règle donc la même : la sélection part
+    ENTIÈRE ou pas du tout. Une sélection à moitié supprimée laisse l'opérateur
+    devant son plan sans savoir laquelle des six cases a résisté.
+    """
+
+    def setUp(self):
+        super().setUp()
+        services.generer_rack(prefixe="AC", debut=550, pas=10, colonnes=3, niveaux=2)
+        self.emps = list(Emplacement.objects.filter(rack="AC").order_by("code"))
+        self.assertEqual(len(self.emps), 6)
+
+    def ids(self, *emplacements):
+        return ",".join(str(e.pk) for e in emplacements)
+
+    def test_diagnostic_annonce_la_selection(self):
+        trois = self.emps[:3]
+        r = self.client.get("/api/emplacements/lot-diagnostic/?ids=" + self.ids(*trois))
+        self.assertEqual(r.status_code, 200, getattr(r, "data", None))
+        self.assertEqual(r.data["emplacements"], 3)
+        self.assertTrue(r.data["supprimable"])
+        self.assertEqual(r.data["codes"], [e.code for e in trois])
+        self.assertEqual(len(r.data["details"]), 3)
+        self.assertTrue(all(d["supprimable"] for d in r.data["details"]))
+
+    def test_selection_libre_se_supprime(self):
+        trois = self.emps[:3]
+        r = self.client.post("/api/emplacements/supprimer-lot/",
+                             {"ids": [e.pk for e in trois]}, format="json")
+        self.assertEqual(r.status_code, 200, getattr(r, "data", None))
+        self.assertEqual(r.data["supprimes"], 3)
+        self.assertEqual(Emplacement.objects.filter(rack="AC").count(), 3)
+
+    def test_une_seule_cabine_annule_toute_la_selection(self):
+        """LE test de cette fonctionnalité : rien ne part si un seul résiste."""
+        cabine = Cabine.objects.create(numero="00_00_11", chantier="123456")
+        services_ranger(cabine, self.emps[1])
+        trois = self.emps[:3]
+        r = self.client.post("/api/emplacements/supprimer-lot/",
+                             {"ids": [e.pk for e in trois]}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn(self.emps[1].code, str(r.data))
+        self.assertEqual(Emplacement.objects.filter(rack="AC").count(), 6)
+
+    def test_diagnostic_designe_la_case_qui_bloque(self):
+        cabine = Cabine.objects.create(numero="00_00_12", chantier="123456")
+        services_ranger(cabine, self.emps[2])
+        r = self.client.get("/api/emplacements/lot-diagnostic/?ids="
+                            + self.ids(*self.emps[:3]))
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.data["supprimable"])
+        self.assertEqual([b["code"] for b in r.data["bloquants"]], [self.emps[2].code])
+        bloque = next(d for d in r.data["details"] if d["code"] == self.emps[2].code)
+        self.assertFalse(bloque["supprimable"])
+        self.assertEqual(bloque["cabines"], 1)
+
+    def test_selection_vide_refusee(self):
+        r = self.client.post("/api/emplacements/supprimer-lot/", {"ids": []}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(Emplacement.objects.filter(rack="AC").count(), 6)
+
+    def test_emplacement_disparu_entre_temps(self):
+        """Deux opérateurs sur le même rack : on refuse plutôt que d'en supprimer 2 sur 3."""
+        trois = self.emps[:3]
+        perdu = trois[0].pk
+        trois[0].delete()
+        r = self.client.post("/api/emplacements/supprimer-lot/",
+                             {"ids": [perdu, trois[1].pk, trois[2].pk]}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("n'existent plus", str(r.data))
+        self.assertEqual(Emplacement.objects.filter(rack="AC").count(), 5)
+
+    def test_doublons_dans_la_selection(self):
+        """Deux clics sur la même case ne comptent qu'une fois."""
+        r = self.client.get("/api/emplacements/lot-diagnostic/?ids="
+                            + self.ids(self.emps[0], self.emps[0], self.emps[1]))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["emplacements"], 2)
+
+    def test_au_dela_du_plafond_refuse(self):
+        r = self.client.get("/api/emplacements/lot-diagnostic/?ids="
+                            + ",".join(str(i) for i in range(services.LOT_MAX + 5)))
+        self.assertEqual(r.status_code, 400)
+
+    def test_droit_referentiel_exige(self):
+        operateur = Utilisateur.objects.create_user(
+            username="cariste2", password="motdepasse123",
+            role=Utilisateur.OPERATEUR, droit_cab=True)
+        self.client.force_authenticate(user=operateur)
+        r = self.client.post("/api/emplacements/supprimer-lot/",
+                             {"ids": [self.emps[0].pk]}, format="json")
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(Emplacement.objects.filter(rack="AC").count(), 6)
+
+
 def services_ranger(cabine, emplacement, place="G"):
     from wms import services_cabines
 

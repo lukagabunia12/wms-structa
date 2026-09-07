@@ -395,6 +395,91 @@ def diagnostic_rack(rack, utilisateur=None):
     }
 
 
+#: Garde-fou de la sélection multiple. Deux cents cases cochées à la main, c'est
+#: déjà plus qu'un rack entier ; au-delà, c'est une erreur de manipulation.
+LOT_MAX = 200
+
+
+def _emplacements_du_lot(ids):
+    """Les emplacements d'une sélection, triés par code, ou une erreur lisible."""
+    try:
+        numeros = list(dict.fromkeys(int(str(i).strip()) for i in (ids or []) if str(i).strip()))
+    except (TypeError, ValueError):
+        raise ErreurStock("Sélection illisible : elle contient autre chose que des identifiants.")
+    if not numeros:
+        raise ErreurStock("Aucun emplacement sélectionné.")
+    if len(numeros) > LOT_MAX:
+        raise ErreurStock(f"{len(numeros)} emplacements sélectionnés : {LOT_MAX} au plus "
+                          "à la fois. Passez par la suppression du rack si c'est tout un rack.")
+    liste = list(Emplacement.objects.filter(pk__in=numeros).order_by("code"))
+    manquants = len(numeros) - len(liste)
+    if manquants:
+        # Deux opérateurs sur le même rack : l'autre a pu supprimer entre-temps.
+        # Le dire vaut mieux que supprimer « ce qui reste » sans prévenir.
+        raise ErreurStock(f"{manquants} emplacement(s) de la sélection n'existent plus. "
+                          "Rouvrez le rack pour repartir de ce qui est là.")
+    return liste
+
+
+def diagnostic_lot(ids, utilisateur=None):
+    """Ce que la suppression d'une sélection effacerait, et ce qui l'empêche.
+
+    Même contrat que `diagnostic_rack`, avec en plus le détail emplacement par
+    emplacement : l'écran coche des cases, il doit pouvoir dire laquelle bloque
+    et pourquoi, avant que qui que ce soit n'engage la suppression.
+    """
+    liste = _emplacements_du_lot(ids)
+    details, bloquants, cabines, stock = [], [], 0, 0
+    for e in liste:
+        n_cabines = e.occupations.count()
+        n_stock = lignes_de_stock(e).count()
+        cabines += n_cabines
+        stock += n_stock
+        blocage, message = diagnostic_suppression(e, utilisateur)
+        bloque = bool(blocage) and not suppression_forcable(blocage, utilisateur)
+        details.append({"id": e.pk, "code": e.code, "cabines": n_cabines,
+                        "lignes_stock": n_stock, "motif": blocage or "",
+                        "message": message if blocage else "",
+                        "supprimable": not bloque})
+        if bloque:
+            bloquants.append({"code": e.code, "motif": blocage, "message": message})
+
+    return {
+        "emplacements": len(liste),
+        "codes": [e.code for e in liste],
+        "cabines": cabines,
+        "lignes_stock": stock,
+        "details": details,
+        "bloquants": bloquants,
+        "supprimable": not bloquants,
+    }
+
+
+@transaction.atomic
+def supprimer_lot(ids, *, force=False, utilisateur=None, motif=""):
+    """Supprime toute la sélection, ou aucun de ses emplacements.
+
+    Tout ou rien, comme pour un rack, et pour la même raison : une sélection
+    dont la moitié disparaît laisse l'opérateur sans savoir laquelle. Si un seul
+    emplacement résiste, rien n'est écrit et le premier obstacle est nommé.
+
+    Chaque emplacement passe par `supprimer_emplacement` : mêmes règles, mêmes
+    écritures de stock, mêmes refus, une ligne de journal chacun. Rien n'est
+    contourné parce qu'on en supprime plusieurs d'un geste.
+    """
+    etat = diagnostic_lot(ids, utilisateur)
+    if etat["bloquants"]:
+        premier = etat["bloquants"][0]
+        raise ErreurStock(
+            f"{len(etat['bloquants'])} emplacement(s) de la sélection ne peuvent pas être "
+            f"supprimés. Premier : {premier['code']} — {premier['message']}")
+
+    note = motif or f"Suppression d'une sélection de {etat['emplacements']} emplacement(s)"
+    for emplacement in _emplacements_du_lot(ids):
+        supprimer_emplacement(emplacement, force=force, utilisateur=utilisateur, motif=note)
+    return {"supprimes": etat["emplacements"], "codes": etat["codes"]}
+
+
 @transaction.atomic
 def supprimer_rack(rack, *, force=False, utilisateur=None, motif=""):
     """Supprime tous les emplacements d'un rack, ou aucun.
