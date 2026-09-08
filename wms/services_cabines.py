@@ -15,7 +15,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Cabine, MouvementCabine, Occupation
+from .models import Cabine, CabineAttendue, MouvementCabine, Occupation
 
 
 class ErreurCabine(ValidationError):
@@ -23,6 +23,39 @@ class ErreurCabine(ValidationError):
 
 
 PLACES = [c for c, _ in Cabine.PLACES]
+def _controler_fichier_production(numero, utilisateur, motif):
+    """La cabine est-elle annoncée par la production ? Sinon, qui peut passer outre ?
+
+    Rend `(ligne attendue, création forcée hors fichier)`.
+
+    La règle : une cabine que le fichier de production n'annonce pas ne
+    s'enregistre pas. Un opérateur qui a une cabine inconnue devant lui n'a pas
+    à inventer sa fiche — il n'en a pas les éléments, et la reconnaissance de
+    texte confond 0 et O. Un administrateur peut forcer, mais doit dire
+    pourquoi : le motif part au journal, avec son nom.
+
+    **La règle ne s'active qu'une fois un fichier importé.** Sur une
+    installation neuve la table est vide ; refuser toute création rendrait le
+    WMS inutilisable avant le premier import, et personne ne comprendrait
+    pourquoi. Tant qu'aucun fichier n'est là, la saisie reste libre.
+    """
+    numero = (numero or "").strip()
+    attendue = CabineAttendue.objects.filter(numero=numero).first()
+    if attendue is not None:
+        return attendue, False
+    if not CabineAttendue.objects.exists():
+        return None, False
+    if not getattr(utilisateur, "est_administrateur", False):
+        raise ErreurCabine(
+            f"La cabine {numero} n'est pas annoncée par le fichier de production. "
+            "Elle ne peut pas être enregistrée : demandez l'import du fichier à "
+            "jour, ou faites-la créer par un administrateur.")
+    if not (motif or "").strip():
+        raise ErreurCabine(
+            f"La cabine {numero} n'est pas dans le fichier de production. "
+            "Indiquez pourquoi vous la créez malgré tout : le motif est écrit au "
+            "journal.")
+    return None, True
 
 
 def _nom(utilisateur):
@@ -122,7 +155,11 @@ CHAMPS_FICHE = ["revendeur", "client", "tissu_bk", "tissu_aq", "fond_cabine"]
 
 @transaction.atomic
 def creer_cabine(*, numero, chantier="", type_cabine=Cabine.NORMALE, modele="",
-                 statut=Cabine.LIBRE, utilisateur=None, **fiche):
+                 statut=Cabine.LIBRE, utilisateur=None, motif_hors_fichier="",
+                 **fiche):
+    """Crée une cabine. Passage obligé : c'est ici que la règle du fichier de
+    production s'applique — voir `_controler_fichier_production`."""
+    _, forcee = _controler_fichier_production(numero, utilisateur, motif_hors_fichier)
     cabine = Cabine(numero=(numero or "").strip(), chantier=(chantier or "").strip(),
                     type_cabine=type_cabine, modele=modele, statut=statut,
                     statut_date=timezone.now(), utilisateur=utilisateur)
@@ -130,8 +167,14 @@ def creer_cabine(*, numero, chantier="", type_cabine=Cabine.NORMALE, modele="",
         if fiche.get(champ):
             setattr(cabine, champ, str(fiche[champ]).strip()[:120])
     cabine.save()   # crée aussi la ligne d'occupation n° 1, vide (invariant)
+    # Une création forcée se relit dans le journal : le type, puis le motif et le
+    # nom de celui qui a passé outre. Sans cette note, la cabine ressemblerait à
+    # n'importe quelle autre et l'exception serait introuvable.
+    note = cabine.get_type_cabine_display()
+    if forcee:
+        note = f"{note} — hors fichier de production : {motif_hors_fichier.strip()}"
     _tracer(cabine, MouvementCabine.CREATION, utilisateur,
-            statut_apres=cabine.statut, note=cabine.get_type_cabine_display())
+            statut_apres=cabine.statut, note=note[:255])
     return cabine
 
 

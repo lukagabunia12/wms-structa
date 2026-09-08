@@ -653,13 +653,23 @@ class CabineViewSet(viewsets.ModelViewSet):
             raise ErreurAPI({"erreur": e.messages})
 
     def perform_create(self, serializer):
-        # Passe par le service pour que la création soit journalisée.
+        # Passe par le service pour que la création soit journalisée, et pour que
+        # la règle du fichier de production s'applique — une cabine que la
+        # production n'annonce pas ne s'enregistre pas ici.
         d = serializer.validated_data
-        cabine = services_cabines.creer_cabine(
-            numero=d.get("numero"), chantier=d.get("chantier", ""),
-            type_cabine=d.get("type_cabine", Cabine.NORMALE),
-            modele=d.get("modele", ""), utilisateur=self.request.user,
-            **{c: d.get(c, "") for c in services_cabines.CHAMPS_FICHE})
+        try:
+            cabine = services_cabines.creer_cabine(
+                numero=d.get("numero"), chantier=d.get("chantier", ""),
+                type_cabine=d.get("type_cabine", Cabine.NORMALE),
+                modele=d.get("modele", ""), utilisateur=self.request.user,
+                # Motif d'une création hors fichier. Hors du serializer à dessein :
+                # ce n'est pas un champ de la cabine, c'est la raison d'un geste.
+                motif_hors_fichier=str(self.request.data.get("motif_hors_fichier") or ""),
+                **{c: d.get(c, "") for c in services_cabines.CHAMPS_FICHE})
+        except ValidationError as e:
+            # `ErreurCabine` est une ValidationError de Django, pas de DRF : sans
+            # cette conversion elle remonterait en 500 au lieu d'un 400 lisible.
+            raise ErreurAPI({"erreur": e.messages})
         serializer.instance = cabine
 
     @action(detail=False, methods=["post"], url_path="lire-fiche")
@@ -884,6 +894,11 @@ def referentiels_cabine(request):
         "etapes": [{"code": code, "libelle": libelle} for code, libelle in Cabine.ETAPES],
         "roles_zone": [{"code": code, "libelle": libelle} for code, libelle in Zone.ROLES],
         "modes_places": [{"code": code, "libelle": libelle} for code, libelle in Emplacement.MODES_PLACES],
+        # Un fichier de production a-t-il été importé ? C'est lui qui arme la
+        # règle « une cabine non annoncée ne s'enregistre pas ». Sans cette
+        # information, l'écran d'entrée refuserait une saisie que le serveur
+        # accepte encore — ou proposerait une saisie qu'il va refuser.
+        "fichier_production": CabineAttendue.objects.exists(),
     })
 
 

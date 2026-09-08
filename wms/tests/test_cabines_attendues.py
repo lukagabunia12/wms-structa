@@ -19,7 +19,8 @@ import openpyxl
 from rest_framework.test import APITestCase
 
 from wms import services_import
-from wms.models import Cabine, CabineAttendue, Utilisateur
+from wms.models import (Cabine, CabineAttendue, MouvementCabine,
+                        Utilisateur)
 
 #: Les en-têtes du vrai fichier, dans l'ordre, réduites à ce que les tests
 #: utilisent. La casse et l'accent de « Semaine prod estimée » sont ceux du
@@ -314,3 +315,110 @@ class NumeroAssoupliTest(APITestCase):
                                  {"numero": mauvais, "chantier": "251213"},
                                  format="json")
             self.assertEqual(r.status_code, 400, mauvais)
+
+class CreationHorsFichierTest(APITestCase):
+    """Une cabine que la production n'annonce pas ne s'enregistre plus.
+
+    Un opérateur qui a une cabine inconnue devant lui n'a pas de quoi inventer
+    sa fiche. Un administrateur peut passer outre, mais doit dire pourquoi : le
+    motif part au journal avec son nom, et c'est la seule trace de l'exception.
+    """
+
+    def setUp(self):
+        self.admin = Utilisateur.objects.create_user(
+            username="chef", password="motdepasse123", role=Utilisateur.ADMIN)
+        self.operateur = Utilisateur.objects.create_user(
+            username="cariste", password="motdepasse123", role=Utilisateur.OPERATEUR,
+            droit_cab=True, droit_ref=True)
+        CabineAttendue.objects.create(numero="26_02_49", chantier="251314",
+                                      modele="MODELE M", client="CNRS")
+
+    # ---------------------------------------------------------------- annoncée
+    def test_une_cabine_annoncee_entre_normalement(self):
+        self.client.force_authenticate(user=self.operateur)
+        r = self.client.post("/api/cabines/",
+                             {"numero": "26_02_49", "chantier": "251314"},
+                             format="json")
+        self.assertEqual(r.status_code, 201, getattr(r, "data", None))
+
+    # ------------------------------------------------------------ non annoncée
+    def test_un_operateur_ne_peut_pas_creer_une_cabine_hors_fichier(self):
+        self.client.force_authenticate(user=self.operateur)
+        r = self.client.post("/api/cabines/",
+                             {"numero": "99_99_99", "chantier": "251314"},
+                             format="json")
+        self.assertEqual(r.status_code, 400)
+        message = " ".join(r.data["erreur"])
+        self.assertIn("fichier de production", message)
+        self.assertIn("administrateur", message)
+        self.assertFalse(Cabine.objects.filter(numero="99_99_99").exists())
+
+    def test_un_motif_ne_suffit_pas_a_un_operateur(self):
+        """Sans quoi la barrière se contournerait en remplissant un champ."""
+        self.client.force_authenticate(user=self.operateur)
+        r = self.client.post("/api/cabines/",
+                             {"numero": "99_99_99", "chantier": "251314",
+                              "motif_hors_fichier": "je sais ce que je fais"},
+                             format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(Cabine.objects.filter(numero="99_99_99").exists())
+
+    def test_un_administrateur_sans_motif_est_refuse(self):
+        self.client.force_authenticate(user=self.admin)
+        r = self.client.post("/api/cabines/",
+                             {"numero": "99_99_99", "chantier": "251314"},
+                             format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("motif", " ".join(r.data["erreur"]).lower())
+        self.assertFalse(Cabine.objects.filter(numero="99_99_99").exists())
+
+    def test_un_motif_vide_ou_blanc_ne_compte_pas(self):
+        self.client.force_authenticate(user=self.admin)
+        for motif in ("", "   ", "\t"):
+            r = self.client.post("/api/cabines/",
+                                 {"numero": "99_99_99", "chantier": "251314",
+                                  "motif_hors_fichier": motif}, format="json")
+            self.assertEqual(r.status_code, 400, repr(motif))
+
+    def test_un_administrateur_avec_motif_cree_et_le_journal_le_dit(self):
+        self.client.force_authenticate(user=self.admin)
+        r = self.client.post("/api/cabines/",
+                             {"numero": "99_99_99", "chantier": "251314",
+                              "motif_hors_fichier": "cabine de salon, hors chantier"},
+                             format="json")
+        self.assertEqual(r.status_code, 201, getattr(r, "data", None))
+
+        mouvement = MouvementCabine.objects.get(cabine_numero="99_99_99",
+                                                type=MouvementCabine.CREATION)
+        self.assertIn("hors fichier de production", mouvement.note)
+        self.assertIn("cabine de salon", mouvement.note)
+        self.assertEqual(mouvement.utilisateur, self.admin)
+
+    def test_une_creation_annoncee_ne_porte_pas_la_mention(self):
+        self.client.force_authenticate(user=self.admin)
+        self.client.post("/api/cabines/",
+                         {"numero": "26_02_49", "chantier": "251314"}, format="json")
+        mouvement = MouvementCabine.objects.get(cabine_numero="26_02_49",
+                                                type=MouvementCabine.CREATION)
+        self.assertNotIn("hors fichier", mouvement.note)
+
+    # -------------------------------------------------- avant le premier import
+    def test_sans_aucun_fichier_importe_la_saisie_reste_libre(self):
+        """Sur une installation neuve, refuser tout rendrait le WMS inutilisable.
+
+        La règle s'arme avec le premier import, pas avant : sinon personne ne
+        pourrait enregistrer la moindre cabine le jour de la mise en service, et
+        rien à l'écran n'expliquerait pourquoi.
+        """
+        CabineAttendue.objects.all().delete()
+        self.client.force_authenticate(user=self.operateur)
+        r = self.client.post("/api/cabines/",
+                             {"numero": "99_99_99", "chantier": "251314"},
+                             format="json")
+        self.assertEqual(r.status_code, 201, getattr(r, "data", None))
+
+    def test_le_front_sait_si_la_regle_est_armee(self):
+        self.client.force_authenticate(user=self.operateur)
+        self.assertTrue(self.client.get("/api/referentiels-cabine/").data["fichier_production"])
+        CabineAttendue.objects.all().delete()
+        self.assertFalse(self.client.get("/api/referentiels-cabine/").data["fichier_production"])

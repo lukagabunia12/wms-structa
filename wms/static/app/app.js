@@ -4628,9 +4628,26 @@ async function interrogerAttendue(numero) {
   } catch (_) { attendue = null; }   // 404 : pas dans le fichier, saisie manuelle
 
   if (attendue) { etat.innerHTML = ''; blocAttendue(attendue); return; }
-  etat.innerHTML = `<div class="banner">${esc(numero)} n'est pas dans le fichier de production.
-    ${peut('data') ? 'Vérifie que le dernier fichier a bien été importé. ' : ''}Les caractéristiques sont à saisir.</div>`;
-  blocSaisieManuelle(numero);
+
+  // Absente du fichier. Trois cas, et le serveur applique exactement la même
+  // règle — l'écran ne fait que ne pas proposer un formulaire voué au refus.
+  if (!REFS_CABINE.fichier_production) {
+    // Aucun fichier importé : le WMS fonctionne comme avant, à la saisie. La
+    // règle ne s'arme qu'avec le premier import, sinon rien ne pourrait entrer.
+    etat.innerHTML = `<div class="banner">Aucun fichier de production n’a encore été
+      importé : les caractéristiques sont à saisir à la main.</div>`;
+    blocSaisieManuelle(numero);
+    return;
+  }
+  if (!ADMIN) {
+    etat.innerHTML = '';
+    blocRefusHorsFichier(numero);
+    return;
+  }
+  etat.innerHTML = `<div class="banner"><b>${esc(numero)}</b> n’est pas annoncée par le
+    fichier de production. En tant qu’administrateur tu peux la créer quand même —
+    dis pourquoi, ce sera écrit au journal.</div>`;
+  blocSaisieManuelle(numero, { horsFichier: true });
 }
 
 const LIGNES_ATTENDUE = [
@@ -4685,9 +4702,29 @@ function blocAttendue(a) {
   };
 }
 
-/** Chemin manuel, inchangé : photo de la fiche puis relecture des champs.
-    Sert aux cabines absentes du fichier — salon, occasion, ligne oubliée. */
-function blocSaisieManuelle(numero) {
+/** Cabine absente du fichier, compte non administrateur : c'est un refus.
+
+    Inventer la fiche d'une cabine inconnue n'a plus de sens depuis que la
+    production annonce ses caractéristiques : l'opérateur n'a pas les éléments,
+    et la reconnaissance de texte confond 0 et O. Deux explications, et une
+    seule personne pour trancher — on le dit plutôt que d'ouvrir un formulaire
+    que le serveur refusera. */
+function blocRefusHorsFichier(numero) {
+  $('#eSuite').innerHTML = `<div class="card" style="margin-top:12px">
+    <div class="banner">La cabine <b>${esc(numero)}</b> n’est pas annoncée par le
+      fichier de production : elle ne peut pas être enregistrée.</div>
+    <div class="meta">Soit le dernier fichier n’a pas encore été importé, soit cette
+      cabine n’y figure pas. Dans les deux cas c’est un administrateur qui tranche :
+      préviens-le avec ce numéro.</div>
+    <button class="btn ghost" id="eAutre">Une autre cabine</button>
+  </div>`;
+  $('#eAutre').onclick = renderEntree;
+}
+
+/** Chemin manuel : photo de la fiche puis relecture des champs. Réservé aux
+    administrateurs dès qu'un fichier de production est importé, et alors avec
+    un motif — c'est le serveur qui l'exige, cet écran ne fait que le demander. */
+function blocSaisieManuelle(numero, options = {}) {
   $('#eSuite').innerHTML = `<div class="card" style="margin-top:12px">
       <div class="sec">2 · Photographier la fiche (facultatif)</div>
       <input type="file" id="photo" accept="image/*" capture="environment">
@@ -4701,6 +4738,10 @@ function blocSaisieManuelle(numero) {
         <label>Type de cabine</label>
         <select id="e_type">${REFS_CABINE.types.map(t => `<option value="${t.code}">${esc(t.libelle)}</option>`).join('')}</select>
         <div class="meta" style="margin-top:6px">${esc(aideChantier())}</div>
+        ${options.horsFichier ? `<label for="eMotif" style="margin-top:12px">Pourquoi cette cabine n’est-elle pas dans le fichier ? *</label>
+        <input id="eMotif" placeholder="Ex. cabine de salon, hors chantier" autocomplete="off" maxlength="180">
+        <div class="meta" style="margin-top:6px">Écrit au journal avec ton nom. C’est
+          la seule trace de cette exception.</div>` : ''}
       </div>
       <button class="btn orange" id="eCreer">Créer la cabine</button>
     </div>
@@ -4716,6 +4757,17 @@ async function creerCabineDepuisEntree() {
   const corps = { type_cabine: $('#e_type').value };
   CHAMPS_ENTREE.forEach(([cle]) => { corps[cle] = $('#e_' + cle).value.trim(); });
   if (!corps.numero) { toast('Le n° de cabine est obligatoire.', 'err'); return; }
+  // Le serveur refuse une création hors fichier sans motif ; l'annoncer ici évite
+  // un aller-retour et un message d'erreur là où une phrase suffit.
+  const motif = $('#eMotif');
+  if (motif) {
+    corps.motif_hors_fichier = motif.value.trim();
+    if (!corps.motif_hors_fichier) {
+      toast('Dis pourquoi tu crées cette cabine hors fichier.', 'err');
+      motif.focus();
+      return;
+    }
+  }
   try { await creerCabine(corps); } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -5584,6 +5636,10 @@ async function appliquerImport(bouton) {
     catch (_) { throw new Error('Réponse illisible du serveur.'); }
     if (!r.ok) throw new Error(messageErreur(rep, r.status));
     toast(`${rep.importees} ligne(s) importée(s)`, 'ok');
+    // Le premier import arme la règle « une cabine non annoncée ne s'enregistre
+    // pas ». `REFS_CABINE` est mis en cache pour la session : sans cette remise à
+    // zéro, l'écran d'entrée continuerait de proposer la saisie libre.
+    REFS_CABINE = { statuts: [], types: [], places: [] };
     renderImport();
   } catch (e) {
     bouton.disabled = false;
