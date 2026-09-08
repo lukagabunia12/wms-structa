@@ -12,6 +12,7 @@ router.register("receptions", views.ReceptionViewSet)
 router.register("cabines", views.CabineViewSet)
 router.register("cabines-attendues", views.CabineAttendueViewSet,
                 basename="cabine-attendue")
+router.register("modeles-cabine", views.ModeleCabineViewSet, basename="modele-cabine")
 router.register("zones", views.ZoneViewSet)
 router.register("mouvements-cabine", views.MouvementCabineViewSet, basename="mouvement-cabine")
 router.register("etats-cabine", views.EtatCabineViewSet)

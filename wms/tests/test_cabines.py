@@ -65,22 +65,23 @@ class ZonesTest(BaseCabines):
 
 
 class PlacesTest(BaseCabines):
-    def test_trois_places_libres_au_depart(self):
+    def test_deux_places_libres_au_depart(self):
+        """Deux places, plus trois : les modèles ont grandi, la travée non."""
         r = self.client.get(f"/api/emplacements/{self.e1.id}/places/")
-        self.assertEqual(r.data["libres"], ["G", "M", "D"])
+        self.assertEqual(r.data["libres"], ["G", "D"])
         self.assertFalse(r.data["complet"])
 
     def test_place_prise_disparait_des_options(self):
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=self.e1, place="G", utilisateur=self.user)
         r = self.client.get(f"/api/emplacements/{self.e1.id}/places/")
-        self.assertEqual(r.data["libres"], ["M", "D"])
+        self.assertEqual(r.data["libres"], ["D"])
         occupee = [p for p in r.data["places"] if p["code"] == "G"][0]
         self.assertFalse(occupee["libre"])
         self.assertEqual(occupee["cabine"]["numero"], "00_00_01")
 
     def test_emplacement_complet_bloque_le_rangement(self):
-        for i, place in enumerate(["G", "M", "D"], start=1):
+        for i, place in enumerate(["G", "D"], start=1):
             c = self.cabine(numero=f"00_00_0{i}", chantier=f"00000{i}")
             services_cabines.ranger(cabine=c, emplacement=self.e1, place=place,
                                     utilisateur=self.user)
@@ -96,10 +97,10 @@ class PlacesTest(BaseCabines):
 
     def test_place_liberee_redevient_disponible(self):
         c = self.cabine()
-        services_cabines.ranger(cabine=c, emplacement=self.e1, place="M", utilisateur=self.user)
+        services_cabines.ranger(cabine=c, emplacement=self.e1, place="D", utilisateur=self.user)
         services_cabines.sortir_de_l_emplacement(cabine=c, utilisateur=self.user)
         r = self.client.get(f"/api/emplacements/{self.e1.id}/places/")
-        self.assertEqual(r.data["libres"], ["G", "M", "D"])
+        self.assertEqual(r.data["libres"], ["G", "D"])
 
     def test_place_inconnue_refusee(self):
         c = self.cabine()
@@ -132,10 +133,10 @@ class RangementTest(BaseCabines):
     def test_transfert_note_les_deux_positions(self):
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=self.e1, place="G", utilisateur=self.user)
-        services_cabines.ranger(cabine=c, emplacement=self.e2, place="M", utilisateur=self.user)
+        services_cabines.ranger(cabine=c, emplacement=self.e2, place="D", utilisateur=self.user)
         mv = MouvementCabine.objects.filter(type=MouvementCabine.TRANSFERT).first()
         self.assertEqual(mv.depuis, "À ranger cabines / C001·G")
-        self.assertEqual(mv.vers, "Sortie prod / C002·M")
+        self.assertEqual(mv.vers, "Sortie prod / C002·D")
 
     def test_ranger_deux_fois_la_meme_place_refuse(self):
         c = self.cabine()
@@ -294,7 +295,7 @@ class StatutsTest(BaseCabines):
 class EnvoiEtArchivesTest(BaseCabines):
     def test_envoi_libere_la_place_et_archive(self):
         c = self.cabine()
-        services_cabines.ranger(cabine=c, emplacement=self.e1, place="M", utilisateur=self.user)
+        services_cabines.ranger(cabine=c, emplacement=self.e1, place="D", utilisateur=self.user)
         r = self.client.post(f"/api/cabines/{c.id}/envoyer/", {"note": "Camion 12"},
                              format="json")
         self.assertEqual(r.status_code, 200)
@@ -303,7 +304,7 @@ class EnvoiEtArchivesTest(BaseCabines):
         self.assertIsNone(c.emplacement)
         self.assertEqual(c.place, "")
         mv = MouvementCabine.objects.filter(type=MouvementCabine.ENVOI).first()
-        self.assertEqual(mv.depuis, "À ranger cabines / C001·M")
+        self.assertEqual(mv.depuis, "À ranger cabines / C001·D")
         self.assertEqual(mv.note, "Camion 12")
 
     def test_cabine_envoyee_absente_de_la_liste_active(self):
@@ -433,10 +434,10 @@ class RechercheCabinesTest(BaseCabines):
         self.assertEqual(self.client.get("/api/cabines/?search=QUATTRO").data["count"], 1)
 
     def test_position_et_zone_exposees(self):
-        services_cabines.ranger(cabine=self.c1, emplacement=self.e1, place="M",
+        services_cabines.ranger(cabine=self.c1, emplacement=self.e1, place="D",
                                 utilisateur=self.user)
         fiche = self.client.get(f"/api/cabines/{self.c1.id}/").data
-        self.assertEqual(fiche["position"], "C001·M")
+        self.assertEqual(fiche["position"], "C001·D")
         self.assertEqual(fiche["zone_nom"], "À ranger cabines")
         self.assertEqual(fiche["statut_libelle"], "Conforme")
         self.assertEqual(fiche["type_libelle"], "Normale")
@@ -465,7 +466,7 @@ class ListeEmplacementsTest(BaseCabines):
         self.c3 = self.cabine(numero="99_88_77", chantier="000111", modele="QUATTRO")
         services_cabines.ranger(cabine=self.c1, emplacement=self.e1, place="G",
                                 utilisateur=self.user)
-        services_cabines.ranger(cabine=self.c2, emplacement=self.e1, place="M",
+        services_cabines.ranger(cabine=self.c2, emplacement=self.e1, place="D",
                                 utilisateur=self.user)
         services_cabines.ranger(cabine=self.c3, emplacement=self.e2, place="D",
                                 utilisateur=self.user)
@@ -476,9 +477,13 @@ class ListeEmplacementsTest(BaseCabines):
     def test_cabines_associees_dans_la_liste(self):
         e = [x for x in self.client.get("/api/emplacements/").data["results"]
              if x["code"] == "C001"][0]
-        self.assertEqual([c["numero"] for c in e["cabines"]], ["00_00_01", "00_00_02"])
-        self.assertEqual(e["places_occupees"], ["G", "M"])
-        self.assertEqual(e["places_libres"], ["D"])
+        # Ordre par place, de gauche à droite : c'est l'ordre où on les voit
+        # devant le rack, et non l'ordre des numéros.
+        self.assertEqual(sorted(c["numero"] for c in e["cabines"]),
+                         ["00_00_01", "00_00_02"])
+        self.assertEqual(e["places_occupees"], ["D", "G"])
+        # Les deux places sont prises : la travée est pleine.
+        self.assertEqual(e["places_libres"], [])
         self.assertEqual(e["zone_cabine_nom"], "À ranger cabines")
 
     def test_cabine_envoyee_absente_de_l_emplacement(self):
@@ -486,7 +491,8 @@ class ListeEmplacementsTest(BaseCabines):
         e = [x for x in self.client.get("/api/emplacements/").data["results"]
              if x["code"] == "C001"][0]
         self.assertEqual([c["numero"] for c in e["cabines"]], ["00_00_02"])
-        self.assertEqual(e["places_libres"], ["G", "D"])
+        # Une seule place rendue : l'autre porte toujours sa cabine.
+        self.assertEqual(e["places_libres"], ["G"])
 
     def test_filtre_par_numero_de_cabine(self):
         self.assertEqual(self.codes("/api/emplacements/?cabine=99_88"), ["C002"])
@@ -505,7 +511,7 @@ class ListeEmplacementsTest(BaseCabines):
         """Chantier 000222 + statut chargé : aucune cabine ne réunit les deux.
 
         Avec des filtres appliqués séparément, C001 ressortirait à tort — sa place G
-        porte le chantier 000111 et sa place M pourrait porter le statut cherché.
+        porte le chantier 000111 et sa place D pourrait porter le statut cherché.
         """
         services_cabines.changer_statut(cabine=self.c1, statut=Cabine.QUARANTAINE,
                                         utilisateur=self.user)
@@ -519,17 +525,24 @@ class ListeEmplacementsTest(BaseCabines):
                          ["C002", "C003"])
 
     def test_filtre_par_occupation(self):
+        """C001 porte deux cabines : sur deux places, elle est COMPLÈTE.
+
+        Avec trois places elle était « partielle ». La règle a changé, pas le
+        filtre : c'est exactement ce que ce test doit constater.
+        """
         self.assertEqual(self.codes("/api/emplacements/?occupation=libre"), ["C003"])
-        self.assertEqual(sorted(self.codes("/api/emplacements/?occupation=partiel")),
-                         ["C001", "C002"])
-        self.assertEqual(self.codes("/api/emplacements/?occupation=complet"), [])
+        self.assertEqual(self.codes("/api/emplacements/?occupation=partiel"), ["C002"])
+        self.assertEqual(self.codes("/api/emplacements/?occupation=complet"), ["C001"])
 
     def test_emplacement_complet_detecte(self):
-        c4 = self.cabine(numero="44_44_44", chantier="000444")
-        services_cabines.ranger(cabine=c4, emplacement=self.e1, place="D",
-                                utilisateur=self.user)
+        """Une troisième cabine n'entre plus : la travée n'a que deux places."""
         self.assertEqual(self.codes("/api/emplacements/?occupation=complet"), ["C001"])
         self.assertNotIn("C001", self.codes("/api/emplacements/?occupation=partiel"))
+
+        c4 = self.cabine(numero="44_44_44", chantier="000444")
+        with self.assertRaises(services_cabines.ErreurCabine):
+            services_cabines.ranger(cabine=c4, emplacement=self.e1, place="D",
+                                    utilisateur=self.user)
 
     def test_tri_par_code(self):
         self.assertEqual(self.codes("/api/emplacements/?ordering=code")[:3],
@@ -545,7 +558,7 @@ class ListeEmplacementsTest(BaseCabines):
         """Le filtre sur une cabine ne doit pas réduire le nombre de places occupées."""
         e = [x for x in self.client.get("/api/emplacements/?cabine=00_00_01").data["results"]][0]
         self.assertEqual(e["code"], "C001")
-        self.assertEqual(e["places_occupees"], ["G", "M"])
+        self.assertEqual(e["places_occupees"], ["D", "G"])
 
     def test_recherche_libre_sur_le_code(self):
         self.assertEqual(self.codes("/api/emplacements/?search=C003"), ["C003"])
@@ -560,11 +573,11 @@ class ModeDeRangementTest(BaseCabines):
             code="ARANGER", zone_cabine=self.zone_ranger,
             mode_places=Emplacement.ILLIMITE)
 
-    def test_mode_par_defaut_trois_places(self):
-        self.assertEqual(self.e1.mode_places, Emplacement.GMD)
+    def test_mode_par_defaut_deux_places(self):
+        self.assertEqual(self.e1.mode_places, Emplacement.GD)
         self.assertFalse(self.e1.illimite)
 
-    def test_illimite_accepte_plus_de_trois_cabines(self):
+    def test_illimite_accepte_plus_de_deux_cabines(self):
         for i in range(1, 6):
             c = self.cabine(numero=f"00_00_0{i}", chantier=f"00000{i}")
             services_cabines.ranger(cabine=c, emplacement=self.tampon, utilisateur=self.user)
@@ -613,12 +626,12 @@ class ModeDeRangementTest(BaseCabines):
     def test_transfert_entre_les_deux_modes(self):
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=self.tampon, utilisateur=self.user)
-        services_cabines.ranger(cabine=c, emplacement=self.e1, place="M", utilisateur=self.user)
+        services_cabines.ranger(cabine=c, emplacement=self.e1, place="D", utilisateur=self.user)
         c.refresh_from_db()
-        self.assertEqual(c.place, "M")
+        self.assertEqual(c.place, "D")
         mv = MouvementCabine.objects.filter(type=MouvementCabine.TRANSFERT).first()
         self.assertEqual(mv.depuis, "À ranger cabines / ARANGER")
-        self.assertEqual(mv.vers, "À ranger cabines / C001·M")
+        self.assertEqual(mv.vers, "À ranger cabines / C001·D")
 
     def test_creation_par_api_avec_choix_du_mode(self):
         r = self.client.post("/api/emplacements/",
@@ -631,16 +644,16 @@ class ModeDeRangementTest(BaseCabines):
 
     def test_changement_de_mode_sur_emplacement_vide(self):
         r = self.client.patch(f"/api/emplacements/{self.tampon.id}/",
-                              {"mode_places": Emplacement.GMD}, format="json")
+                              {"mode_places": Emplacement.GD}, format="json")
         self.assertEqual(r.status_code, 200)
         self.tampon.refresh_from_db()
-        self.assertEqual(self.tampon.mode_places, Emplacement.GMD)
+        self.assertEqual(self.tampon.mode_places, Emplacement.GD)
 
     def test_changement_de_mode_refuse_si_occupe(self):
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=self.tampon, utilisateur=self.user)
         r = self.client.patch(f"/api/emplacements/{self.tampon.id}/",
-                              {"mode_places": Emplacement.GMD}, format="json")
+                              {"mode_places": Emplacement.GD}, format="json")
         self.assertEqual(r.status_code, 400)
         self.assertIn("mode_places", r.data)
         self.tampon.refresh_from_db()
@@ -748,7 +761,7 @@ class EtapesProcessusTest(BaseCabines):
 
     def test_etape_exposee_par_l_api(self):
         c = self.cabine()
-        services_cabines.ranger(cabine=c, emplacement=self.quai, place="M",
+        services_cabines.ranger(cabine=c, emplacement=self.quai, place="D",
                                 utilisateur=self.user)
         fiche = self.client.get(f"/api/cabines/{c.id}/").data
         self.assertEqual(fiche["etape"], "envoi")
@@ -975,7 +988,7 @@ class ReferentielsTest(BaseCabines):
         r = self.client.get("/api/referentiels-cabine/")
         self.assertEqual([s["code"] for s in r.data["statuts"]],
                          ["libre", "quarantaine", "envoye"])
-        self.assertEqual([p["code"] for p in r.data["places"]], ["G", "M", "D"])
+        self.assertEqual([p["code"] for p in r.data["places"]], ["G", "D"])
         self.assertEqual([t["code"] for t in r.data["types"]],
                          ["normale", "express", "salon", "occasion"])
 

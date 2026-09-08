@@ -41,9 +41,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **o):
         from rest_framework.authtoken.models import Token
-        from wms.models import (Article, Cabine, Categorie, Emplacement, EtatCabine,
-                                Mouvement, MouvementCabine, Reception, Stock,
-                                Utilisateur, Zone)
+        from wms.models import (Article, Cabine, CabineAttendue, Categorie,
+                                Emplacement, EtatCabine, ModeleCabine, Mouvement,
+                                MouvementCabine, Reception, Stock, Utilisateur, Zone)
 
         # L'ordre compte : les tables qui référencent les autres passent d'abord.
         # `Stock.emplacement` est en PROTECT — supprimer les emplacements avant les
@@ -76,6 +76,15 @@ class Command(BaseCommand):
         if o["garder_referentiel"]:
             self.stdout.write(f"\n  Conservé : {Emplacement.objects.count()} emplacement(s), "
                               f"{Zone.objects.count()} zone(s)")
+        # Dit dans TOUS les cas, y compris sans --garder-referentiel : ces deux
+        # tables ne sont pas des données d'entrepôt mais du référentiel, et rien
+        # ne les efface. Le taire laisserait croire que la remise à zéro a tout
+        # emporté — et l'opérateur réimporterait un fichier déjà là, ou
+        # rechercherait des réglages de taille qu'il croit perdus.
+        self.stdout.write(
+            f"  Conservé : {CabineAttendue.objects.count()} cabine(s) annoncée(s) "
+            f"par le fichier de production, {ModeleCabine.objects.count()} "
+            f"réglage(s) de taille de modèle")
         if not o["tout"]:
             comptes = ", ".join(Utilisateur.objects.values_list("username", flat=True))
             self.stdout.write(f"  Conservé : compte(s) {comptes or '—'}")

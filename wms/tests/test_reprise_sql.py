@@ -12,7 +12,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from wms.management.commands.reprise_sql import Command, modeles_a_recaler
-from wms.models import Cabine, Emplacement, Utilisateur
+from wms.models import Cabine, Emplacement, ModeleCabine, Utilisateur
 
 
 class RepriseTest(TestCase):
@@ -54,8 +54,35 @@ class RepriseTest(TestCase):
         Cabine.objects.all().delete()
         Emplacement.objects.all().delete()
         Utilisateur.objects.all().delete()
+        # Les grands modèles semés par la migration 0020 comptent des lignes :
+        # sans les retirer, la base n'est plus « vide » et rien ne serait refusé.
+        ModeleCabine.objects.all().delete()
         with self.assertRaisesMessage(CommandError, "vide"):
             call_command("reprise_sql", "exporter", vers=str(self.dossier), verbosity=0)
+
+    def test_une_base_fraichement_migree_accepte_la_reprise(self):
+        """Le cas de la remise en service, et il a failli être cassé.
+
+        Une base neuve n'est pas vide : la migration 0020 y sème les six grands
+        modèles. Le contrôle « la base cible n'est pas vide » les comptait, et
+        refusait donc la reprise exactement le jour où elle doit marcher — avec
+        un message qui aurait envoyé chercher des données inexistantes.
+
+        Le chargement doit aussi passer : les mêmes modèles arrivent dans le
+        fichier, et `ModeleCabine.cle` est unique.
+        """
+        manifeste = self.exporter()
+        Cabine.objects.all().delete()
+        Emplacement.objects.all().delete()
+        Utilisateur.objects.all().delete()
+        # Ce que `migrate` laisse sur une base neuve, et rien d'autre.
+        self.assertTrue(ModeleCabine.objects.exists())
+
+        call_command("reprise_sql", "importer", depuis=str(self.dossier), verbosity=0)
+        self.assertEqual(Cabine.objects.count(), 1)
+        self.assertEqual(Emplacement.objects.count(), 1)
+        self.assertEqual(ModeleCabine.objects.count(),
+                         manifeste["comptages"]["wms.modelecabine"])
 
     def test_import_refuse_une_base_deja_peuplee(self):
         """Charger par-dessus des données existantes produit des doublons de clé."""

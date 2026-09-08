@@ -53,10 +53,10 @@ class LeCasCourantNeChangePasTest(BaseMulti):
         cabine = self.cabine()
         services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
                                 utilisateur=self.u)
-        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="M",
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="D",
                                 utilisateur=self.u)
         cabine.refresh_from_db()
-        self.assertEqual(cabine.position, "AC-110-1·M")
+        self.assertEqual(cabine.position, "AC-110-1·D")
         self.assertEqual(len(cabine.emplacements_occupes), 1)
         # L'ancienne place est libérée.
         self.assertIn("G", services_cabines.places_libres(self.e1))
@@ -65,7 +65,7 @@ class LeCasCourantNeChangePasTest(BaseMulti):
         cabine = self.cabine()
         services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
                                 utilisateur=self.u)
-        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="M",
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="D",
                                 utilisateur=self.u)
         dernier = cabine.historique.order_by("-date").first()
         self.assertEqual(dernier.type, "transfert")
@@ -78,10 +78,10 @@ class AjouterUnEmplacementTest(BaseMulti):
         cabine = self.cabine()
         services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
                                 utilisateur=self.u)
-        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="M",
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="D",
                                 ajouter=True, utilisateur=self.u)
         cabine.refresh_from_db()
-        self.assertEqual(cabine.position, "AC-100-1·G, AC-110-1·M")
+        self.assertEqual(cabine.position, "AC-100-1·G, AC-110-1·D")
         self.assertEqual(len(cabine.emplacements_occupes), 2)
         # La première place reste prise.
         self.assertNotIn("G", services_cabines.places_libres(self.e1))
@@ -90,7 +90,7 @@ class AjouterUnEmplacementTest(BaseMulti):
         cabine = self.cabine()
         services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
                                 utilisateur=self.u)
-        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="M",
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="D",
                                 ajouter=True, utilisateur=self.u)
         cabine.refresh_from_db()
         self.assertTrue(cabine.rangee)
@@ -101,7 +101,7 @@ class AjouterUnEmplacementTest(BaseMulti):
         cabine = self.cabine()
         services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
                                 utilisateur=self.u)
-        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="M",
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="D",
                                 ajouter=True, utilisateur=self.u)
         dernier = cabine.historique.order_by("-date").first()
         self.assertEqual(dernier.type, "rangement")
@@ -111,7 +111,7 @@ class AjouterUnEmplacementTest(BaseMulti):
         cabine = self.cabine()
         e3 = Emplacement.objects.create(code="AC-120-1", rack="AC", colonne="120",
                                         niveau=1, zone_cabine=self.zone)
-        for emp, place in ((self.e1, "G"), (self.e2, "M"), (e3, "D")):
+        for emp, place in ((self.e1, "G"), (self.e2, "D"), (e3, "G")):
             services_cabines.ranger(cabine=cabine, emplacement=emp, place=place,
                                     ajouter=True, utilisateur=self.u)
         cabine.refresh_from_db()
@@ -142,7 +142,7 @@ class ApiTest(BaseMulti):
         self.c.post(f"/api/cabines/{cabine.pk}/ranger/",
                     {"emplacement": self.e1.pk, "place": "G"}, format="json")
         r = self.c.post(f"/api/cabines/{cabine.pk}/ranger/",
-                        {"emplacement": self.e2.pk, "place": "M", "ajouter": True},
+                        {"emplacement": self.e2.pk, "place": "D", "ajouter": True},
                         format="json")
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(len(r.data["occupations"]), 2)
@@ -153,31 +153,31 @@ class ApiTest(BaseMulti):
         self.c.post(f"/api/cabines/{cabine.pk}/ranger/",
                     {"emplacement": self.e1.pk, "place": "G"}, format="json")
         r = self.c.post(f"/api/cabines/{cabine.pk}/ranger/",
-                        {"emplacement": self.e2.pk, "place": "M"}, format="json")
+                        {"emplacement": self.e2.pk, "place": "D"}, format="json")
         self.assertEqual(r.data["nb_emplacements"], 1)
-        self.assertEqual(r.data["position"], "AC-110-1·M")
+        self.assertEqual(r.data["position"], "AC-110-1·D")
 
     def test_la_fiche_liste_les_emplacements(self):
         cabine = self.cabine()
         services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
                                 utilisateur=self.u)
-        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="M",
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="D",
                                 ajouter=True, utilisateur=self.u)
         d = self.c.get(f"/api/cabines/{cabine.pk}/").data
         self.assertEqual(d["nb_emplacements"], 2)
         self.assertEqual([o["position"] for o in d["occupations"]],
-                         ["AC-100-1·G", "AC-110-1·M"])
+                         ["AC-100-1·G", "AC-110-1·D"])
         self.assertTrue(d["rangee"])
 
     def test_l_api_places_nomme_la_cabine(self):
         cabine = self.cabine()
-        services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="M",
+        services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="D",
                                 utilisateur=self.u)
         d = self.c.get(f"/api/emplacements/{self.e1.pk}/places/").data
-        milieu = next(p for p in d["places"] if p["code"] == "M")
-        self.assertFalse(milieu["libre"])
-        self.assertEqual(milieu["cabine"]["numero"], cabine.numero)
-        self.assertEqual(milieu["occupation"]["position"], "AC-100-1·M")
+        droite = next(p for p in d["places"] if p["code"] == "D")
+        self.assertFalse(droite["libre"])
+        self.assertEqual(droite["cabine"]["numero"], cabine.numero)
+        self.assertEqual(droite["occupation"]["position"], "AC-100-1·D")
 
     def test_creer_une_cabine_ne_demande_aucun_nombre(self):
         r = self.c.post("/api/cabines/", {"numero": "08_00_20", "chantier": "100002"},
@@ -192,7 +192,7 @@ class SortieEtEnvoiTest(BaseMulti):
         cabine = self.cabine(numero)
         services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
                                 utilisateur=self.u)
-        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="M",
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="D",
                                 ajouter=True, utilisateur=self.u)
         return cabine
 
@@ -202,7 +202,7 @@ class SortieEtEnvoiTest(BaseMulti):
         cabine.refresh_from_db()
         self.assertEqual(cabine.emplacements_occupes, [])
         self.assertIn("G", services_cabines.places_libres(self.e1))
-        self.assertIn("M", services_cabines.places_libres(self.e2))
+        self.assertIn("D", services_cabines.places_libres(self.e2))
 
     def test_sortir_un_seul_emplacement(self):
         cabine = self.cabine_a_deux_endroits()
@@ -211,7 +211,7 @@ class SortieEtEnvoiTest(BaseMulti):
                                                  utilisateur=self.u)
         cabine.refresh_from_db()
         self.assertEqual(len(cabine.emplacements_occupes), 1)
-        self.assertEqual(cabine.position, "AC-110-1·M")
+        self.assertEqual(cabine.position, "AC-110-1·D")
 
     def test_envoyer_libere_tout(self):
         cabine = self.cabine_a_deux_endroits()
@@ -219,14 +219,14 @@ class SortieEtEnvoiTest(BaseMulti):
         cabine.refresh_from_db()
         self.assertEqual(cabine.position, "")
         self.assertIn("G", services_cabines.places_libres(self.e1))
-        self.assertIn("M", services_cabines.places_libres(self.e2))
+        self.assertIn("D", services_cabines.places_libres(self.e2))
 
     def test_l_envoi_note_les_deux_positions(self):
         cabine = self.cabine_a_deux_endroits()
         services_cabines.envoyer(cabine=cabine, utilisateur=self.u)
         envoi = cabine.historique.filter(type="envoi").first()
         self.assertIn("AC-100-1·G", envoi.depuis)
-        self.assertIn("AC-110-1·M", envoi.depuis)
+        self.assertIn("AC-110-1·D", envoi.depuis)
 
 
 class FiltresTest(BaseMulti):
@@ -239,7 +239,7 @@ class FiltresTest(BaseMulti):
         cabine = self.cabine("08_00_40")
         services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
                                 utilisateur=self.u)
-        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="M",
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="D",
                                 ajouter=True, utilisateur=self.u)
         self.assertIn("08_00_40", self.numeros("/api/cabines/?rangee=1"))
         self.assertNotIn("08_00_40", self.numeros("/api/cabines/?rangee=0"))
@@ -248,7 +248,7 @@ class FiltresTest(BaseMulti):
         cabine = self.cabine("08_00_41")
         services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
                                 utilisateur=self.u)
-        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="M",
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="D",
                                 ajouter=True, utilisateur=self.u)
         self.assertEqual(self.c.get("/api/cabines/?rack=AC").data["count"], 1)
 

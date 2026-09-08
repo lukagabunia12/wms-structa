@@ -103,11 +103,12 @@ class Zone(models.Model):
 
 class Emplacement(models.Model):
     #: Mode de rangement des cabines, réglable emplacement par emplacement.
-    #: « gmd » : trois places nommées, une cabine chacune (travée de rack).
+    #: « gd » : deux places nommées, une cabine chacune (travée de rack) — ou une
+    #: seule cabine qui prend la travée entière, si c'est un grand modèle.
     #: « illimite » : pas de place nommée, autant de cabines que nécessaire
     #: (zone tampon « à ranger », aire de sortie prod…).
-    GMD, ILLIMITE = "gmd", "illimite"
-    MODES_PLACES = [(GMD, "3 places (gauche, milieu, droite)"),
+    GD, ILLIMITE = "gd", "illimite"
+    MODES_PLACES = [(GD, "2 places (gauche, droite)"),
                     (ILLIMITE, "Capacité illimitée")]
 
     code = models.CharField(max_length=64, unique=True)
@@ -119,7 +120,7 @@ class Emplacement(models.Model):
     zone_cabine = models.ForeignKey("Zone", null=True, blank=True, on_delete=models.SET_NULL,
                                     related_name="emplacements", verbose_name="zone de cabines")
     mode_places = models.CharField("mode de rangement", max_length=16,
-                                   choices=MODES_PLACES, default=GMD)
+                                   choices=MODES_PLACES, default=GD)
 
     #: Position dans la structure physique, renseignée par le générateur de racks.
     #: Le code seul ne suffit pas : « AC551 » ne dit pas à une machine que c'est le
@@ -302,8 +303,13 @@ class Cabine(models.Model):
     STATUTS = [(LIBRE, "Conforme"), (QUARANTAINE, "En quarantaine"),
                (ENVOYE, "Envoyée")]
 
-    GAUCHE, MILIEU, DROITE = "G", "M", "D"
-    PLACES = [(GAUCHE, "Gauche"), (MILIEU, "Milieu"), (DROITE, "Droite")]
+    #: Deux places, plus trois. Une travée tenait trois cabines quand les modèles
+    #: étaient plus petits ; elle en tient deux aujourd'hui, et une seule quand
+    #: c'est un grand modèle — voir `ModeleCabine`. « Milieu » a donc disparu :
+    #: le garder « au cas où » aurait laissé l'écran proposer une place qui
+    #: n'existe pas, et un cariste y aurait rangé une cabine.
+    GAUCHE, DROITE = "G", "D"
+    PLACES = [(GAUCHE, "Gauche"), (DROITE, "Droite")]
 
     #: Le dernier groupe va de 1 à 3 chiffres. Il en exigeait exactement deux, et
     #: refusait donc les 94 cabines « 25_49_400 » du fichier de production : une
@@ -485,6 +491,17 @@ class Cabine(models.Model):
         """
         return ", ".join(o.position for o in self.emplacements_occupes)
 
+    @property
+    def prend_toute_la_travee(self):
+        """Cette cabine occupe-t-elle la travée entière ?
+
+        Lu à chaque rangement plutôt que stocké sur la cabine : la taille est une
+        propriété du MODÈLE, et le jour où un modèle est reclassé, les cabines
+        déjà en stock doivent suivre. Une copie sur la fiche aurait figé la règle
+        au moment de l'entrée.
+        """
+        return ModeleCabine.est_grand(self.modele)
+
     def clean(self):
         super().clean()
         # Express, salon et occasion circulent sans chantier ; les autres non.
@@ -515,6 +532,68 @@ class Cabine(models.Model):
         return f"{self.numero} (chantier {self.chantier or '—'})"
 
 
+class ModeleCabine(models.Model):
+    """La taille d'un modèle de cabine, et rien d'autre.
+
+    Deux cabines tiennent dans une travée — une seule si c'est un grand modèle.
+    La liste des grands modèles ne peut pas vivre dans le code : le catalogue
+    bouge, et « COLLAB » était déjà annoncé comme grand modèle avant d'apparaître
+    dans un fichier de production. Elle se règle donc à l'écran.
+
+    Un modèle inconnu compte pour NORMAL. C'est le choix qui laisse ranger : un
+    modèle nouveau apparaît dans l'écran des modèles au premier import, marqué
+    normale, et se corrige d'une touche. L'inverse — refuser tout modèle non
+    déclaré — bloquerait l'entrepôt un lundi matin sur une ligne de tableur.
+
+    `cle` sert aux comparaisons, `nom` à l'affichage. Le fichier écrit
+    « XL (2modules) » avec une minuscule au milieu : chercher sur le nom tel
+    quel ferait de « XL (2MODULES) » un second modèle, réglé séparément.
+    """
+
+    #: Les grands modèles connus le jour où la règle a été posée. Semés à la
+    #: première migration, puis la base fait foi : cette liste ne sert plus.
+    GRANDS_AU_DEPART = ["MODELE L", "MODELE XL", "QUATTRO", "COLLAB",
+                        "XL (2modules)", "XL (3modules)"]
+
+    nom = models.CharField("modèle", max_length=120)
+    cle = models.CharField("clé de comparaison", max_length=120, unique=True)
+    grand = models.BooleanField("prend toute la travée", default=False)
+    modifie_le = models.DateTimeField("modifié le", auto_now=True)
+    modifie_par = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="modeles_regles", verbose_name="réglé par")
+
+    class Meta:
+        verbose_name = "modèle de cabine"
+        verbose_name_plural = "modèles de cabine"
+        ordering = ["nom"]
+
+    @staticmethod
+    def normaliser(nom):
+        """« xl (2modules) » et « XL  (2MODULES) » désignent le même modèle."""
+        return " ".join(str(nom or "").split()).upper()
+
+    def save(self, *args, **kwargs):
+        self.nom = " ".join(str(self.nom or "").split())
+        self.cle = self.normaliser(self.nom)
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def grands(cls):
+        """Les clés des modèles qui prennent toute la travée."""
+        return set(cls.objects.filter(grand=True).values_list("cle", flat=True))
+
+    @classmethod
+    def est_grand(cls, nom):
+        cle = cls.normaliser(nom)
+        if not cle:
+            return False
+        return cls.objects.filter(cle=cle, grand=True).exists()
+
+    def __str__(self):
+        return f"{self.nom} — {'toute la travée' if self.grand else 'une place'}"
+
+
 class Occupation(models.Model):
     """Un emplacement occupé par une cabine.
 
@@ -532,8 +611,15 @@ class Occupation(models.Model):
     Une cabine porte toujours au moins une ligne — vide tant qu'elle n'est rangée
     nulle part. Le cas courant se comporte donc exactement comme avant.
     """
-    GAUCHE, MILIEU, DROITE = "G", "M", "D"
-    PLACES = [(GAUCHE, "Gauche"), (MILIEU, "Milieu"), (DROITE, "Droite")]
+    #: Les places STOCKABLES, qui ne sont pas les places CHOISISSABLES. « T »
+    #: n'apparaît dans aucun écran de choix : personne ne décide qu'une cabine
+    #: prend toute la travée, c'est son modèle qui le décide. Mais il faut bien
+    #: l'écrire quelque part, et une place nommée le dit mieux qu'une place vide
+    #: — laquelle veut déjà dire « emplacement à capacité illimitée ».
+    #: La contrainte d'unicité (emplacement, place) fait le reste : deux cabines
+    #: ne peuvent pas prendre la même travée entière.
+    GAUCHE, DROITE, TRAVEE = "G", "D", "T"
+    PLACES = [(GAUCHE, "Gauche"), (DROITE, "Droite"), (TRAVEE, "Toute la travée")]
 
     cabine = models.ForeignKey("Cabine", on_delete=models.CASCADE, related_name="occupations")
     #: Rang d'enregistrement, 1..n. Le premier est celui qu'affichent les écrans

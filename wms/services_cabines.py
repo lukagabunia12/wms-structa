@@ -15,7 +15,8 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Cabine, CabineAttendue, MouvementCabine, Occupation
+from .models import (Cabine, CabineAttendue, ModeleCabine, MouvementCabine,
+                     Occupation)
 
 
 class ErreurCabine(ValidationError):
@@ -121,32 +122,95 @@ def cabines_presentes(emplacement):
             .distinct().order_by("numero"))
 
 
-def places_libres(emplacement):
-    """Places G/M/D encore disponibles, dans l'ordre. Vide si capacité illimitée."""
+def places_libres(emplacement, cabine=None):
+    """Places encore disponibles, dans l'ordre. Vide si capacité illimitée.
+
+    `cabine` change la réponse, et c'est tout l'intérêt : un grand modèle ne se
+    glisse pas à côté d'une autre cabine. Sans lui, la fonction répond pour une
+    cabine ordinaire — ce que veut l'écran qui affiche simplement l'occupation.
+    """
     if emplacement.illimite:
         return []
     prises = set(occupations_presentes(emplacement).exclude(place="")
                  .values_list("place", flat=True))
+    # Une travée prise en entier ne laisse rien, quel que soit ce qui arrive.
+    if Occupation.TRAVEE in prises:
+        return []
+    if cabine is not None and cabine.prend_toute_la_travee:
+        return [] if prises else [Occupation.TRAVEE]
     return [p for p in PLACES if p not in prises]
 
 
-def est_complet(emplacement):
+def est_complet(emplacement, cabine=None):
     """Un emplacement à capacité illimitée n'est jamais complet."""
-    return False if emplacement.illimite else not places_libres(emplacement)
+    return False if emplacement.illimite else not places_libres(emplacement, cabine)
 
 
 def occupation(emplacement):
-    """État des trois places : {'G': occupation|None, 'M': …, 'D': …}.
+    """État des places : {'G': occupation|None, 'D': …}.
 
     Vide pour un emplacement à capacité illimitée : il n'a pas de place nommée,
     ses occupants se lisent par `occupations_presentes()`.
+
+    Une cabine qui prend la travée entière remplit les DEUX places : c'est ce
+    qu'on voit devant le rack, et l'écran affiche ainsi « occupée par 26_02_49 »
+    des deux côtés au lieu d'une place mystérieusement vide où rien ne rentre.
     """
     if emplacement.illimite:
         return {}
     etat = {p: None for p in PLACES}
-    for occupation in occupations_presentes(emplacement).exclude(place=""):
-        etat[occupation.place] = occupation
+    for occ in occupations_presentes(emplacement).exclude(place=""):
+        if occ.place == Occupation.TRAVEE:
+            for p in PLACES:
+                etat[p] = occ
+        elif occ.place in etat:
+            etat[occ.place] = occ
+        # Une place qui n'existe plus — l'ancien « Milieu » — est ignorée plutôt
+        # que de faire lever l'écran. La migration les a détachées ; une base
+        # restaurée d'une vieille sauvegarde pourrait en porter encore.
     return etat
+
+
+def travees_hors_regle():
+    """Travées où deux cabines cohabitent alors que l'une prend toute la place.
+
+    Régler « QUATTRO » sur grand modèle ne déplace aucune cabine, et c'est
+    voulu : le WMS écrirait une position que personne n'a vérifiée devant le
+    rack. Mais la travée qui portait un QUATTRO et une DUO côte à côte ne
+    respecte plus la règle, et il faut le dire — c'est un travail à faire dans
+    l'entrepôt, pas une donnée à corriger à l'écran. Sans cette liste, le
+    reclassement serait silencieux et l'écart se découvrirait un par un, au
+    hasard des rangements refusés.
+    """
+    grands = ModeleCabine.grands()
+    if not grands:
+        return []
+    par_emplacement = {}
+    occupations = (Occupation.objects.exclude(emplacement=None)
+                   .exclude(cabine__statut=Cabine.ENVOYE)
+                   .select_related("cabine", "emplacement")
+                   .order_by("emplacement__code", "place", "cabine__numero"))
+    for occ in occupations:
+        if occ.emplacement.illimite:
+            continue
+        par_emplacement.setdefault(occ.emplacement_id, []).append(occ)
+    hors = []
+    for occs in par_emplacement.values():
+        if len(occs) < 2:
+            continue
+        gros = [o for o in occs
+                if ModeleCabine.normaliser(o.cabine.modele) in grands]
+        if not gros:
+            continue
+        hors.append({
+            "emplacement": occs[0].emplacement_id,
+            "code": occs[0].emplacement.code,
+            "cabines": [{"numero": o.cabine.numero, "modele": o.cabine.modele,
+                         "place": o.place,
+                         "grand": ModeleCabine.normaliser(o.cabine.modele) in grands}
+                        for o in occs],
+        })
+    return sorted(hors, key=lambda h: h["code"])
 
 
 #: Champs repris de la fiche papier : informatifs, sans règle logistique attachée.
@@ -224,8 +288,13 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
            utilisateur=None):
     """Range la cabine sur l'emplacement.
 
-    Le mode de l'emplacement commande : « gmd » exige une place G/M/D libre,
+    Le mode de l'emplacement commande : « gd » exige une place G ou D libre,
     « illimite » n'en accepte aucune et ne limite pas le nombre de cabines.
+
+    Un grand modèle ne choisit rien : il prend la travée entière, et n'entre que
+    si elle est vide. La place envoyée par l'écran est alors corrigée plutôt que
+    refusée — c'est le modèle qui décide, pas l'écran, et un écran qui ignore
+    encore la règle ne doit pas empêcher de ranger.
 
     Sans précision, une cabine déjà rangée est DÉPLACÉE — le comportement de
     toujours. `ajouter=True` lui donne un emplacement DE PLUS, sans libérer le
@@ -241,10 +310,27 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
         if place:
             raise ErreurCabine(
                 f"L'emplacement {emplacement.code} est à capacité illimitée : "
-                "il ne se range pas par place G/M/D.")
+                "il ne se range pas par place G ou D.")
+    elif cabine.prend_toute_la_travee:
+        place = Occupation.TRAVEE
+        voisine = (occupations_presentes(emplacement).exclude(pk=cible.pk)
+                   .exclude(place="").select_related("cabine").first())
+        if voisine:
+            raise ErreurCabine(
+                f"{cabine.numero} est un {cabine.modele} : elle prend toute la "
+                f"travée. {emplacement.code} porte déjà la cabine "
+                f"{voisine.cabine.numero} — libérez la travée, ou choisissez-en "
+                "une autre.")
     else:
         if place not in PLACES:
-            raise ErreurCabine(f"Place inconnue : « {place} ». Attendu G, M ou D.")
+            raise ErreurCabine(f"Place inconnue : « {place} ». Attendu G ou D.")
+        entiere = (occupations_presentes(emplacement).exclude(pk=cible.pk)
+                   .filter(place=Occupation.TRAVEE).select_related("cabine").first())
+        if entiere:
+            raise ErreurCabine(
+                f"{emplacement.code} est occupée en entier par la cabine "
+                f"{entiere.cabine.numero}, un {entiere.cabine.modele or 'grand modèle'} : "
+                "il n'y reste aucune place.")
 
     if cible.emplacement_id == emplacement.pk and cible.place == place:
         raise ErreurCabine("La cabine est déjà à cet emplacement." if emplacement.illimite

@@ -3,8 +3,8 @@ from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 
 from .models import (Occupation, Article, Cabine, CabineAttendue, Categorie,
-                     Emplacement, EtatCabine, Mouvement, MouvementCabine, Reception,
-                     Stock, Zone)
+                     Emplacement, EtatCabine, ModeleCabine, Mouvement, MouvementCabine,
+                     Reception, Stock, Zone)
 
 
 class ChampNormalise(serializers.CharField):
@@ -415,6 +415,24 @@ class CabineSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "chantier": f"Le n° de chantier est obligatoire (sauf pour : {libres})."})
         return attrs
+
+
+class ModeleCabineSerializer(serializers.ModelSerializer):
+    """Un modèle et sa taille. `nb_attendues` et `nb_en_stock` disent combien de
+    cabines la bascule concerne : régler « QUATTRO » sur grand modèle touche 404
+    lignes du fichier de production, et c'est une information qu'on veut AVANT
+    de toucher le bouton, pas après."""
+
+    nb_attendues = serializers.IntegerField(read_only=True, required=False)
+    nb_en_stock = serializers.IntegerField(read_only=True, required=False)
+    regle_par = serializers.CharField(source="modifie_par.nom", read_only=True,
+                                      default="")
+
+    class Meta:
+        model = ModeleCabine
+        fields = ["id", "nom", "cle", "grand", "modifie_le", "regle_par",
+                  "nb_attendues", "nb_en_stock"]
+        read_only_fields = ["cle", "modifie_le"]
 
 
 class MouvementCabineSerializer(serializers.ModelSerializer):

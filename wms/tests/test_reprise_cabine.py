@@ -65,16 +65,16 @@ class RepriseTest(TestCase):
         """Le but de l'opération : pouvoir la reposer dans un rack."""
         services_cabines.reprendre(cabine=self.cab, utilisateur=self.u)
         self.cab.refresh_from_db()
-        services_cabines.ranger(cabine=self.cab, emplacement=self.emp, place="M",
+        services_cabines.ranger(cabine=self.cab, emplacement=self.emp, place="D",
                                 utilisateur=self.u)
         self.cab.refresh_from_db()
         self.assertEqual(self.cab.emplacement, self.emp)
-        self.assertEqual(self.cab.place, "M")
+        self.assertEqual(self.cab.place, "D")
 
     def test_ranger_reste_refuse_tant_qu_elle_est_envoyee(self):
         with self.assertRaises(ErreurCabine):
             services_cabines.ranger(cabine=self.cab, emplacement=self.emp,
-                                    place="M", utilisateur=self.u)
+                                    place="D", utilisateur=self.u)
 
     # --- API ------------------------------------------------------------
     def test_api_reprendre(self):

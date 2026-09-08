@@ -29,7 +29,7 @@ class ExportInventaireTest(TestCase):
                                 utilisateur=cls.u)
         # Rangée à deux endroits.
         cls.double = Cabine.objects.create(numero="26_03_48", chantier="260204")
-        services_cabines.ranger(cabine=cls.double, emplacement=cls.e1, place="M",
+        services_cabines.ranger(cabine=cls.double, emplacement=cls.e1, place="D",
                                 utilisateur=cls.u)
         services_cabines.ranger(cabine=cls.double, emplacement=cls.e2, place="G",
                                 utilisateur=cls.u, ajouter=True)

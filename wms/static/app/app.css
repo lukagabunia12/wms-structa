@@ -504,6 +504,22 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
 .grille-chantier{display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-top:11px}
 .grille-chantier label{margin-top:0}
 
+/* ====================== bascule d'un réglage à deux états ==================
+   Deux états d'un même réglage, et non deux actions : le choix courant est
+   ENCADRÉ, il n'est pas peint en orange. L'orange de cette application veut
+   dire « le geste à faire », et onze lignes d'orange sur un écran de réglage
+   donnaient onze appels à l'action là où il n'y en a aucun. Même langage
+   visuel que les cases de place : bordure brique et fond teinté.            */
+.bascule{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px}
+.bascule button{min-height:44px;padding:9px 8px;font:inherit;font-size:14px;
+  font-weight:600;cursor:pointer;background:var(--surface);color:var(--txt);
+  border:2px solid var(--ligne);border-radius:var(--radius-s);
+  transition:border-color .15s,background .15s}
+.bascule button:hover:not(:disabled){border-color:var(--marine)}
+.bascule button[aria-pressed="true"]{border-color:var(--brique);
+  background:var(--brique-tint);color:var(--brique)}
+.bascule button:disabled{opacity:.5;cursor:not-allowed}
+
 /* ============================ lecture en cours ==============================
    Ce qu'on regarde pendant que le serveur lit la photo de la fiche. Une
    attente muette de dix secondes ressemble à une panne : l'opérateur reprend

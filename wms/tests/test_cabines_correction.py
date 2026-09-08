@@ -131,7 +131,7 @@ class SuppressionCabineTest(BaseCorrection):
         force = self.client.delete(f"/api/cabines/{c.id}/?force=1&motif=erreur")
         self.assertEqual(force.status_code, 204, getattr(force, "data", None))
         # La place redevient libre : c'est justement l'effet à annoncer avant.
-        self.assertEqual(services_cabines.places_libres(self.emp), ["G", "M", "D"])
+        self.assertEqual(services_cabines.places_libres(self.emp), ["G", "D"])
 
     def test_cabine_avec_historique_demande_confirmation(self):
         c = self.cabine()
@@ -183,13 +183,13 @@ class DiagnosticExposeTest(BaseCorrection):
         zone = Zone.objects.create(nom="Attente départ", role=Zone.ENVOI)
         self.emp.zone_cabine = zone
         self.emp.save()
-        services_cabines.ranger(cabine=c, emplacement=self.emp, place="M",
+        services_cabines.ranger(cabine=c, emplacement=self.emp, place="D",
                                 utilisateur=self.user)
         d = self.client.get(f"/api/cabines/{c.id}/").data["suppression"]
         self.assertFalse(d["possible"])
         self.assertEqual(d["motif"], services_cabines.BLOCAGE_RANGEE)
         self.assertTrue(d["forcable"])
-        self.assertIn("C001·M", d["message"])
+        self.assertIn("C001·D", d["message"])
 
     def test_la_liste_ne_paie_pas_le_diagnostic(self):
         self.cabine()

@@ -22,14 +22,15 @@ from rest_framework.response import Response
 from . import (export_inventaire, lecture_fiche, ocr_fiche, services, services_cabines,
                services_import)
 from .models import (Article, Cabine, CabineAttendue, Categorie, Occupation,
-                     Emplacement, EtatCabine, Mouvement, MouvementCabine, Reception,
-                     Stock, Zone)
+                     Emplacement, EtatCabine, ModeleCabine, Mouvement, MouvementCabine,
+                     Reception, Stock, Zone)
 from .permissions import EstAdministrateur
 from .serializers import (ArticleSerializer, CabineAttendueSerializer, CabineSerializer,
                           OccupationSerializer, CategorieSerializer,
                           EmplacementSerializer, EtatCabineSerializer,
-                          MouvementCabineSerializer, MouvementSerializer,
-                          ReceptionSerializer, StockSerializer, ZoneSerializer)
+                          ModeleCabineSerializer, MouvementCabineSerializer,
+                          MouvementSerializer, ReceptionSerializer, StockSerializer,
+                          ZoneSerializer)
 
 logger = logging.getLogger(__name__)
 
@@ -110,20 +111,34 @@ class EmplacementViewSet(viewsets.ModelViewSet):
             qs = qs.filter(occupees=0)
         elif occupation == "complet":
             # Un emplacement illimité n'est jamais complet.
-            qs = qs.filter(mode_places=Emplacement.GMD, occupees__gte=total_places)
+            qs = qs.filter(mode_places=Emplacement.GD, occupees__gte=total_places)
         elif occupation == "partiel":
             qs = qs.filter(occupees__gt=0).exclude(
-                Q(mode_places=Emplacement.GMD) & Q(occupees__gte=total_places))
+                Q(mode_places=Emplacement.GD) & Q(occupees__gte=total_places))
         return qs
 
     @action(detail=True, methods=["get"])
     def places(self, request, pk=None):
-        """Occupation des trois places de l'emplacement scanné.
+        """Occupation des places de l'emplacement scanné.
 
         C'est ce que consomme l'écran de rangement : il ne propose que les places
-        libres, et bloque quand les trois sont prises.
+        libres, et bloque quand elles sont prises.
+
+        `?pour_cabine=<id>` change la réponse, et c'est nécessaire : un grand
+        modèle ne se glisse pas à côté d'une autre cabine. Sans cela l'écran
+        proposerait « Gauche » à une cabine qui prend la travée entière, et le
+        serveur refuserait au dernier moment — après que le cariste l'a posée.
+
+        Le paramètre ne s'appelle pas `cabine` : ce nom est déjà celui du filtre
+        de la LISTE des emplacements (« ceux qui portent telle cabine »), lu par
+        le même `get_queryset()`. Un `?cabine=12` sur cette action-ci filtrait
+        donc l'emplacement lui-même, et la fiche répondait 404.
         """
         emplacement = self.get_object()
+        cabine = None
+        demande = (request.query_params.get("pour_cabine") or "").strip()
+        if demande.isdigit():
+            cabine = Cabine.objects.filter(pk=int(demande)).first()
         occupees = services_cabines.occupation(emplacement)
         presentes = services_cabines.cabines_presentes(emplacement)
         return Response({
@@ -149,8 +164,15 @@ class EmplacementViewSet(viewsets.ModelViewSet):
             ] if not emplacement.illimite else [],
             "cabines": CabineSerializer(presentes, many=True).data,
             "nb_cabines": presentes.count(),
-            "libres": services_cabines.places_libres(emplacement),
-            "complet": services_cabines.est_complet(emplacement),
+            "libres": services_cabines.places_libres(emplacement, cabine),
+            "complet": services_cabines.est_complet(emplacement, cabine),
+            # Ce que l'écran doit dire de CETTE cabine, quand il en tient une.
+            "pour_cabine": ({
+                "id": cabine.id,
+                "numero": cabine.numero,
+                "modele": cabine.modele,
+                "toute_la_travee": cabine.prend_toute_la_travee,
+            } if cabine is not None else None),
         })
 
     @action(detail=False, methods=["post"])
@@ -903,6 +925,10 @@ def referentiels_cabine(request):
         # modèle. Quatre écrans annonçaient « 6 chiffres » en dur ; le jour où le
         # lot a été accepté, aucun ne l'a su et tous continuaient à refuser
         # « 251213-1 » au clavier avant même que le serveur soit consulté.
+        # Les grands modèles, pour que l'écran puisse le dire AVANT le scan de
+        # l'emplacement : « cette cabine prendra toute la travée ».
+        "grands_modeles": sorted(ModeleCabine.objects.filter(grand=True)
+                                 .values_list("nom", flat=True)),
         "aide_chantier": Cabine.AIDE_CHANTIER,
         "taille_chantier": Cabine.TAILLE_CHANTIER,
         # Le motif lui-même : l'écran refuse alors une forme fautive sans
@@ -911,6 +937,100 @@ def referentiels_cabine(request):
         # assouplissement — c'est déjà arrivé avec « 6 chiffres ».
         "motif_chantier": Cabine.MOTIF_CHANTIER,
     })
+
+
+class ModeleCabineViewSet(viewsets.ModelViewSet):
+    """Les modèles de cabine et leur taille — l'écran « Modèles ».
+
+    La liste n'est pas seulement ce qui a été enregistré : elle est complétée par
+    tous les modèles VUS dans le fichier de production et dans le stock. Un
+    modèle qui apparaît au prochain import se règle donc sans que personne ait à
+    le créer, et sans qu'on découvre son existence le jour où une cabine ne
+    rentre pas dans sa travée.
+    """
+
+    queryset = ModeleCabine.objects.all()
+    serializer_class = ModeleCabineSerializer
+    droit_ecriture = "ref"
+    pagination_class = None
+    lookup_field = "pk"
+
+    def list(self, request, *args, **kwargs):
+        """Les modèles enregistrés, plus ceux que les données montrent."""
+        vus = _modeles_vus()
+        connus = {m.cle: m for m in ModeleCabine.objects.select_related("modifie_par")}
+        lignes = []
+        for cle, infos in sorted(vus.items(), key=lambda kv: kv[1]["nom"]):
+            enregistre = connus.pop(cle, None)
+            lignes.append({
+                "id": enregistre.id if enregistre else None,
+                "nom": enregistre.nom if enregistre else infos["nom"],
+                "cle": cle,
+                "grand": bool(enregistre and enregistre.grand),
+                "regle": enregistre is not None,
+                "regle_par": (getattr(enregistre.modifie_par, "nom", "")
+                              if enregistre and enregistre.modifie_par_id else ""),
+                "nb_attendues": infos["attendues"],
+                "nb_en_stock": infos["stock"],
+            })
+        # Un modèle réglé qui n'apparaît plus dans aucune donnée reste montré :
+        # « COLLAB » a été déclaré grand modèle avant sa première cabine, et le
+        # faire disparaître de l'écran l'aurait fait ressaisir.
+        for cle, m in sorted(connus.items(), key=lambda kv: kv[1].nom):
+            lignes.append({
+                "id": m.id, "nom": m.nom, "cle": cle, "grand": m.grand, "regle": True,
+                "regle_par": (getattr(m.modifie_par, "nom", "")
+                              if m.modifie_par_id else ""),
+                "nb_attendues": 0, "nb_en_stock": 0,
+            })
+        return Response({
+            "modeles": lignes,
+            "nb_grands": sum(1 for ligne in lignes if ligne["grand"]),
+            # Ce que le dernier reclassement a laissé derrière lui.
+            "travees_hors_regle": services_cabines.travees_hors_regle(),
+        })
+
+    @action(detail=False, methods=["post"])
+    def regler(self, request):
+        """Pose la taille d'un modèle, en le créant au besoin.
+
+        Un POST par bascule, sur la CLÉ et non sur un identifiant : l'écran
+        affiche des modèles qui n'ont pas encore de ligne en base, et exiger une
+        création préalable aurait demandé deux appels pour une seule touche.
+        """
+        nom = " ".join(str(request.data.get("nom") or "").split())
+        if not nom:
+            raise ErreurAPI("Quel modèle ?")
+        grand = bool(request.data.get("grand"))
+        cle = ModeleCabine.normaliser(nom)
+        modele, _ = ModeleCabine.objects.update_or_create(
+            cle=cle, defaults={"nom": nom, "grand": grand,
+                               "modifie_par": request.user})
+        return Response(ModeleCabineSerializer(modele).data)
+
+
+def _modeles_vus():
+    """Tous les modèles que les données connaissent, avec leurs volumes.
+
+    Deux sources : le fichier de production (ce qui va arriver) et le stock (ce
+    qui est là). Un modèle présent seulement en stock — importé avant que le
+    fichier existe, ou créé hors fichier — doit se régler lui aussi.
+    """
+    vus = {}
+
+    def ajouter(nom, champ):
+        cle = ModeleCabine.normaliser(nom)
+        if not cle:
+            return
+        entree = vus.setdefault(cle, {"nom": " ".join(str(nom).split()),
+                                      "attendues": 0, "stock": 0})
+        entree[champ] += 1
+
+    for nom in CabineAttendue.objects.values_list("modele", flat=True):
+        ajouter(nom, "attendues")
+    for nom in Cabine.objects.exclude(statut=Cabine.ENVOYE).values_list("modele", flat=True):
+        ajouter(nom, "stock")
+    return vus
 
 
 @api_view(["GET"])

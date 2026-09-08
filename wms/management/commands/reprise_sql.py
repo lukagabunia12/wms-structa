@@ -31,6 +31,19 @@ from django.db import connection, transaction
 #: doublons de clé, l'erreur classique d'une reprise Django.
 EXCLUES = ["contenttypes", "auth.Permission", "admin.logentry", "sessions.session"]
 
+#: Lignes qu'une migration crée d'elle-même sur une base neuve. Deux
+#: conséquences, et les deux comptent :
+#:
+#: - elles ne font pas d'une base « déjà peuplée ». Sans cette liste, une base
+#:   fraîchement migrée porte les six grands modèles semés par 0020, et l'import
+#:   refusait la reprise en annonçant une base non vide — exactement quand elle
+#:   devait marcher, le jour d'une remise en service ;
+#: - elles sont retirées AVANT le chargement. Les mêmes modèles arrivent dans le
+#:   fichier, et `ModeleCabine.cle` est unique : deux lignes « QUATTRO » de clés
+#:   primaires différentes se heurteraient, et la reprise échouerait à moitié
+#:   faite si elle n'était pas dans une transaction.
+SEMEES_PAR_MIGRATION = ["wms.modelecabine"]
+
 FICHIER_DONNEES = "donnees.json"
 FICHIER_MANIFESTE = "manifeste.json"
 
@@ -137,7 +150,9 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 "Attention : la cible est encore SQLite. Avez-vous basculé .env ?"))
 
-        deja = {k: v for k, v in _comptages().items() if v}
+        semees = {e.lower() for e in SEMEES_PAR_MIGRATION}
+        deja = {k: v for k, v in _comptages().items()
+                if v and k.lower() not in semees}
         if deja and not o["sur_base_non_vide"]:
             detail = ", ".join(f"{k}={v}" for k, v in deja.items())
             raise CommandError(
@@ -149,6 +164,12 @@ class Command(BaseCommand):
         # Tout dans une transaction : si le contrôle échoue, la base cible reste
         # dans l'état où on l'a trouvée — vide — plutôt qu'à moitié remplie.
         with transaction.atomic():
+            # Les lignes semées par les migrations partent d'abord : celles du
+            # fichier les remplacent, et une contrainte d'unicité ne doit pas
+            # faire échouer une reprise pour une donnée de référence.
+            for etiquette in SEMEES_PAR_MIGRATION:
+                app_label, nom = etiquette.split(".")
+                apps.get_model(app_label, nom).objects.all().delete()
             call_command("loaddata", str(fichier))
             ecarts = self._ecarts(manifeste["comptages"])
             if ecarts:

@@ -446,6 +446,7 @@ const MENU_CABINES = [
   // suppression au même endroit. Il est ici, dans le référentiel, parce que
   // c'est là qu'on vient quand on cherche à ajouter ou corriger une travée.
   ['Référentiel', [['emplacements','Emplacements','box'],
+                   ['modeles','Modèles de cabine','tag'],
                    ['etiquettes','Étiquettes','print'],
                    // Administrateurs seulement — voir `menuLateral`.
                    ['import','Fichier de production','clip']]],
@@ -520,7 +521,7 @@ function go(name) {
     rack: renderEmplacements,
     cabines: renderCabines, emplacements: renderEmplacements,
     journal: renderJournal, etiquettes: renderEtiquettes, more: renderMore,
-    import: renderImport,
+    import: renderImport, modeles: renderModeles,
     // Volet articles — archivé, joignable seulement si VOLET_ARTICLES est réactivé
     reception: renderReception, sortie: renderSortie, search: renderSearch,
     transfert: renderTransfert, ranger: renderRanger, inventaire: renderInventaire,
@@ -1690,8 +1691,11 @@ async function montrerEmplacement(emp, opts = {}) {
   zone.innerHTML = '<div class="empty">Chargement…</div>';
   await refsCabine();   // sinon les places s'affichent « G — G » au lieu de « G — Gauche »
   try {
-    const d = await api(`/emplacements/${emp.id}/places/`);
-    // Deux modes : trois places nommées, ou capacité illimitée sans place.
+    // `?pour_cabine=` : sans lui, le serveur répond pour une cabine ordinaire
+    // et l'écran proposerait « Gauche » à un grand modèle.
+    const d = await api(`/emplacements/${emp.id}/places/`
+      + (CABINE_A_RANGER ? '?pour_cabine=' + CABINE_A_RANGER.id : ''));
+    // Deux modes : deux places nommées, ou capacité illimitée sans place.
     const occupants = d.illimite
       ? (d.cabines || []).map(c => ({ code: '—', cabine: c }))
       : d.places.filter(p => !p.libre);
@@ -1727,7 +1731,9 @@ async function montrerEmplacement(emp, opts = {}) {
           <button class="btn ghost" id="eRanger" ${d.complet ? 'disabled style="opacity:.45"' : ''}>Saisir le n° à la main</button>
           <button class="btn ghost" id="eSortir" ${occupants.length ? '' : 'disabled style="opacity:.45"'}>Sortir et envoyer</button>
         </div>` : ''}
-        ${d.complet ? '<div class="banner" style="margin:12px 0 0">Les trois places sont occupées : impossible de ranger ici.</div>' : ''}
+        ${d.complet ? `<div class="banner" style="margin:12px 0 0">${
+          CABINE_A_RANGER ? 'Plus de place ici pour cette cabine' : 'Cette travée est pleine'
+          } : impossible de ranger ici.</div>` : ''}
         <div id="eAct"></div></div>
       ${(peut('ref') && !opts.sansReglages) ? `<button class="btn ghost" id="eReglage" style="margin-top:12px">${icon('cog', 17)} Régler / supprimer cet emplacement</button>` : ''}
       ${opts.pied ? piedGestes({ suite: 'Scanner autre chose' }) : ''}`;
@@ -1763,7 +1769,7 @@ async function montrerEmplacement(emp, opts = {}) {
         $('#wNon').onclick = () => { CABINE_A_RANGER = null; redessiner(); };
         $('#wOk').onclick = async () => {
           const choix = placeW();
-          if (!d.illimite && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
+          if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
           try {
             const corps = { emplacement: emp.id };
             if (choix) corps.place = choix;
@@ -1808,7 +1814,7 @@ async function montrerEmplacement(emp, opts = {}) {
             const placeC = choixPlace(d, $('#cok'));
             $('#cok').onclick = async () => {
               const choix = placeC();
-              if (!d.illimite && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
+              if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
               try {
                 const corps = { emplacement: emp.id };
                 if (choix) corps.place = choix;
@@ -1874,6 +1880,15 @@ function occupantCourt(p) {
   return p.cabine ? p.cabine.numero : 'occupée';
 }
 
+/** Y a-t-il une place à désigner ? Deux cas disent non, pour deux raisons
+    opposées : une capacité illimitée n'a pas de place nommée, et un grand modèle
+    n'en laisse pas le choix — il prend la travée entière. Les écrans posaient
+    la question en testant `d.illimite` seul, et proposaient donc « Gauche » à
+    une cabine qui remplit la travée : le serveur corrigeait après coup, en
+    silence, ce qui est la pire des deux façons de ne pas décider. */
+const sansPlaceAChoisir = (d) =>
+  Boolean(d.illimite || (d.pour_cabine && d.pour_cabine.toute_la_travee));
+
 function placesHTML(d, choisie) {
   if (d.illimite) return '';
   const libelle = (code) => ((REFS_CABINE.places || []).find(x => x.code === code) || {}).libelle || code;
@@ -1898,7 +1913,7 @@ function placesHTML(d, choisie) {
  *  son bouton qu'à ce moment-là.
  */
 function brancherPlaces(d, surChoix) {
-  if (d.illimite) { if (surChoix) surChoix(null); return () => null; }
+  if (sansPlaceAChoisir(d)) { if (surChoix) surChoix(null); return () => null; }
   let choisie = null;
   const cases = Array.from(document.querySelectorAll('#places .place'));
   cases.forEach(b => {
@@ -1932,7 +1947,7 @@ function brancherPlaces(d, surChoix) {
 function choixPlace(d, bouton, options = {}) {
   if (!bouton) return () => null;
   const libelle = bouton.textContent;
-  if (!d.illimite) {
+  if (!sansPlaceAChoisir(d)) {
     bouton.disabled = true;
     bouton.textContent = options.attente || 'Touche une place libre';
   }
@@ -1940,13 +1955,87 @@ function choixPlace(d, bouton, options = {}) {
     bouton.disabled = false;
     bouton.textContent = libelle;
   });
-  return () => (d.illimite ? null : lire());
+  return () => (sansPlaceAChoisir(d) ? null : lire());
 }
 
 /** Le bloc des places, ou la phrase qui explique qu'il n'y en a pas à choisir. */
-const blocPlaces = (d) => (d.illimite
-  ? '<div class="meta" style="padding:6px 2px">Capacité illimitée : aucune place à désigner.</div>'
-  : placesHTML(d));
+const blocPlaces = (d) => {
+  if (d.illimite) {
+    return '<div class="meta" style="padding:6px 2px">Capacité illimitée :'
+         + ' aucune place à désigner.</div>';
+  }
+  // Un grand modèle : on le DIT, plutôt que de poser deux cases dont aucune ne
+  // serait le bon geste. L'opérateur apprend ici, devant le rack, pourquoi il
+  // n'aura pas de voisin — et pas au moment où il essaie d'en poser un.
+  if (d.pour_cabine && d.pour_cabine.toute_la_travee) {
+    return `<div class="banner" style="margin:11px 0 0">${esc(d.pour_cabine.numero)}
+      est un <b>${esc(d.pour_cabine.modele || 'grand modèle')}</b> : elle prend
+      <b>toute la travée</b>. Il n'y a pas de place à choisir.</div>`;
+  }
+  return placesHTML(d);
+};
+
+/* Les champs de la cabine elle-même, dans l'ordre où on les lit. Le libellé est
+   celui de la fiche papier quand il en a un : c'est le mot que l'atelier emploie. */
+const DETAIL_CABINE = [
+  ['numero', 'N° de cabine'], ['chantier', 'Chantier'],
+  ['type_libelle', 'Type'], ['modele', 'Modèle'],
+  ['statut_libelle', 'État'], ['position', 'Emplacement'],
+  ['revendeur', 'Revendeur'], ['client', 'Client'],
+  ['tissu_bk', 'Tissu BK'], ['tissu_aq', 'Tissu AQ'],
+  ['fond_cabine', 'Fond de cabine'],
+];
+
+/** Tout ce que le WMS sait de cette cabine, replié/déplié d'une touche.
+
+    Deux sources, dans cet ordre : la fiche de la cabine (ce que le WMS a
+    enregistré, et qui a pu être corrigé à la main), puis la ligne du fichier de
+    production telle qu'elle a été importée. Les deux sont montrées séparément
+    et jamais fondues : quand elles diffèrent, c'est une information — quelqu'un
+    a corrigé, ou le classeur a changé depuis l'entrée en stock. */
+async function afficherToutesCaracteristiques(c) {
+  const zone = $('#fTousChamps');
+  const bouton = $('#fTout');
+  if (!zone) return;
+  if (zone.dataset.ouvert === 'oui') {
+    zone.innerHTML = '';
+    zone.dataset.ouvert = 'non';
+    if (bouton) bouton.textContent = ' Toutes les caractéristiques';
+    if (bouton) bouton.insertAdjacentHTML('afterbegin', icon('clip', 17));
+    return;
+  }
+  zone.dataset.ouvert = 'oui';
+  zone.innerHTML = '<div class="empty">Lecture…</div>';
+  if (bouton) { bouton.textContent = ' Masquer les caractéristiques'; bouton.insertAdjacentHTML('afterbegin', icon('close', 17)); }
+
+  const siennes = DETAIL_CABINE
+    .filter(([cle]) => (c[cle] || '') !== '')
+    .map(([cle, lib]) => `<tr><td>${esc(lib)}</td><td><b>${esc(c[cle])}</b></td></tr>`).join('');
+
+  // La ligne de production est facultative : une cabine créée hors fichier n'en
+  // a pas, et son absence se dit plutôt que de laisser un bloc vide.
+  const attendue = await api('/cabines-attendues/' + encodeURIComponent(c.numero) + '/')
+    .catch(() => null);
+  const specs = attendue ? Object.entries(attendue.specifications || {}) : [];
+
+  zone.innerHTML = `<div class="card" style="margin-top:10px">
+    <div class="sec" style="margin-top:0">Fiche de la cabine</div>
+    <div class="specs"><table><tbody>${siennes}</tbody></table></div>
+    <div class="sec">Fichier de production</div>
+    ${attendue ? `<div class="specs"><table><tbody>${LIGNES_ATTENDUE
+        .filter(([cle]) => (attendue[cle] || '') !== '')
+        .map(([cle, lib]) => `<tr><td>${esc(lib)}</td><td><b>${esc(attendue[cle])}</b></td></tr>`)
+        .join('')}</tbody></table></div>
+      ${specs.length ? `<details style="margin-top:10px"><summary class="meta">La ligne
+        complète du classeur (${specs.length} colonnes)</summary>
+        <div class="specs"><table><tbody>${specs
+          .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table>
+        </div></details>` : ''}`
+      : `<div class="meta">Cette cabine n'est pas dans le fichier de production :
+         soit elle a été créée avant le premier import, soit un administrateur
+         l'a enregistrée hors fichier. Le motif est alors au journal.</div>`}
+  </div>`;
+}
 
 /** Libellé court d'un champ de fiche, pour un message. */
 function etiquetteChamp(cle) {
@@ -2182,22 +2271,18 @@ function proposerRangement(cabine, emp, d, redessiner, cible) {
       ${ailleurs ? `<div class="banner" style="margin-top:10px">Cette cabine est
           actuellement en <b>${esc(cabine.emplacement_code)}</b>${cabine.place ? ' · place ' + esc(cabine.place) : ''}.
           La ranger ici la <b>déplace</b> : ${esc(cabine.emplacement_code)} sera libéré.</div>` : ''}
-      ${placesHTML(d)}
+      ${blocPlaces(d)}
       <button class="btn orange" id="pOk">${ailleurs
         ? 'Déplacer de ' + esc(cabine.emplacement_code) + ' vers ' + esc(d.code)
         : 'Ranger en ' + esc(d.code)}</button>
     </div>`;
-  const bouton = $('#pOk');
-  if (!d.illimite) { bouton.disabled = true; bouton.dataset.libelle = bouton.textContent; bouton.textContent = 'Touche une place libre'; }
-  const place = brancherPlaces(d, () => {
-    bouton.disabled = false;
-    if (bouton.dataset.libelle) bouton.textContent = bouton.dataset.libelle;
-  });
-  bouton.onclick = async () => {
+  const place = choixPlace(d, $('#pOk'));
+  $('#pOk').onclick = async () => {
     try {
+      const choix = place();
+      if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
       const corps = { emplacement: emp.id };
-      if (!d.illimite) corps.place = place();
-      if (!d.illimite && !corps.place) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
+      if (choix) corps.place = choix;
       await api(`/cabines/${cabine.id}/ranger/`, { method: 'POST', body: corps });
       toast('Cabine ' + cabine.numero + ' rangée en ' + d.code, 'ok');
       noterRecentCabine(cabine);
@@ -2733,12 +2818,13 @@ async function retenirEmplacement(texte) {
       if (etat) etat.innerHTML = `<div class="banner">Aucun emplacement ne correspond à « ${esc(code)} ».</div>`;
       return;
     }
-    const d = await api(`/emplacements/${e.id}/places/`);
+    const d = await api(`/emplacements/${e.id}/places/`
+      + (RANGEMENT.cabine ? '?pour_cabine=' + RANGEMENT.cabine.id : ''));
     if (d.complet) {
       // On reste à l'étape 2 : la cabine reste en main, il suffit de scanner
       // une autre travée. Repartir de zéro ferait refaire la photo de la fiche.
-      if (etat) etat.innerHTML = `<div class="banner">${esc(d.code)} est complet — ses trois
-        places sont occupées. Scanne un autre emplacement.</div>`;
+      if (etat) etat.innerHTML = `<div class="banner">${esc(d.code)} n’a plus de place
+        libre pour cette cabine. Scanne un autre emplacement.</div>`;
       return;
     }
     arreterCamera();
@@ -2768,9 +2854,7 @@ function etapePlace() {
         actuelle sera libérée.</div>` : ''}
       ${ajout ? `<div class="banner">Emplacement supplémentaire : la cabine reste
         aussi en <b>${esc(cabine.position)}</b>.</div>` : ''}
-      ${d.illimite
-        ? '<div class="meta">Capacité illimitée : aucune place à désigner.</div>'
-        : placesHTML(d)}
+      ${blocPlaces(d)}
       <button class="btn orange" id="rOk">Ranger en ${esc(d.code)}</button>
       <button class="btn ghost" id="rAutre">Choisir un autre emplacement</button>
     </div>`;
@@ -2780,13 +2864,11 @@ function etapePlace() {
   // quoi le changer : il n'y a plus de question à reposer ici.
 
   const bouton = $('#rOk');
-  const libelle = bouton.textContent;
-  if (!d.illimite) { bouton.disabled = true; bouton.textContent = 'Touche une place libre'; }
-  const place = brancherPlaces(d, () => { bouton.disabled = false; bouton.textContent = libelle; });
+  const place = choixPlace(d, bouton);
 
   bouton.onclick = async () => {
-    const choix = d.illimite ? null : place();
-    if (!d.illimite && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
+    const choix = place();
+    if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
     bouton.disabled = true;
     try {
       let c = cabine;
@@ -3036,6 +3118,9 @@ async function ficheCabine(cabine, retour) {
         ${c.envoyee ? '' : `<div class="meta" style="margin-top:4px">Sans mouvement depuis ${c.jours_immobile} jour${c.jours_immobile === 1 ? '' : 's'}</div>`}
         ${c.envoyee ? `<div class="banner" style="margin:12px 0 0">Cabine envoyée le ${new Date(c.envoi_date).toLocaleString('fr-FR')} — fiche archivée. La fiche reste corrigeable, et la cabine peut être remise en stock si elle revient.</div>
           ${peut('cab') ? `<button class="btn orange" id="fReprendre">La remettre en stock</button>` : ''}` : ''}
+        <button class="btn ghost" id="fTout" style="margin-top:12px">${
+          icon('clip', 17)} Toutes les caractéristiques</button>
+        <div id="fTousChamps"></div>
         <div id="fAct"></div>
           ${peut('cab') ? `<div class="row" style="margin-top:10px">
           <button class="btn ghost" id="fCorriger" style="margin-top:0">${icon('edit', 17)} Corriger la fiche</button>
@@ -3050,6 +3135,16 @@ async function ficheCabine(cabine, retour) {
       </div>`).join('') : '<div class="empty">Aucun événement</div>'}</div>`;
 
     if (retour) $('#fRetour').onclick = retour;
+
+    /* « Toutes les caractéristiques » : tout ce que le WMS sait de cette cabine,
+       d'un seul geste. La fiche n'en montrait que sept champs — ceux qui portent
+       une règle logistique — et le reste (gamme, semaine de production, jour,
+       tissus, fond, et la ligne complète du classeur) n'était visible qu'avant
+       l'entrée en stock, sur l'écran de la cabine annoncée. Une fois la cabine
+       entrée, cette information devenait inatteignable alors qu'elle est en base.
+       Replié par défaut : devant le rack on veut le geste, pas la fiche
+       technique. */
+    $('#fTout').onclick = () => afficherToutesCaracteristiques(c);
 
     // Corriger et supprimer restent accessibles sur une cabine envoyée : une faute
     // de frappe reste une faute de frappe une fois la cabine partie, et corriger
@@ -3110,8 +3205,8 @@ async function ficheCabine(cabine, retour) {
           $('#fCodeRes').querySelectorAll('[data-e]').forEach(it => it.onclick = async () => {
             const e = emps.find(x => String(x.id) === it.dataset.e);
             try {
-              const d = await api(`/emplacements/${e.id}/places/`);
-              if (d.complet) { toast('Les trois places de ' + e.code + ' sont prises.', 'err'); return; }
+              const d = await api(`/emplacements/${e.id}/places/?pour_cabine=${c.id}`);
+              if (d.complet) { toast(e.code + ' n’a plus de place libre pour cette cabine.', 'err'); return; }
               // Ce chemin rangeait la cabine dans `d.libres[0]` — la première place
               // libre — SANS RIEN DEMANDER, et annonçait « Rangée en C001·G ».
               // Personne ne choisissait : une cabine posée à droite était écrite à
@@ -3128,7 +3223,7 @@ async function ficheCabine(cabine, retour) {
               const placeCode = choixPlace(d, $('#fCodeOk'));
               $('#fCodeOk').onclick = async () => {
                 const choix = placeCode();
-                if (!d.illimite && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
+                if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
                 try {
                   const corps = { emplacement: e.id };
                   if (choix) corps.place = choix;
@@ -3152,14 +3247,14 @@ async function ficheCabine(cabine, retour) {
       const majPlaces = async () => {
         const bloc = $('#fPlaces');
         try {
-          const d = await api(`/emplacements/${$('#fEmp').value}/places/`);
-          if (d.complet) { bloc.innerHTML = '<div class="banner">Les trois places sont occupées : choisis un autre emplacement.</div>'; return; }
+          const d = await api(`/emplacements/${$('#fEmp').value}/places/?pour_cabine=${c.id}`);
+          if (d.complet) { bloc.innerHTML = '<div class="banner">Plus de place libre ici pour cette cabine : choisis un autre emplacement.</div>'; return; }
           bloc.innerHTML = blocPlaces(d)
             + '<button class="btn orange" id="fRangerOk">Confirmer</button>';
           const placeF = choixPlace(d, $('#fRangerOk'));
           $('#fRangerOk').onclick = async () => {
             const choix = placeF();
-            if (!d.illimite && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
+            if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
             try {
               const corps = { emplacement: $('#fEmp').value };
               if (choix) corps.place = choix;
@@ -5324,6 +5419,102 @@ if (token) { boot(); } else { renderLogin(); }
    =========================================================================== */
 
 let IMPORT = { fichier: null, rapport: null };
+
+/* ============================ MODÈLES DE CABINE ============================
+   Deux cabines tiennent dans une travée — une seule si c'est un grand modèle.
+   Cette liste-là ne peut pas vivre dans le code : le catalogue bouge, et
+   « COLLAB » était annoncé comme grand modèle avant sa première cabine.
+
+   L'écran ne montre pas seulement ce qui a été réglé : il montre tous les
+   modèles que les données connaissent — le fichier de production et le stock.
+   Un modèle nouveau apparaît donc tout seul au prochain import, compté
+   « une place » jusqu'à ce que quelqu'un tranche. C'est le défaut qui laisse
+   ranger : refuser tout modèle non déclaré bloquerait l'entrepôt un lundi
+   matin sur une ligne de tableur.                                            */
+
+let MODELES = { liste: [], filtre: '' };
+
+async function renderModeles() {
+  layout(`<h2 class="title">Modèles de cabine</h2>
+    <div class="meta" style="margin:-4px 0 12px">Deux cabines tiennent dans une
+      travée. Un <b>grand modèle</b> la prend en entier : le WMS refuse alors d'y
+      poser une voisine.</div>
+    <input id="mdFiltre" class="recherche" type="search" autocomplete="off"
+           placeholder="Chercher un modèle…" value="${esc(MODELES.filtre)}">
+    <div id="zone"><div class="empty">Chargement…</div></div>`, 'more');
+  const champ = $('#mdFiltre');
+  champ.oninput = debounce(() => { MODELES.filtre = champ.value; dessinerModeles(); }, 200);
+  await chargerModeles();
+}
+
+async function chargerModeles() {
+  try {
+    const d = await api('/modeles-cabine/');
+    MODELES.liste = d.modeles || [];
+    MODELES.grands = d.nb_grands || 0;
+    MODELES.hors = d.travees_hors_regle || [];
+    dessinerModeles();
+  } catch (e) {
+    const zone = $('#zone');
+    if (zone) zone.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+function dessinerModeles() {
+  const zone = $('#zone');
+  if (!zone) return;
+  const filtre = ModelesCle(MODELES.filtre);
+  const vus = MODELES.liste.filter(m => !filtre || ModelesCle(m.nom).includes(filtre));
+  const modifiable = peut('ref');
+
+  /* Les travées laissées hors règle par un reclassement. Aucune cabine n'est
+     déplacée quand un modèle change de taille — le WMS écrirait une position que
+     personne n'a vérifiée devant le rack. Il le DIT, et c'est un travail
+     d'entrepôt, pas une donnée à corriger ici. */
+  const hors = MODELES.hors.length ? `<div class="banner" style="margin-bottom:12px">
+    <b>${MODELES.hors.length} travée${MODELES.hors.length === 1 ? '' : 's'}</b> ne
+    respecte${MODELES.hors.length === 1 ? '' : 'nt'} plus la règle : un grand modèle
+    y partage la place avec une autre cabine. Aucune n'a été déplacée — c'est à
+    faire dans l'entrepôt.
+    <div class="specs" style="margin-top:8px"><table><tbody>${MODELES.hors.map(t =>
+      `<tr><td>${esc(t.code)}</td><td>${t.cabines.map(c =>
+        `${esc(c.numero)}${c.grand ? ' <b>(' + esc(c.modele) + ')</b>' : ''}`).join(' + ')}</td></tr>`
+      ).join('')}</tbody></table></div></div>` : '';
+
+  zone.innerHTML = hors + `<div class="sec">${vus.length} modèle${vus.length === 1 ? '' : 's'}`
+    + ` · ${MODELES.grands} grand${MODELES.grands === 1 ? '' : 's'}</div>`
+    + (vus.length ? `<div class="list">${vus.map(m => `<div class="item" style="cursor:default">
+        <div class="r">${esc(m.nom)}${m.grand
+          ? ' <span class="etat att">toute la travée</span>' : ''}</div>
+        <div class="meta">${m.nb_attendues} annoncée${m.nb_attendues === 1 ? '' : 's'} · ${
+          m.nb_en_stock} en stock${m.regle_par ? ' · réglé par ' + esc(m.regle_par) : ''}</div>
+        ${modifiable ? `<div class="bascule">
+          <button aria-pressed="${!m.grand}" data-md="${esc(m.nom)}" data-grand="0">Une place</button>
+          <button aria-pressed="${m.grand}" data-md="${esc(m.nom)}" data-grand="1">Toute la travée</button>
+        </div>` : ''}
+      </div>`).join('')}</div>`
+      : `<div class="empty">${MODELES.filtre
+          ? 'Aucun modèle ne correspond.'
+          : 'Aucun modèle : importez le fichier de production.'}</div>`);
+
+  if (!modifiable) return;
+  zone.querySelectorAll('[data-md]').forEach(b => b.onclick = async () => {
+    const grand = b.dataset.grand === '1';
+    zone.querySelectorAll('[data-md]').forEach(x => { x.disabled = true; });
+    try {
+      await api('/modeles-cabine/regler/', { method: 'POST',
+        body: { nom: b.dataset.md, grand } });
+      toast(`${b.dataset.md} : ${grand ? 'toute la travée' : 'une place'}`, 'ok');
+      await chargerModeles();
+    } catch (e) {
+      toast(e.message, 'err');
+      zone.querySelectorAll('[data-md]').forEach(x => { x.disabled = false; });
+    }
+  });
+}
+
+/** Même normalisation que le serveur, pour que le filtre trouve « xl (2modules) ». */
+const ModelesCle = (nom) => String(nom || '').split(/\s+/).join(' ').trim().toUpperCase();
 
 async function renderImport() {
   if (!ADMIN) {
