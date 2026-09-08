@@ -7,7 +7,9 @@ chacun des cas rencontrés dans ce fichier, en miniature :
 - cinq lignes où un n° de chantier avait été recopié dans toutes les colonnes ;
 - 123 lignes sans n° de cabine, identifiées seulement par « AF-3164 » ;
 - 94 numéros « 25_49_400 », que le WMS refusait avant d'assouplir sa règle ;
-- 110 chantiers « 251213-1 », que le champ à 6 chiffres ne peut pas stocker.
+- 110 chantiers « 251213-1 » : le chantier 251213, lot 1. Le WMS les stocke
+  entiers depuis que le format accepte le lot ; ce qu'il refuse encore est ce
+  qui n'a pas de sens comme chantier, et il l'annonce plutôt que de tronquer.
 
 Chaque cas doit être **nommé** à l'écran, jamais avalé en silence : un import
 qui annonce « 2 264 lignes » sans dire ce qu'il a laissé de côté ferait croire
@@ -16,9 +18,11 @@ le fichier complet.
 import io
 
 import openpyxl
+from django.core.exceptions import ValidationError
+from django.test import TestCase
 from rest_framework.test import APITestCase
 
-from wms import services_import
+from wms import services_cabines, services_import
 from wms.models import (Cabine, CabineAttendue, MouvementCabine,
                         Utilisateur)
 
@@ -148,21 +152,60 @@ class ServiceImportTest(APITestCase):
         self.assertEqual(rapport["erreurs"][0]["ligne"], 3)
         self.assertIn("ligne 2", rapport["erreurs"][0]["motif"])
 
-    def test_chantier_a_lots_conserve_sans_etre_tronque(self):
-        """« 251213-1 » ne devient PAS « 251213 ».
+    def test_chantier_a_lots_stocke_entier(self):
+        """« 251213-1 » est stocké tel quel, et ne devient jamais « 251213 ».
 
-        Le champ du WMS n'accepte que 6 chiffres. La première version de ce code
-        tronquait avant de valider : « 251213-1 » passait pour le chantier
-        « 251213 » — un chantier qui existe, et qui n'est pas celui-là.
+        Deux régressions se croisent ici. La première tronquait avant de valider :
+        « 251213-1 » passait pour le chantier « 251213 » — un chantier qui existe,
+        et qui n'est pas celui-là. La seconde était le refus pur et simple : le
+        chantier restait vide et l'opérateur devait retaper à la main un numéro
+        que le fichier donnait déjà, 110 fois sur 2 264 lignes.
         """
         rapport = services_import.importer(classeur([ligne(CHANTIER="251213-1")]),
                                            nom="production.xlsx")
         self.assertEqual(rapport["retenues"], 1)
-        self.assertEqual(rapport["sans_chantier"], 1)
+        self.assertEqual(rapport["sans_chantier"], 0)
 
         attendue = CabineAttendue.objects.get(numero="26_02_49")
-        self.assertEqual(attendue.chantier, "")
+        self.assertEqual(attendue.chantier, "251213-1")
         self.assertEqual(attendue.chantier_brut, "251213-1")
+        self.assertFalse(attendue.chantier_a_saisir)
+
+    def test_formes_de_chantier_acceptees_et_refusees(self):
+        """Le lot va de 1 à 99. Le reste n'est pas un chantier.
+
+        « 251213-0 » est une faute de frappe : l'accepter créerait un lot fantôme
+        à côté du vrai. Une référence fournisseur comme « AF-3164 » n'est pas un
+        chantier non plus — elle a sa place dans `num_unique`, pas ici.
+        """
+        for valeur, attendu in [("251213", "251213"), ("251213-1", "251213-1"),
+                                ("251213-12", "251213-12"), ("251213-0", ""),
+                                ("251213-123", ""), ("25121", ""),
+                                ("AF-3164", ""), ("251213 -1", "")]:
+            with self.subTest(valeur=valeur):
+                CabineAttendue.objects.all().delete()
+                services_import.importer(classeur([ligne(CHANTIER=valeur)]),
+                                         nom="production.xlsx")
+                attendue = CabineAttendue.objects.get(numero="26_02_49")
+                self.assertEqual(attendue.chantier, attendu)
+                # Le brut est conservé dans tous les cas : c'est la seule trace
+                # de ce que le classeur disait, et on le cherche.
+                self.assertEqual(attendue.chantier_brut, valeur)
+
+    def test_colonne_chantier_vide_compte_comme_a_saisir(self):
+        """Une ligne sans chantier réclame la même saisie qu'une ligne illisible.
+
+        Le compteur du rapport ne regardait que le brut non vide : une colonne
+        CHANTIER vide n'apparaissait donc nulle part, ni dans le rapport ni sur
+        l'écran d'entrée — et la création échouait sur un 400 sans que rien n'ait
+        proposé de saisir le numéro.
+        """
+        rapport = services_import.importer(classeur([ligne(CHANTIER="")]),
+                                           nom="production.xlsx")
+        self.assertEqual(rapport["sans_chantier"], 1)
+        attendue = CabineAttendue.objects.get(numero="26_02_49")
+        self.assertEqual(attendue.chantier, "")
+        self.assertEqual(attendue.chantier_brut, "")
         self.assertTrue(attendue.chantier_a_saisir)
 
     def test_reimporter_le_meme_fichier_ne_double_rien(self):
@@ -422,3 +465,87 @@ class CreationHorsFichierTest(APITestCase):
         self.assertTrue(self.client.get("/api/referentiels-cabine/").data["fichier_production"])
         CabineAttendue.objects.all().delete()
         self.assertFalse(self.client.get("/api/referentiels-cabine/").data["fichier_production"])
+
+
+class ChantierObligatoireTest(TestCase):
+    """Aucune cabine n'entre en stock sans chantier, hors express/salon/occasion.
+
+    La règle vit à trois endroits, volontairement : `Cabine.clean()` la porte en
+    base, le serializer DRF la traduit en 400 sur le champ « chantier », et
+    l'écran la vérifie avant d'envoyer. Ces tests ferment les deux premiers — le
+    troisième est couvert par les contrôles d'interface.
+    """
+
+    def setUp(self):
+        self.user = Utilisateur.objects.create_user(
+            username="CHEF", password="chef1234", role=Utilisateur.ADMIN)
+        self.client.force_login(self.user)
+
+    def test_le_modele_refuse_une_normale_sans_chantier(self):
+        with self.assertRaises(ValidationError) as bilan:
+            Cabine(numero="30_01_01", chantier="", type_cabine=Cabine.NORMALE).save()
+        self.assertIn("chantier", bilan.exception.message_dict)
+
+    def test_le_modele_accepte_une_express_sans_chantier(self):
+        Cabine(numero="30_01_02", chantier="", type_cabine=Cabine.EXPRESS).save()
+        self.assertTrue(Cabine.objects.filter(numero="30_01_02").exists())
+
+    def test_l_api_refuse_une_normale_sans_chantier(self):
+        r = self.client.post("/api/cabines/", {"numero": "30_01_03", "chantier": "",
+                                               "type_cabine": Cabine.NORMALE},
+                             content_type="application/json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("chantier", r.json())
+        self.assertFalse(Cabine.objects.filter(numero="30_01_03").exists())
+
+    def test_l_api_accepte_un_chantier_a_lot(self):
+        r = self.client.post("/api/cabines/", {"numero": "30_01_04",
+                                               "chantier": "251213-1",
+                                               "type_cabine": Cabine.NORMALE},
+                             content_type="application/json")
+        self.assertEqual(r.status_code, 201, r.content[:400])
+        self.assertEqual(Cabine.objects.get(numero="30_01_04").chantier, "251213-1")
+
+    def test_l_api_refuse_un_chantier_mal_forme(self):
+        for mauvais in ["25121", "251213-0", "251213-123", "AF-3164", "251213 -1"]:
+            with self.subTest(chantier=mauvais):
+                r = self.client.post("/api/cabines/",
+                                     {"numero": "30_02_01", "chantier": mauvais,
+                                      "type_cabine": Cabine.NORMALE},
+                                     content_type="application/json")
+                self.assertEqual(r.status_code, 400, mauvais)
+                self.assertFalse(Cabine.objects.filter(numero="30_02_01").exists())
+
+    def test_le_journal_ecrit_le_chantier_a_lot_sans_le_tronquer(self):
+        """`MouvementCabine.chantier` doit suivre la taille du champ d'origine.
+
+        Il faisait 6 caractères quand `Cabine.chantier` en fait 9 : sur
+        PostgreSQL, écrire « 251213-1 » au journal lève une erreur de base, et le
+        mouvement échoue APRÈS que la cabine a bougé — l'état réel et le journal
+        divergent, et c'est le journal qui fait foi.
+        """
+        cabine = services_cabines.creer_cabine(
+            numero="30_03_01", chantier="251213-12", utilisateur=self.user)
+        mouvement = cabine.historique.first()
+        self.assertEqual(mouvement.chantier, "251213-12")
+
+    def test_affecter_un_chantier_a_lot_a_une_express(self):
+        cabine = services_cabines.creer_cabine(
+            numero="30_03_02", chantier="", type_cabine=Cabine.EXPRESS,
+            utilisateur=self.user)
+        services_cabines.affecter_chantier(cabine=cabine, chantier="251297-2",
+                                           utilisateur=self.user)
+        cabine.refresh_from_db()
+        self.assertEqual(cabine.chantier, "251297-2")
+
+    def test_le_referentiel_annonce_la_forme_attendue(self):
+        """L'écran ne réécrit pas la règle : il la lit.
+
+        Quatre écrans annonçaient « 6 chiffres » en dur. Le jour où le lot a été
+        accepté, aucun ne l'a su.
+        """
+        r = self.client.get("/api/referentiels-cabine/")
+        self.assertEqual(r.status_code, 200)
+        d = r.json()
+        self.assertEqual(d["aide_chantier"], Cabine.AIDE_CHANTIER)
+        self.assertEqual(d["taille_chantier"], Cabine.TAILLE_CHANTIER)

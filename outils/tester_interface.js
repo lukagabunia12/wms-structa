@@ -85,5 +85,66 @@ verifier('chantier : six chiffres intacts', champ.taper('251280'), '251280');
 masqueNumeroActif(champ, true);
 verifier('retour cabine : reformaté', champ.value, '25_12_80');
 
+verifier('clavier complet en mode chantier', champ.attrs.inputmode, 'numeric');
+masqueNumeroActif(champ, false);
+verifier('mode chantier : le tiret devient atteignable', champ.attrs.inputmode, 'text');
+
+/* --- Le chantier et son lot -------------------------------------------------
+   Un chantier s'écrit « 251213 », et se décline en lots : « 251213-1 ». Il se
+   saisit en deux champs — un pavé numérique n'a pas de tiret — et le champ de
+   gauche accepte aussi un numéro collé d'un bloc. La première version gardait
+   les chiffres et coupait à six : « 251213-1 » collé devenait « 251213 », le
+   chantier voisin, sans un mot. C'est cette troncature que ces tests ferment. */
+const { lireChantierSaisi, motifChantier } = (() => {
+  const i = source.indexOf('function motifChantier()');
+  const j = source.indexOf('const typeDispenseDeChantier', i);
+  if (i < 0 || j < 0) {
+    throw new Error('Repères du chantier introuvables dans app.js : le code a été '
+      + 'réorganisé, mettez-les à jour plutôt que de retirer le test.');
+  }
+  // `lireChantierSaisi` lit deux champs par `$(...)` : on lui en fournit deux.
+  const valeurs = { '#eChantier': '', '#eLot': '' };
+  const $ = (id) => ({ get value() { return valeurs[id]; } });
+  const REFS_CABINE = {};
+  const fn = eval(`(function(){${source.slice(i, j)};
+    return { lireChantierSaisi, motifChantier, valeurs };})()`);
+  return { lireChantierSaisi: (num, lot) => {
+             valeurs['#eChantier'] = num; valeurs['#eLot'] = lot;
+             return fn.lireChantierSaisi();
+           },
+           motifChantier: fn.motifChantier };
+})();
+
+console.log('\nChantier et lot');
+const casChantier = [
+  ['six chiffres seuls', '251213', '', '251213'],
+  ['chantier + lot dans les deux champs', '251213', '1', '251213-1'],
+  ['lot à deux chiffres', '251213', '12', '251213-12'],
+  ['lot zéro ignoré', '251213', '0', '251213'],
+  ['zéro de tête du lot retiré', '251213', '01', '251213-1'],
+  ['collé d’un bloc avec tiret', '251213-1', '', '251213-1'],
+  ['collé avec une espace', '251213 2', '', '251213-2'],
+  ['collé avec une barre', '251213/3', '', '251213-3'],
+  ['le collage gagne sur le champ Lot', '251213-4', '9', '251213-4'],
+  ['champ vide', '', '1', ''],
+  // Ce qui n'est ni l'une ni l'autre forme ressort TEL QUEL : c'est le contrôle
+  // de forme qui le refuse en le citant, jamais une troncature muette.
+  ['forme inconnue rendue intacte', 'AF-3164', '', 'AF-3164'],
+  ['sept chiffres rendus intacts', '2512130', '', '2512130'],
+];
+for (const [nom, num, lot, attendu] of casChantier) {
+  verifier(nom, lireChantierSaisi(num, lot), attendu);
+}
+
+const motif = motifChantier();
+const casMotif = [
+  ['251213', true], ['251213-1', true], ['251213-12', true],
+  ['251213-0', false], ['251213-123', false], ['25121', false],
+  ['2512130', false], ['AF-3164', false], ['251213 -1', false], ['', false],
+];
+for (const [valeur, attendu] of casMotif) {
+  verifier(`motif : ${valeur || '(vide)'}`, motif.test(valeur), attendu);
+}
+
 console.log(echecs ? `\n${echecs} test(s) en échec.` : '\nInterface OK — tous les tests passent.');
 process.exit(echecs ? 1 : 0);

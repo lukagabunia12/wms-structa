@@ -899,6 +899,17 @@ def referentiels_cabine(request):
         # information, l'écran d'entrée refuserait une saisie que le serveur
         # accepte encore — ou proposerait une saisie qu'il va refuser.
         "fichier_production": CabineAttendue.objects.exists(),
+        # La forme attendue d'un chantier, écrite une fois pour toutes sur le
+        # modèle. Quatre écrans annonçaient « 6 chiffres » en dur ; le jour où le
+        # lot a été accepté, aucun ne l'a su et tous continuaient à refuser
+        # « 251213-1 » au clavier avant même que le serveur soit consulté.
+        "aide_chantier": Cabine.AIDE_CHANTIER,
+        "taille_chantier": Cabine.TAILLE_CHANTIER,
+        # Le motif lui-même : l'écran refuse alors une forme fautive sans
+        # aller-retour, et il refuse EXACTEMENT ce que le modèle refuse. Une
+        # copie écrite à la main dans le JavaScript aurait divergé au premier
+        # assouplissement — c'est déjà arrivé avec « 6 chiffres ».
+        "motif_chantier": Cabine.MOTIF_CHANTIER,
     })
 
 

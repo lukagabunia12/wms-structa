@@ -499,6 +499,11 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
    départ du parcours, et il se repère avant d'être lu. */
 #sFicheLab .ic{background:var(--brique-tint);color:var(--brique)}
 
+/* Chantier et lot côte à côte : le lot est plus court, il n'a pas besoin de la
+   même largeur, et les deux doivent se lire comme un seul numéro. */
+.grille-chantier{display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-top:11px}
+.grille-chantier label{margin-top:0}
+
 /* ============================ lecture en cours ==============================
    Ce qu'on regarde pendant que le serveur lit la photo de la fiche. Une
    attente muette de dix secondes ressemble à une panne : l'opérateur reprend

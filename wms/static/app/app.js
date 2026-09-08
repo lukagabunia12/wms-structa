@@ -67,6 +67,10 @@ function masquerNumero(champ) {
 function masqueNumeroActif(champ, actif) {
   if (!champ) return champ;
   champ.dataset.masqueNumero = actif ? 'on' : 'off';
+  // Un chantier peut porter un lot — « 251213-1 » — et le pavé numérique d'iOS
+  // n'a pas de tiret : chercher ce chantier était impossible depuis un iPhone.
+  // Le clavier complet revient le temps de la recherche par chantier.
+  champ.setAttribute('inputmode', actif ? 'numeric' : 'text');
   if (actif) champ.dispatchEvent(new Event('input'));
   else if (champ.value.includes('_')) champ.value = champ.value.replace(/_/g, '');
   return champ;
@@ -1520,8 +1524,94 @@ function aideChantier() {
     .filter(t => TYPES_SANS_CHANTIER.includes(t.code))
     .map(t => t.libelle);
   const liste = noms.length ? noms.join(', ') : 'express';
-  return `Obligatoire, sauf pour les types : ${liste}. `
+  // La forme vient du serveur : le modèle est le seul à décider ce qu'est un
+  // chantier valable. Le repli n'a lieu que si le référentiel n'a pas répondu.
+  const forme = REFS_CABINE.aide_chantier
+    || 'Six chiffres, éventuellement suivis du lot : 251213 ou 251213-1.';
+  return `${forme} Obligatoire, sauf pour les types : ${liste}. `
        + 'Dans tous les cas, il est exigé pour sortir la cabine de l’entrepôt.';
+}
+
+/* Le chantier se saisit en DEUX champs et non en un. « 251213-1 » tapé dans un
+   seul champ oblige à quitter le pavé numérique pour aller chercher le tiret —
+   sur un téléphone, avec des gants — et laisse passer « 251213 -1 », « 251213/1 »
+   ou « 251213_1 », que le serveur refuse ensuite sans que l'opérateur voie où est
+   la faute. Deux champs numériques ne peuvent produire qu'une forme valide.
+   Cette saisie n'apparaît QUE lorsque le fichier de production ne donne pas de
+   chantier pour cette cabine : partout ailleurs, il vient du fichier et ne se
+   retape pas. */
+const CHAMPS_CHANTIER = `<div class="grille-chantier">
+  <div><label for="eChantier">N° de chantier *</label>
+    <input id="eChantier" placeholder="Ex. 251213" inputmode="numeric"
+           autocomplete="off" maxlength="9"></div>
+  <div><label for="eLot">Lot</label>
+    <input id="eLot" placeholder="aucun" inputmode="numeric"
+           autocomplete="off" maxlength="2"></div>
+</div>`;
+
+/* Le champ de chantier des écrans qui en AFFECTENT un à une cabine déjà créée
+   (sortie, envoi, correction de fiche). Quatre écrans l'écrivaient chacun à sa
+   façon, tous en « 6 chiffres » avec `inputmode="numeric"` : le pavé numérique
+   d'iOS n'a pas de tiret, un chantier à lot était donc intypable sur la moitié
+   du parc. Un seul champ, un seul libellé, une seule aide — celle du serveur. */
+const champChantier = (id, valeur) =>
+  `<label for="${id}">N° de chantier</label>
+   <input id="${id}" value="${esc(valeur || '')}" inputmode="text" autocomplete="off"
+          maxlength="${REFS_CABINE.taille_chantier || 9}"
+          placeholder="Ex. 251213 ou 251213-1">
+   <div class="aide">${esc(aideChantier())}</div>`;
+
+/** La forme d'un chantier, telle que le modèle la définit. Repli local
+    seulement si le référentiel n'a pas répondu. */
+function motifChantier() {
+  const REPLI = /^\d{6}(-[1-9]\d?)?$/;
+  const brut = REFS_CABINE.motif_chantier;
+  // `new RegExp(undefined)` ne lève pas : il rend /(?:)/, qui accepte TOUT. Un
+  // référentiel muet aurait donc désarmé le contrôle en silence au lieu de
+  // retomber sur le repli.
+  if (typeof brut !== 'string' || !brut) return REPLI;
+  try { return new RegExp(brut); } catch (_) { return REPLI; }
+}
+
+/** Recompose « 251213-1 » depuis les deux champs. Chaîne vide si rien n'est saisi.
+
+    Le champ de gauche accepte aussi un chantier collé d'un bloc : « 251213-1 »,
+    « 251213 1 », « 251213/1 » disent la même chose et sont reconnus. La première
+    version ne gardait que les chiffres et coupait à six : un numéro collé depuis
+    un courriel perdait son lot sans un mot, et la cabine partait sur le chantier
+    voisin. Ce qui n'est ni l'une ni l'autre forme ressort tel quel — c'est le
+    contrôle qui le refuse, en le citant, plutôt qu'une troncature silencieuse. */
+function lireChantierSaisi() {
+  const brut = String((($('#eChantier') || {}).value) || '').trim();
+  const lot = String((($('#eLot') || {}).value) || '').replace(/\D/g, '').replace(/^0+/, '');
+  if (!brut) return '';
+  const colle = brut.match(/^(\d{6})\D+(\d{1,2})$/);
+  if (colle) return colle[1] + '-' + colle[2].replace(/^0+/, '');
+  return lot ? brut + '-' + lot : brut;
+}
+
+/** Vrai si le type choisi dispense de chantier. Lu au moment de valider, pas au
+    dessin : l'opérateur change parfois le type après avoir vu le formulaire. */
+const typeDispenseDeChantier = () =>
+  TYPES_SANS_CHANTIER.includes((($('#e_type') || {}).value) || '');
+
+/** Le garde-fou de l'écran : refuse un chantier absent, ou mal formé.
+
+    Le serveur porte les deux mêmes règles — c'est lui qui tranche — mais un
+    aller-retour pour apprendre qu'un champ obligatoire est vide fait perdre le
+    temps que ce formulaire est censé gagner. La forme est contrôlée même sur une
+    express, qui n'a pas besoin de chantier mais n'a pas le droit d'en porter un
+    faux. */
+function chantierRefuse(chantier) {
+  const champ = $('#eChantier') || $('#e_chantier');
+  const stop = (message) => { toast(message, 'err'); if (champ) champ.focus(); return true; };
+  if (chantier && !motifChantier().test(chantier)) {
+    return stop(`« ${chantier} » n’est pas un n° de chantier. ${aideChantier()}`);
+  }
+  if (!chantier && !typeDispenseDeChantier()) {
+    return stop('Le n° de chantier est obligatoire pour ce type de cabine.');
+  }
+  return false;
 }
 
 /** Pastille de type, pour tout type qui n'est pas « Normale ».
@@ -1693,7 +1783,7 @@ async function montrerEmplacement(emp, opts = {}) {
         if (!cab.chantier) {
           // Règle métier : pas de sortie sans chantier, quel que soit le type.
           $('#sform').innerHTML = `<div class="banner">Cette cabine n’a pas de chantier : affecte-le avant de l’envoyer.</div>
-            <label>N° de chantier (6 chiffres)</label><input id="scha" inputmode="numeric" placeholder="000123">
+            ${champChantier('scha', '')}
             <button class="btn orange" id="sok">Affecter puis envoyer</button>`;
           $('#sok').onclick = async () => {
             try {
@@ -2780,8 +2870,7 @@ async function etapeConfirmerSortie() {
         <b>C'est définitif</b> — une cabine envoyée ne se range plus.</div>
       ${!c.chantier ? `<div class="banner">Pas d'envoi sans chantier, quel que soit le
           type de cabine. Renseigne-le d'abord.</div>
-        <label>N° de chantier (6 chiffres)</label>
-        <input id="sCha" inputmode="numeric" placeholder="000123" autocomplete="off">` : ''}
+        ${champChantier('sCha', '')}` : ''}
       <label>Motif ou n° de bon (facultatif)</label>
       <input id="sNote" placeholder="Ex. BL 2026-0412" autocomplete="off">
       <button class="btn orange" id="sOk">${c.chantier
@@ -2857,7 +2946,8 @@ async function ficheCabine(cabine, retour) {
     zone.innerHTML = `
       ${retour ? '<button class="btn ghost" id="fRetour" style="margin:0 0 12px">← Retour</button>' : ''}
       <div class="card">
-        <div class="r" style="font-size:18px;font-weight:700">${esc(c.numero)} ${badgeStatut(c)}</div>
+        <div class="r" style="font-size:18px;font-weight:700">${esc(c.numero)} ${
+          badgeStatut(c, { rangement: false })}</div>
         <div class="meta" style="margin-top:4px">
           ${esc(c.type_libelle)} · chantier ${c.chantier ? esc(c.chantier) : '<em>non affecté</em>'}
           ${c.modele ? ' · ' + esc(c.modele) : ''}</div>
@@ -2986,7 +3076,7 @@ async function ficheCabine(cabine, retour) {
     const sortirOuEnvoyer = (chemin, libelle) => async () => {
       if (!c.chantier) {
         $('#fZone').innerHTML = `<div class="banner">N° de chantier obligatoire pour ${libelle}.</div>
-          <label>N° de chantier (6 chiffres)</label><input id="fCha" inputmode="numeric" placeholder="000123">
+          ${champChantier('fCha', '')}
           <button class="btn orange" id="fChaOk">Affecter puis continuer</button>`;
         $('#fChaOk').onclick = async () => {
           try {
@@ -3025,8 +3115,7 @@ function ouvrirCorrectionCabine(c, apres) {
   const corps = modale('Corriger la fiche ' + c.numero, `
     ${ligne('kNum', 'N° de cabine *', c.numero, 'placeholder="26_03_47"')}
     <div class="aide">Format attendu : deux chiffres, deux chiffres, deux chiffres, séparés par des tirets bas.</div>
-    ${ligne('kCha', 'N° de chantier', c.chantier, 'inputmode="numeric" placeholder="000123 — 6 chiffres"')}
-    <div class="aide">${esc(aideChantier())}</div>
+    ${champChantier('kCha', c.chantier)}
     <label for="kType">Type</label>
     <select id="kType">${types.map(t => `<option value="${t.code}"${t.code === c.type_cabine ? ' selected' : ''}>${esc(t.libelle)}</option>`).join('')}</select>
     ${ligne('kMod', 'Modèle', c.modele)}
@@ -4243,7 +4332,7 @@ async function renderJournal() {
 
 const CHAMPS_ENTREE = [
   ['numero', 'N° de cabine (REF. CABINE) *', 'Ex. 26_03_47'],
-  ['chantier', 'N° de commande / chantier *', 'Ex. 251280'],
+  ['chantier', 'N° de commande / chantier *', 'Ex. 251280 ou 251280-1'],
   ['modele', 'Modèle (CABINE)', 'Ex. QUATTRO'],
   ['revendeur', 'Revendeur', 'Ex. MYAH'],
   ['client', 'Client', 'Ex. HAS'],
@@ -4417,11 +4506,12 @@ function blocAttendue(a) {
     ${specs.length ? `<details style="margin-top:10px"><summary class="meta">Toutes les caractéristiques (${specs.length})</summary>
       <div class="specs"><table><tbody>${specs
         .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
-    ${a.chantier_a_saisir ? `<div class="banner" style="margin-top:12px">
-        Le fichier porte le chantier « ${esc(a.chantier_brut)} », que le WMS ne peut pas
-        enregistrer tel quel : il attend 6 chiffres. Saisis le n° de chantier.</div>
-      <label for="eChantier">N° de chantier</label>
-      <input id="eChantier" placeholder="6 chiffres" inputmode="numeric" autocomplete="off" maxlength="6">` : ''}
+    ${a.chantier_a_saisir ? `<div class="banner" style="margin-top:12px">${a.chantier_brut
+        ? `Le fichier porte le chantier « ${esc(a.chantier_brut)} », que le WMS ne sait
+           pas enregistrer tel quel. Saisis-le.`
+        : 'Le fichier ne donne aucun n° de chantier pour cette cabine. Sans lui, '
+          + 'elle ne peut pas être enregistrée.'}</div>
+      ${CHAMPS_CHANTIER}` : ''}
     <label for="e_type" style="margin-top:12px">Type de cabine</label>
     <select id="e_type">${REFS_CABINE.types.map(t =>
       `<option value="${t.code}">${esc(t.libelle)}</option>`).join('')}</select>
@@ -4433,8 +4523,8 @@ function blocAttendue(a) {
   $('#eCreer').onclick = async (ev) => {
     const bouton = ev.currentTarget;
     const corps = { ...a.champs_cabine, type_cabine: $('#e_type').value };
-    const saisi = $('#eChantier');
-    if (saisi) corps.chantier = saisi.value.trim();
+    if ($('#eChantier')) corps.chantier = lireChantierSaisi();
+    if (chantierRefuse(corps.chantier)) return;
     bouton.disabled = true;
     try {
       await creerCabine(corps);
@@ -4497,6 +4587,7 @@ async function creerCabineDepuisEntree() {
   const corps = { type_cabine: $('#e_type').value };
   CHAMPS_ENTREE.forEach(([cle]) => { corps[cle] = $('#e_' + cle).value.trim(); });
   if (!corps.numero) { toast('Le n° de cabine est obligatoire.', 'err'); return; }
+  if (chantierRefuse(corps.chantier)) return;
   // Le serveur refuse une création hors fichier sans motif ; l'annoncer ici évite
   // un aller-retour et un message d'erreur là où une phrase suffit.
   const motif = $('#eMotif');
@@ -5221,15 +5312,16 @@ function dessinerRapportImport(d) {
       ${LIGNE_RAPPORT('· à mettre à jour', d.modifiees)}
       ${LIGNE_RAPPORT('· inchangées', d.inchangees)}
       ${LIGNE_RAPPORT('Lignes refusées', erreurs.length, erreurs.length > 0)}
-      ${d.sans_chantier ? LIGNE_RAPPORT('Sans n° de chantier exploitable', d.sans_chantier) : ''}
+      ${d.sans_chantier ? LIGNE_RAPPORT('Sans n° de chantier', d.sans_chantier) : ''}
       ${d.absentes_du_fichier ? LIGNE_RAPPORT('Déjà en base et absentes de ce fichier', d.absentes_du_fichier + ' — conservées') : ''}
     </tbody></table></div>
 
     ${d.sans_chantier ? `<div class="banner" style="margin-top:12px">
-      ${d.sans_chantier} ligne${d.sans_chantier === 1 ? '' : 's'} porte${d.sans_chantier === 1 ? '' : 'nt'} un chantier
-      que le WMS ne peut pas enregistrer — « 251213-1 » au lieu de 6 chiffres. La
-      cabine est quand même importée avec toutes ses caractéristiques ; le n° de
-      chantier sera demandé à l'entrée.</div>` : ''}
+      ${d.sans_chantier} ligne${d.sans_chantier === 1 ? '' : 's'} n’${d.sans_chantier === 1 ? 'a' : 'ont'} pas de
+      n° de chantier exploitable : colonne vide, ou forme que le WMS ne sait pas
+      enregistrer. Les lots sont acceptés (« 251213-1 »), ce n’est donc pas eux.
+      La cabine est quand même importée avec toutes ses caractéristiques, et le n° de
+      chantier sera demandé — et exigé — à son entrée en stock.</div>` : ''}
 
     ${erreurs.length ? `<details style="margin-top:12px" open>
       <summary class="meta"><b>${erreurs.length} ligne${erreurs.length === 1 ? '' : 's'} refusée${erreurs.length === 1 ? '' : 's'}</b> — à corriger dans le classeur</summary>

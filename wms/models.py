@@ -311,13 +311,29 @@ class Cabine(models.Model):
     #: deux premiers groupes restent stricts — ce sont l'année et la semaine.
     MOTIF_NUMERO = r"^\d{2}_\d{2}_\d{1,3}$"
 
+    #: Un chantier s'écrit « 251213 ». Il se décline en lots quand la commande
+    #: part en plusieurs fois : « 251213-1 », « 251213-2 ». Les deux formes
+    #: viennent du fichier de production — au premier import, 110 lignes sur
+    #: 2 264 portaient un lot. N'accepter que six chiffres les rejetait toutes,
+    #: et obligeait à retaper à la main un numéro que le fichier donnait déjà.
+    #: Le lot tient sur deux chiffres : le fichier n'en a jamais montré plus d'un,
+    #: et « 251213-100 » n'a pas de sens pour une commande de cabines. Il commence
+    #: à 1 — « 251213-0 » est une faute de frappe, autant la refuser à la porte
+    #: plutôt que de créer un lot fantôme à côté du vrai.
+    MOTIF_CHANTIER = r"^\d{6}(-[1-9]\d?)?$"
+    AIDE_CHANTIER = ("Six chiffres, éventuellement suivis du lot : "
+                     "251213 ou 251213-1.")
+    #: 9 = 6 chiffres + tiret + 2 chiffres. Une seule constante, pour que les
+    #: trois champs qui stockent un chantier ne divergent pas.
+    TAILLE_CHANTIER = 9
+
     numero = models.CharField(
         max_length=16, unique=True,
         validators=[RegexValidator(MOTIF_NUMERO, "Format attendu : xx_xx_xx (jusqu'à 3 chiffres à la fin)")])
     # Facultatif en base : une cabine express se range sans chantier. L'obligation est
     # portée par clean() pour les cabines normales, et par le service pour la sortie.
-    chantier = models.CharField(max_length=6, blank=True, default="",
-                                validators=[RegexValidator(r"^\d{6}$", "Le chantier doit comporter 6 chiffres.")])
+    chantier = models.CharField(max_length=TAILLE_CHANTIER, blank=True, default="",
+                                validators=[RegexValidator(MOTIF_CHANTIER, AIDE_CHANTIER)])
     type_cabine = models.CharField("type", max_length=16, choices=TYPES, default=NORMALE)
     modele = models.CharField(max_length=120, blank=True)
     # Informations reprises de la fiche papier collée sur la cabine. Consultatives :
@@ -599,7 +615,10 @@ class MouvementCabine(models.Model):
 
     cabine = models.ForeignKey(Cabine, null=True, on_delete=models.SET_NULL, related_name="historique")
     cabine_numero = models.CharField(max_length=16)
-    chantier = models.CharField(max_length=6, blank=True, default="")
+    # Photographie du chantier au moment du mouvement. Même taille que le champ
+    # d'origine : plus court, PostgreSQL refuserait d'écrire « 251213-1 » et le
+    # mouvement échouerait après que la cabine a bougé.
+    chantier = models.CharField(max_length=Cabine.TAILLE_CHANTIER, blank=True, default="")
     date = models.DateTimeField(auto_now_add=True)
     type = models.CharField(max_length=16, choices=TYPES)
     utilisateur = models.ForeignKey(
@@ -653,13 +672,14 @@ class CabineAttendue(models.Model):
     num_unique = models.CharField("n° unique production", max_length=32, blank=True,
                                   default="", db_index=True)
 
-    chantier = models.CharField(max_length=6, blank=True, default="",
-                                validators=[RegexValidator(r"^\d{6}$",
-                                            "Le chantier doit comporter 6 chiffres.")])
-    #: Le fichier écrit parfois « 251213-1 » : le chantier 251213, lot 1. Le WMS
-    #: n'accepte que 6 chiffres — la valeur brute est conservée ici pour ne pas
-    #: perdre l'information, et `chantier` reste vide. L'écran d'import le signale,
-    #: l'opérateur saisira le chantier à l'entrée.
+    chantier = models.CharField(max_length=Cabine.TAILLE_CHANTIER, blank=True, default="",
+                                validators=[RegexValidator(Cabine.MOTIF_CHANTIER,
+                                            Cabine.AIDE_CHANTIER)])
+    #: Le chantier tel que le classeur l'écrit, conservé même quand il est
+    #: enregistrable — c'est lui qu'on cherche quand l'atelier cite une référence
+    #: fournisseur. Il reste utile pour les formes que le WMS ne sait pas stocker
+    #: (une lettre, un espace) : `chantier` est alors vide, l'écran d'import le
+    #: signale et l'opérateur saisit le numéro à l'entrée de la cabine.
     chantier_brut = models.CharField("chantier tel qu'écrit", max_length=32, blank=True,
                                      default="")
 
@@ -702,8 +722,16 @@ class CabineAttendue(models.Model):
 
     @property
     def chantier_a_saisir(self):
-        """Vrai quand le fichier portait un chantier que le WMS ne peut pas stocker."""
-        return bool(self.chantier_brut and not self.chantier)
+        """Vrai dès qu'il n'y a pas de chantier utilisable pour cette cabine.
+
+        Deux cas, et non un seul : le classeur portait une forme que le WMS ne
+        sait pas stocker, ou il ne portait rien du tout. La version précédente ne
+        regardait que la première — une ligne sans chantier n'affichait donc aucun
+        champ à l'entrée, et la création échouait sur un 400 sans que l'écran ait
+        jamais proposé de le saisir. C'est le seul endroit où la saisie manuelle
+        d'un chantier reste ouverte : partout ailleurs, il vient du fichier.
+        """
+        return not self.chantier
 
     def champs_cabine(self):
         """Les champs à recopier dans la `Cabine` créée à l'entrée.

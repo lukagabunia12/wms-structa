@@ -26,7 +26,7 @@ import unicodedata
 
 from django.db import transaction
 
-from .models import CabineAttendue
+from .models import Cabine, CabineAttendue
 
 #: L'identifiant est la colonne « CABINE » (26_02_49) — le numéro déjà porté par
 #: les étiquettes QR et par le masque de saisie. La colonne « NUM UNIQUE » est
@@ -68,7 +68,8 @@ TAILLES = {
 }
 
 MOTIF_NUMERO = re.compile(r"^\d{2}_\d{2}_\d{1,3}$")
-MOTIF_CHANTIER = re.compile(r"^\d{6}$")
+# Le motif vit sur le modèle : import, base et messages disent la même règle.
+MOTIF_CHANTIER = re.compile(Cabine.MOTIF_CHANTIER)
 
 #: Au-delà, ce n'est plus le fichier de production : on refuse avant de charger
 #: 200 Mo en mémoire sur le poste serveur.
@@ -187,9 +188,11 @@ def _preparer(entetes, valeurs):
     # qui n'est pas celui-là. La première version de ce code faisait exactement
     # cela, et annonçait sereinement 110 chantiers reconnus.
     #
-    # « 251213-1 » est probablement le chantier 251213, lot 1. Probablement ne
-    # suffit pas : la valeur brute est conservée, `chantier` reste vide, et
-    # l'opérateur saisira le chantier à l'entrée de la cabine.
+    # « 251213-1 » est maintenant stocké tel quel : c'est le chantier 251213,
+    # lot 1, et le WMS le garde entier plutôt que de le faire retaper. Ce qui
+    # reste refusé est ce qui n'a pas de sens comme chantier — une lettre, un
+    # espace, un nombre de chiffres inattendu. La valeur brute est conservée dans
+    # tous les cas, et `chantier` reste vide quand elle n'est pas exploitable.
     chantier = _texte(brut.get("CHANTIER"))
     champs["chantier_brut"] = chantier[:32]
     champs["chantier"] = chantier if MOTIF_CHANTIER.match(chantier) else ""
@@ -259,7 +262,11 @@ def analyser(fichier, *, nom=""):
             continue
 
         vus[numero] = ligne
-        if champs["chantier_brut"] and not champs["chantier"]:
+        # Compté sur `chantier` et non sur le brut : une ligne qui ne porte AUCUN
+        # chantier réclame la même saisie manuelle qu'une ligne au format
+        # inattendu. Ne compter que la seconde laissait la première invisible
+        # dans le rapport, et la surprise arrivait à l'entrée de la cabine.
+        if not champs["chantier"]:
             rapport["sans_chantier"] += 1
 
         existante = existantes.get(numero)
