@@ -239,7 +239,12 @@ const avantDans = (position) => {
      ici : il reste vert si un `choixPlace()` traîne ailleurs dans la même
      fonction, ce qui est le cas dans une fonction longue. Celui-ci regarde
      l'affectation elle-même, et refuse toute place prise dans un tableau. */
-  for (const a of source.matchAll(/\bplace\s*[:=]\s*[A-Za-z_$][\w.$]*\s*\[/g)) {
+  /* La règle vise ce qui PART VERS LE SERVEUR — `corps.place = …` ou la clé
+     `place:` d'un corps de requête — et non une lecture locale. Sa première
+     version attrapait aussi `const place = occs[0].place`, une lecture
+     d'affichage parfaitement légitime : une règle qui crie sur du code sain
+     finit par être contournée, et c'est alors le vrai défaut qui passe. */
+  for (const a of source.matchAll(/(?:corps\.place\s*=|\bplace:)\s*[A-Za-z_$][\w.$]*\s*\[/g)) {
     erreurs.push(`${englobante(a.index)}() prend la place dans un tableau `
       + `(« ${a[0].trim()}… ») : c'est la deviner. Une place se touche — `
       + '`blocPlaces(d)` puis `choixPlace(d, bouton)` — et rien n\'est '

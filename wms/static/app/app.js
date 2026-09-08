@@ -1647,7 +1647,8 @@ const badgeStatut = (c, options = {}) => {
 const ligneCabine = (c) => `<div class="item" data-id="${c.id}" data-cle="${c.id}">
   <div class="r">${esc(c.numero)} ${badgeStatut(c)}${pastilleType(c)}</div>
   <div class="d">Chantier ${c.chantier ? esc(c.chantier) : '<em>à affecter</em>'}${c.modele ? ' · ' + esc(c.modele) : ''}</div>
-  <div class="meta">${c.etape_libelle ? esc(c.etape_libelle) + ' · ' : ''}${c.position ? esc((c.zone_nom ? c.zone_nom + ' / ' : '') + c.position) : 'non rangée'}</div>
+  <div class="meta">${c.etape_libelle ? esc(c.etape_libelle) + ' · ' : ''}${c.position
+    ? esc((c.zone_nom ? c.zone_nom + ' / ' : '') + ouEstLaCabine(c)) : 'non rangée'}</div>
 </div>`;
 
 // --- Emplacement scanné : les deux options demandées, ranger et sortir -------
@@ -1709,16 +1710,27 @@ async function montrerEmplacement(emp, opts = {}) {
     const attendUnePlace = Boolean(CABINE_A_RANGER) && peut('cab')
       && !d.complet && !d.illimite
       && !(d.cabines || []).some(x => x.id === CABINE_A_RANGER.id);
+    /* Une cabine qui prend la travée entière n'apparaît QU'UNE FOIS. La version
+       précédente rendait les deux places l'une sous l'autre avec le même numéro :
+       on lisait deux cabines — ou une donnée fausse — et rien ne disait pourquoi
+       la seconde place n'était plus choisissable. */
+    const entiere = d.illimite ? null
+      : (d.places || []).find(p => p.occupation && p.occupation.place === 'T');
     const contenu = d.illimite
       ? ((d.cabines || []).length
-          ? d.cabines.map(c => `<div class="item" style="cursor:default">
-              <div class="r">${esc(c.numero)} <span class="etat ${CLASSE_STATUT[c.statut] || ''}">${esc(c.statut_libelle || c.statut)}</span></div>
-              <div class="d">Chantier ${c.chantier ? esc(c.chantier) : '<em>à affecter</em>'}</div></div>`).join('')
+          ? d.cabines.map(c => ligneOccupant(c, { titre: esc(c.numero), ici: d.code })).join('')
           : '<div class="empty">Aucune cabine ici.</div>')
-      : d.places.map(p => `<div class="item" style="cursor:default">
-          <div class="r">${p.code} — ${esc(p.libelle)} ${p.libre ? '<span class="etat ok">libre</span>' : '<span class="etat att">occupée</span>'}</div>
-          ${p.cabine ? `<div class="d">${esc(p.cabine.numero)} · chantier ${p.cabine.chantier || '—'}</div>` : ''}
-        </div>`).join('');
+      : entiere
+        ? ligneOccupant(entiere.cabine, {
+            titre: 'Toute la travée', ici: d.code,
+            pourquoi: 'Un grand modèle occupe les deux places : aucune autre'
+                    + ' cabine ne peut être posée ici.',
+          })
+        : d.places.map(p => (p.libre
+            ? `<div class="item" style="cursor:default"><div class="r">${p.code} — ${
+                esc(p.libelle)} <span class="etat ok">libre</span></div></div>`
+            : ligneOccupant(p.cabine, {
+                titre: `${p.code} — ${esc(p.libelle)}`, ici: d.code }))).join('');
     zone.innerHTML = `
       <div class="card"><div class="muted small">${esc(d.zone || 'Sans zone')}</div>
         <div class="r" style="font-size:17px;font-weight:700">Emplacement ${esc(d.code)}</div>
@@ -1880,6 +1892,38 @@ function occupantCourt(p) {
   return p.cabine ? p.cabine.numero : 'occupée';
 }
 
+//: Le nom des places en mots, pas en lettres. « G » se lit sur une étiquette de
+//: rack ; dans une phrase, « gauche » se comprend sans traduire.
+const NOM_PLACE = { G: 'gauche', D: 'droite', T: 'toute la travée' };
+
+/** Les travées occupées par une cabine, sans doublon et dans l'ordre. */
+const travees = (c) => (c && c.occupations || [])
+  .filter(o => o.emplacement_code)
+  .map(o => o.emplacement_code)
+  .filter((code, i, tout) => tout.indexOf(code) === i);
+
+/** Où est la cabine, en clair et en une ligne.
+
+    Une place : « A-01 · gauche ». Toute la travée : « A-01 · toute la travée ».
+    Plusieurs travées : « 3 travées : A-01, A-02, A-03 ».
+
+    Le COMPTE vient d'abord dans le dernier cas, et c'est le point : un
+    XL (3modules) tient sur trois travées, et « A-01·T, A-02·T, A-03·T » se lit
+    comme un code de rack, pas comme trois endroits. Un cariste qui n'a lu que le
+    premier va chercher les deux autres tiers de la cabine.
+
+    Repli sur `position` : quelques listes servent une vue réduite de la cabine,
+    sans le détail de ses occupations. */
+function ouEstLaCabine(c) {
+  if (!c) return '';
+  const occs = (c.occupations || []).filter(o => o.emplacement_code);
+  if (!occs.length) return c.position || '';
+  const codes = travees(c);
+  if (codes.length > 1) return `${codes.length} travées : ${codes.join(', ')}`;
+  const place = occs[0].place;
+  return place ? `${codes[0]} · ${NOM_PLACE[place] || place}` : codes[0];
+}
+
 /** Y a-t-il une place à désigner ? Deux cas disent non, pour deux raisons
     opposées : une capacité illimitée n'a pas de place nommée, et un grand modèle
     n'en laisse pas le choix — il prend la travée entière. Les écrans posaient
@@ -1888,6 +1932,32 @@ function occupantCourt(p) {
     silence, ce qui est la pire des deux façons de ne pas décider. */
 const sansPlaceAChoisir = (d) =>
   Boolean(d.illimite || (d.pour_cabine && d.pour_cabine.toute_la_travee));
+
+/** Une ligne d'occupation dans la fiche d'un emplacement.
+
+    « aussi en A-02, A-03 » est la partie qui évite de chercher : une cabine peut
+    tenir sur plusieurs travées, et devant A-01 on veut lire tout de suite qu'elle
+    se prolonge ailleurs. Sans cela, un cariste voit une cabine complète là où il
+    n'y en a qu'un tiers, et cherche les deux autres au hasard du rack. */
+function ligneOccupant(cabine, options = {}) {
+  if (!cabine) return '';
+  const ailleurs = travees(cabine).filter(code => code !== options.ici);
+  /* Deux états sur une ligne, et ils ne parlent pas de la même chose : la PLACE
+     est occupée, la CABINE est conforme ou en quarantaine. La première version
+     posait le statut de la cabine à côté du nom de la place — « G — Gauche
+     Conforme » — et on lisait que la place était conforme. Chacun est donc
+     rendu à côté de ce qu'il qualifie. */
+  return `<div class="item" style="cursor:default">
+    <div class="r">${options.titre} <span class="etat att">occupée</span></div>
+    <div class="d">${esc(cabine.numero)} ${badgeStatut(cabine, { rangement: false })}${
+      cabine.modele ? ' · ' + esc(cabine.modele) : ''}</div>
+    <div class="meta">Chantier ${
+      cabine.chantier ? esc(cabine.chantier) : '<em>à affecter</em>'}</div>
+    ${ailleurs.length ? `<div class="meta"><b>Cette cabine occupe aussi ${
+      ailleurs.length === 1 ? 'la travée' : 'les travées'} ${esc(ailleurs.join(', '))}</b></div>` : ''}
+    ${options.pourquoi ? `<div class="meta">${options.pourquoi}</div>` : ''}
+  </div>`;
+}
 
 function placesHTML(d, choisie) {
   if (d.illimite) return '';
@@ -2008,9 +2078,13 @@ async function afficherToutesCaracteristiques(c) {
   zone.innerHTML = '<div class="empty">Lecture…</div>';
   if (bouton) { bouton.textContent = ' Masquer les caractéristiques'; bouton.insertAdjacentHTML('afterbegin', icon('close', 17)); }
 
+  // `position` passe par `ouEstLaCabine` : la valeur brute du serveur est
+  // « A-01·T, A-02·T, A-03·T », qui se lit comme un code de rack. Ici comme
+  // ailleurs, on écrit « 3 travées : A-01, A-02, A-03 ».
+  const valeur = (cle) => (cle === 'position' ? ouEstLaCabine(c) : c[cle]);
   const siennes = DETAIL_CABINE
-    .filter(([cle]) => (c[cle] || '') !== '')
-    .map(([cle, lib]) => `<tr><td>${esc(lib)}</td><td><b>${esc(c[cle])}</b></td></tr>`).join('');
+    .filter(([cle]) => (valeur(cle) || '') !== '')
+    .map(([cle, lib]) => `<tr><td>${esc(lib)}</td><td><b>${esc(valeur(cle))}</b></td></tr>`).join('');
 
   // La ligne de production est facultative : une cabine créée hors fichier n'en
   // a pas, et son absence se dit plutôt que de laisser un bloc vide.
@@ -3113,7 +3187,7 @@ async function ficheCabine(cabine, retour) {
         <div class="meta" style="margin-top:4px">
           ${esc(c.type_libelle)} · chantier ${c.chantier ? esc(c.chantier) : '<em>non affecté</em>'}
           ${c.modele ? ' · ' + esc(c.modele) : ''}</div>
-        <div class="meta">${c.position ? 'Rangée en ' + esc(c.position) : 'Non rangée'}</div>
+        <div class="meta">${c.position ? 'Rangée en ' + esc(ouEstLaCabine(c)) : 'Non rangée'}</div>
         ${blocEmplacements(c)}
         ${c.envoyee ? '' : `<div class="meta" style="margin-top:4px">Sans mouvement depuis ${c.jours_immobile} jour${c.jours_immobile === 1 ? '' : 's'}</div>`}
         ${c.envoyee ? `<div class="banner" style="margin:12px 0 0">Cabine envoyée le ${new Date(c.envoi_date).toLocaleString('fr-FR')} — fiche archivée. La fiche reste corrigeable, et la cabine peut être remise en stock si elle revient.</div>
@@ -5890,7 +5964,7 @@ function dessinerGestes() {
     <div class="card">
       <div class="r" style="font-size:17px;font-weight:700">${
         badgeStatut(cabine, { rangement: false })}
-        ${range ? 'Rangée en ' + esc(cabine.position) : 'Non rangée'}</div>
+        ${range ? 'Rangée en ' + esc(ouEstLaCabine(cabine)) : 'Non rangée'}</div>
       <div class="meta" style="margin-top:5px">Chantier ${
         cabine.chantier ? esc(cabine.chantier) : '<b>à affecter</b>'}${
         cabine.modele ? ' · ' + esc(cabine.modele) : ''}${

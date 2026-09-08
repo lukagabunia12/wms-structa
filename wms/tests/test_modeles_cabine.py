@@ -360,6 +360,69 @@ class TraveesHorsRegleTest(BaseModeles):
         self.assertEqual([t["code"] for t in r.data["travees_hors_regle"]], ["C001"])
 
 
+class PlusieursTraveesTest(BaseModeles):
+    """Une cabine peut tenir sur plusieurs travées, et il faut le VOIR.
+
+    Un XL (3modules) occupe trois travées. Chacune est prise en entier, et la
+    fiche de l'une doit nommer les deux autres : sinon un cariste voit une cabine
+    complète là où il n'y en a qu'un tiers, et cherche le reste au hasard du rack.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.e3 = Emplacement.objects.create(code="C003", zone_cabine=self.zone)
+        ModeleCabine.objects.update_or_create(
+            cle="XL (3MODULES)", defaults={"nom": "XL (3modules)", "grand": True})
+        self.cab = self.cabine(modele="XL (3modules)")
+        for i, emp in enumerate([self.e1, self.e2, self.e3]):
+            services_cabines.ranger(cabine=self.cab, emplacement=emp,
+                                    ajouter=bool(i), utilisateur=self.user)
+
+    def test_trois_travees_prises_en_entier(self):
+        places = sorted(o.place for o in self.cab.occupations.all())
+        self.assertEqual(places, [Occupation.TRAVEE] * 3)
+        for emp in [self.e1, self.e2, self.e3]:
+            with self.subTest(emplacement=emp.code):
+                self.assertTrue(services_cabines.est_complet(emp))
+
+    def test_la_position_nomme_les_trois(self):
+        self.cab.refresh_from_db()
+        for code in ["C001", "C002", "C003"]:
+            self.assertIn(code, self.cab.position)
+
+    def test_l_api_rend_les_trois_occupations_avec_chaque_travee(self):
+        """C'est ce que l'écran lit pour écrire « 3 travées : C001, C002, C003 ».
+
+        Sans les occupations dans la charge utile, l'écran ne peut afficher que
+        `position` — « C001·T, C002·T, C003·T », qui se lit comme un code de rack.
+        """
+        r = self.client.get(f"/api/emplacements/{self.e1.id}/places/")
+        self.assertEqual(r.status_code, 200)
+        occupee = [p for p in r.data["places"] if not p["libre"]][0]
+        codes = sorted(o["emplacement_code"] for o in occupee["cabine"]["occupations"])
+        self.assertEqual(codes, ["C001", "C002", "C003"])
+        self.assertEqual(occupee["cabine"]["nb_emplacements"], 3)
+
+    def test_une_seule_occupation_marquee_travee_par_emplacement(self):
+        """Chaque travée porte UNE occupation, pas deux places distinctes.
+
+        C'est ce qui permet à l'écran de n'afficher qu'une ligne au lieu de
+        répéter le même numéro de cabine sous « Gauche » puis sous « Droite ».
+        """
+        r = self.client.get(f"/api/emplacements/{self.e1.id}/places/")
+        entieres = [p for p in r.data["places"]
+                    if p["occupation"] and p["occupation"]["place"] == Occupation.TRAVEE]
+        self.assertEqual(len(entieres), 2)      # les deux places pointent…
+        self.assertEqual(entieres[0]["occupation"]["id"],
+                         entieres[1]["occupation"]["id"])   # …sur la MÊME occupation
+
+    def test_sortir_libere_les_trois_travees(self):
+        services_cabines.sortir_de_l_emplacement(cabine=self.cab, utilisateur=self.user)
+        for emp in [self.e1, self.e2, self.e3]:
+            with self.subTest(emplacement=emp.code):
+                self.assertEqual(services_cabines.places_libres(emp), ["G", "D"])
+
+
 class ReferentielTest(BaseModeles):
     def test_les_places_du_referentiel_sont_g_et_d(self):
         r = self.client.get("/api/referentiels-cabine/")
