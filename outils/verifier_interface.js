@@ -16,10 +16,23 @@ const FICHIER = path.join(__dirname, '..', 'wms', 'static', 'app', 'app.js');
 const source = fs.readFileSync(FICHIER, 'utf8');
 const erreurs = [];
 
+/** Le source SANS ses commentaires.
+
+    Une fonction commentée ressemble encore à une déclaration : `^function nom(`
+    correspond aussi bien à l'intérieur d'un bloc `/* … *\/`. C'est arrivé — un
+    retrait de code a emporté le `*\/` d'un commentaire, et tout ce qui suivait
+    s'est retrouvé commenté, `renderTrouver` compris. `node --check` passait (le
+    fichier reste valide) et ce contrôleur annonçait « OK » : l'écran ne cassait
+    qu'au clic sur l'onglet. Les commentaires partent donc avant de chercher les
+    déclarations. */
+const sansCommentaires = source
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/[^\n]*$/gm, '');
+
 /** Noms déclarés au premier niveau du fichier. */
 const declares = new Set();
-for (const m of source.matchAll(/^(?:async\s+)?function\s+([A-Za-z0-9_]+)/gm)) declares.add(m[1]);
-for (const m of source.matchAll(/^(?:const|let|var)\s+([A-Za-z0-9_]+)/gm)) declares.add(m[1]);
+for (const m of sansCommentaires.matchAll(/^(?:async\s+)?function\s+([A-Za-z0-9_]+)/gm)) declares.add(m[1]);
+for (const m of sansCommentaires.matchAll(/^(?:const|let|var)\s+([A-Za-z0-9_]+)/gm)) declares.add(m[1]);
 
 /** 1. Les écrans routés par go() pointent vers une fonction qui existe. */
 const bloc = source.match(/const ecrans = \{([\s\S]*?)\};/);

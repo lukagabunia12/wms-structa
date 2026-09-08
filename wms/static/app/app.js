@@ -104,6 +104,10 @@ const ICON = {
   chart:'<line x1="5" y1="20" x2="5" y2="11"/><line x1="12" y1="20" x2="12" y2="5"/><line x1="19" y1="20" x2="19" y2="14"/>',
   menu:'<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>',
   transfer:'<path d="M4 9h13l-4-4M20 15H7l4 4"/>',
+  // Une coche et une alerte manquaient : l'écran des gestes en a besoin pour
+  // « lever la quarantaine » et « mettre en quarantaine ».
+  check:'<path d="M20 6L9 17l-5-5"/>',
+  alert:'<path d="M12 4l9 16H3z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor"/>',
   clip:'<rect x="6" y="4" width="12" height="16" rx="2"/><path d="M9 4h6v3H9z"/>',
   build:'<rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 7h1M14 7h1M9 11h1M14 11h1M9 15h1M14 15h1"/>',
   journal:'<circle cx="5" cy="7" r="1"/><circle cx="5" cy="12" r="1"/><circle cx="5" cy="17" r="1"/><line x1="9" y1="7" x2="20" y2="7"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="17" x2="20" y2="17"/>',
@@ -377,16 +381,23 @@ function profil() {
 // En gestion, « Racks » quitte la barre : il reste sur l'accueil et dans le menu,
 // et le parcours « Ranger » y mène déjà. Un sixième onglet réduirait toutes les
 // cibles pour un écran qu'on n'ouvre pas en tenant une cabine.
-const ONGLETS = {
-  cariste: [['home','Accueil','home'],['scanner','Scanner','scan'],
-            ['rangement','Ranger','in'],['trouver','Trouver','search'],
-            ['more','Plus','menu']],
-  gestion: [['home','Accueil','home'],['scanner','Scanner','scan'],
-            ['rangement','Ranger','in'],['trouver','Trouver','search'],
-            ['more','Plus','menu']],
-  lecture: [['home','Accueil','home'],['scanner','Scanner','scan'],
-            ['trouver','Trouver','search'],['more','Plus','menu']],
-};
+/* Trois onglets, les mêmes pour tous les profils.
+
+   Il y en avait cinq, dont trois posaient la même question sous trois noms :
+   « Ranger » et « Sortir » demandaient chacun QUELLE cabine avant de proposer
+   leur geste, et « Trouver » faisait déjà exactement ce que fait le Scanner —
+   lire un QR ou saisir un numéro. Le cariste devait choisir son geste AVANT
+   d'avoir identifié la cabine, alors que c'est l'état de la cabine qui décide
+   des gestes possibles.
+
+   Le point de départ est le numéro. « Scanner » le lit — photo de la fiche, QR
+   ou saisie — et l'écran suivant propose ce qui est possible. Il est donc aussi
+   l'écran d'accueil : c'est là que chaque geste commence, autant y être déjà.  */
+const ONGLETS_COMMUNS = [['scanner', 'Scanner', 'scan'],
+                         ['cabines', 'Parc', 'build'],
+                         ['more', 'Plus', 'menu']];
+const ONGLETS = { cariste: ONGLETS_COMMUNS, gestion: ONGLETS_COMMUNS,
+                  lecture: ONGLETS_COMMUNS };
 
 function navBar(active) {
   const items = VOLET_ARTICLES
@@ -409,21 +420,29 @@ let ECRAN = 'home';
    « Sortie de production ». Le jour où ces rôles sont paramétrés, l'écran
    redevient utile : remettre la ligne ci-dessous et sa vignette d'accueil suffit.
        ['suivi','Suivi du processus','chart'],                                  */
+/* Sept entrées au lieu de treize. Ce qui a disparu, et pourquoi :
+
+   - « Ranger », « Sortir » et « Créer une cabine » demandaient chacun QUELLE
+     cabine avant de proposer leur geste. C'est le Scanner qui pose désormais
+     cette question, une seule fois, et l'état de la cabine décide de la suite.
+     Les écrans existent toujours : on y arrive par le geste, plus par le menu.
+   - « Trouver une cabine » faisait exactement ce que fait le Scanner.
+   - « Par chantier » et « Cabines envoyées » n'étaient que le Parc avec un
+     filtre posé. Le champ de recherche du Parc cherche déjà un n° de chantier,
+     et « Envoyées » y est un filtre rapide.
+   - « Zones » : le fonctionnement par zones est retiré de l'interface. Le
+     modèle et les données restent en base — rien n'est perdu, et l'écran
+     reviendra le jour où les zones serviront vraiment.                       */
 const MENU_CABINES = [
-  ['Parc', [['home','Accueil','home'],
+  ['Parc', [['scanner','Scanner une cabine','scan'],
             ['cabines','Toutes les cabines','build'],
-            ['chantier','Par chantier','search']]],
-  ['Opérations', [['rangement','Ranger une cabine','in'],
-                  ['sortie-cabine','Sortir une cabine','out'],
-                  ['entree','Créer une cabine (saisie)','plus'],
-                  ['scanner','Scanner un QR ou une fiche','scan'],
-                  ['trouver','Trouver une cabine','search']]],
-  ['Suivi', [['archives','Cabines envoyées','journal'], ['journal','Journal','history']]],
+            ['home','Tableau de bord','chart']]],
+  ['Suivi', [['journal','Journal','history']]],
   // « Emplacements » ouvre l'écran unique : occupation, création, réglages et
   // suppression au même endroit. Il est ici, dans le référentiel, parce que
   // c'est là qu'on vient quand on cherche à ajouter ou corriger une travée.
   ['Référentiel', [['emplacements','Emplacements','box'],
-                   ['zones','Zones','tag'], ['etiquettes','Étiquettes','print'],
+                   ['etiquettes','Étiquettes','print'],
                    // Administrateurs seulement — voir `menuLateral`.
                    ['import','Fichier de production','clip']]],
 ];
@@ -441,8 +460,8 @@ const MENU_ARTICLES = [
    une cabine ; il n'a pas à naviguer dans le référentiel, qu'il ne peut pas
    modifier de toute façon — le serveur refuserait. */
 const MENU_PAR_PROFIL = {
-  cariste: ['home', 'scanner', 'rangement', 'sortie-cabine', 'trouver', 'cabines', 'chantier'],
-  lecture: ['home', 'scanner', 'trouver', 'cabines', 'chantier', 'emplacements'],
+  cariste: ['scanner', 'cabines'],
+  lecture: ['scanner', 'cabines', 'emplacements'],
 };
 
 function menuLateral() {
@@ -488,22 +507,23 @@ function go(name) {
   arreterCamera();
   const ecrans = {
     // Cabines
-    home: renderHome, suivi: renderSuivi, entree: renderEntree,
-    scanner: renderEntreeScan, trouver: renderTrouver,
+    home: renderHome, entree: renderEntree,
+    // « Scanner » est le point de départ ET l'écran d'accueil.
+    scanner: renderScanner, trouver: renderTrouver,
     // Même écran de scan, autre titre : on sait ce qu'on est venu lire.
     'scan-colonne': () => renderTrouver('Scanner une colonne'),
     rangement: renderRangement, 'sortie-cabine': renderSortieCabine,
     rack: renderEmplacements,
-    cabines: renderCabines, chantier: renderChantier, emplacements: renderEmplacements,
-    gestionEmplacements: renderGestionEmplacements, archives: renderArchives,
-    journal: renderJournal, zones: renderZones, etiquettes: renderEtiquettes, more: renderMore,
+    cabines: renderCabines, emplacements: renderEmplacements,
+    journal: renderJournal, etiquettes: renderEtiquettes, more: renderMore,
     import: renderImport,
     // Volet articles — archivé, joignable seulement si VOLET_ARTICLES est réactivé
     reception: renderReception, sortie: renderSortie, search: renderSearch,
     transfert: renderTransfert, ranger: renderRanger, inventaire: renderInventaire,
     receptions: renderReceptions, tracabilite: renderTracabilite,
     dashboard: renderDashboard, stock: renderStock };
-  const cle = ecrans[name] ? name : 'home';
+  // Écran inconnu : on retombe sur le Scanner, qui est l'accueil.
+  const cle = ecrans[name] ? name : 'scanner';
   // Le rendu est empilé plutôt qu'exécuté : c'est lui que rejoueront le bouton
   // « retour » du navigateur et le rafraîchissement automatique.
   ouvrirEcran(() => { ECRAN = cle; (ecrans[cle])(); }, cle);
@@ -803,9 +823,9 @@ async function renderHome() {
     // « Chargées » comptait `statut=charge`, un statut qui n'existe plus : la
     // vignette affichait 0 en toutes circonstances. Remplacée par les cabines
     // sans chantier, qui elles bloquent réellement un départ.
-    const [actives, quarantaine, sansChantier, nonRangees, zones] = await Promise.all([
+    const [actives, quarantaine, sansChantier, nonRangees] = await Promise.all([
       compter(''), compter('statut=quarantaine'), compter('sans_chantier=1'),
-      compter('rangee=0'), api('/zones/').then(d => d.count).catch(() => 0),
+      compter('rangee=0'),
     ]);
     layout(`<h2 class="title">Bonjour ${esc(USER)}</h2>
       ${rappelEnCours()}
@@ -816,7 +836,6 @@ async function renderHome() {
         <div class="kpi clic" data-cab='{"sans_chantier":"1"}'><div class="l">Sans chantier</div><div class="v">${sansChantier}</div></div>
         <div class="kpi clic" data-cab='{"rangee":"0"}'><div class="l">Non rangées</div><div class="v">${nonRangees}</div></div>
       </div>
-      ${zones === 0 ? '<div class="banner">Aucune zone définie — crée tes zones (À ranger, Sortie prod, Attente départ) pour commencer.</div>' : ''}
       <div class="sec">Actions</div>
       <div class="tiles">${vignettesAccueil()}</div>`, 'home');
     brancherGestes();
@@ -2270,11 +2289,10 @@ function blocFiche(titre) {
       <div class="meta" style="margin-top:6px;text-align:center">Le tableau à deux
         colonnes, bien à plat et éclairé.</div>
       <div id="fEtat"></div>
-      <details style="margin-top:14px"><summary class="meta">Autrement : saisir le n° ou scanner un QR</summary>
-        <label style="margin-top:8px">N° de cabine</label>
-        <input id="fNum" placeholder="Ex. 26_03_47" autocomplete="off">
-        <button class="btn ghost" id="fNumOk">Continuer</button>
-        <div class="meta" style="margin:14px 0 6px">Si la cabine porte une étiquette QR imprimée par le WMS :</div>
+      <div class="sec" style="margin-top:18px">Ou saisir le numéro</div>
+      <input id="fNum" placeholder="Ex. 26_03_47" autocomplete="off">
+      <button class="btn ghost" id="fNumOk">Continuer</button>
+      <details style="margin-top:14px"><summary class="meta">La cabine porte une étiquette QR du WMS</summary>
         ${blocCameraHTML('Scanner un QR code', 'Étiquette imprimée par le WMS')}
       </details>
     </div>`;
@@ -2931,7 +2949,7 @@ async function ficheCabine(cabine, retour) {
           ${c.modele ? ' · ' + esc(c.modele) : ''}</div>
         <div class="meta">${c.position ? 'Rangée en ' + esc(c.position) : 'Non rangée'}</div>
         ${blocEmplacements(c)}
-        <div class="meta" style="margin-top:4px">Étape : <b>${esc(c.etape_libelle)}</b>${c.envoyee ? '' : ` · sans mouvement depuis ${c.jours_immobile} jour${c.jours_immobile === 1 ? '' : 's'}`}</div>
+        ${c.envoyee ? '' : `<div class="meta" style="margin-top:4px">Sans mouvement depuis ${c.jours_immobile} jour${c.jours_immobile === 1 ? '' : 's'}</div>`}
         ${c.envoyee ? `<div class="banner" style="margin:12px 0 0">Cabine envoyée le ${new Date(c.envoi_date).toLocaleString('fr-FR')} — fiche archivée. La fiche reste corrigeable, et la cabine peut être remise en stock si elle revient.</div>
           ${peut('cab') ? `<button class="btn orange" id="fReprendre">La remettre en stock</button>` : ''}` : ''}
         <div id="fAct"></div>
@@ -3226,7 +3244,7 @@ const TRIS_CAB = [
 const DELAIS_IMMOBILE = [7, 15, 30, 60];
 
 const FILTRES_CAB_VIDE = () => ({
-  search: '', rangee: '', statut: '', type: '', etape: '', zone: '',
+  search: '', rangee: '', statut: '', type: '',
   rack: '', chantier_exact: '', modele_exact: '', immobile: '',
   sans_chantier: '', toutes: '', ordering: 'numero',
 });
@@ -3246,8 +3264,8 @@ let PANNEAU_CAB = null;
 
 //: Filtre ↔ champ de l'écran. Une seule table : le rendu la lit pour poser les
 //: valeurs, la synchronisation pour les remettre à jour après un filtre rapide.
-const CHAMPS_CAB = { rangee: '#fRa', statut: '#fSt', type: '#fTy', etape: '#fEt',
-                     rack: '#fRk', zone: '#fZo', chantier_exact: '#fCh',
+const CHAMPS_CAB = { rangee: '#fRa', statut: '#fSt', type: '#fTy',
+                     rack: '#fRk', chantier_exact: '#fCh',
                      modele_exact: '#fMo', immobile: '#fIm', ordering: '#fTr' };
 
 /** Filtres rapides : libellé, clé du compteur, les filtres qu'ils posent, et
@@ -3313,12 +3331,8 @@ async function renderCabines() {
           <select id="fSt">${opts(statuts, FILTRES_CAB.statut, 'Tous')}</select></div>
         <div><label for="fTy">Type</label>
           <select id="fTy">${opts(codes(REFS_CABINE.types), FILTRES_CAB.type, 'Tous')}</select></div>
-        <div><label for="fEt">Étape</label>
-          <select id="fEt">${opts(codes(REFS_CABINE.etapes), FILTRES_CAB.etape, 'Toutes')}</select></div>
         <div><label for="fRk">Rack</label>
           <select id="fRk">${opts(paires(OPTIONS_CAB.racks), FILTRES_CAB.rack, 'Tous')}</select></div>
-        <div><label for="fZo">Zone</label>
-          <select id="fZo">${opts(zones.map(z => [z.id, z.nom]), FILTRES_CAB.zone, 'Toutes')}</select></div>
         <div><label for="fCh">Chantier</label>
           <select id="fCh">${opts(paires(OPTIONS_CAB.chantiers), FILTRES_CAB.chantier_exact, 'Tous')}</select></div>
         <div><label for="fMo">Modèle</label>
@@ -3431,7 +3445,6 @@ function resumeFiltresCab() {
   if (f.rangee === '1') morceaux.push('rangées');
   if (f.statut && !archives) morceaux.push(libelle(REFS_CABINE.statuts, f.statut));
   if (f.type) morceaux.push(libelle(REFS_CABINE.types, f.type));
-  if (f.etape) morceaux.push(libelle(REFS_CABINE.etapes, f.etape));
   if (f.rack) morceaux.push('rack ' + f.rack);
   if (f.zone) morceaux.push('zone choisie');
   if (f.chantier_exact) morceaux.push('chantier ' + f.chantier_exact);
@@ -3523,16 +3536,11 @@ async function listerCabines() {
 
 const MODES_EMP = [['gmd', '3 places (G, M, D)'], ['illimite', 'Capacité illimitée']];
 
-// Zones mises en cache le temps de l'écran : elles alimentent trois formulaires.
-let ZONES_CACHE = [];
-
-async function chargerZones() {
-  ZONES_CACHE = await apiAll('/zones/').catch(() => ZONES_CACHE);
-  return ZONES_CACHE;
-}
-
-const optionsZones = (choisie) => '<option value="">Sans zone</option>'
-  + ZONES_CACHE.map(z => `<option value="${z.id}"${String(z.id) === String(choisie || '') ? ' selected' : ''}>${esc(z.nom)}</option>`).join('');
+/* Le fonctionnement par zones est retiré de l'interface : plus d'écran, plus de
+   filtre, plus de sélecteur dans les formulaires d'emplacement. Le modèle
+   `Zone` et la colonne `Emplacement.zone_cabine` restent en base avec leurs
+   valeurs — rien n'est perdu, et tout revient en rétablissant l'écran le jour
+   où les zones serviront vraiment au suivi du processus.                      */
 
 const optionsModes = (choisi) => MODES_EMP.map(([c, l]) =>
   `<option value="${c}"${c === choisi ? ' selected' : ''}>${esc(l)}</option>`).join('');
@@ -3547,7 +3555,6 @@ function ouvrirNouvelEmplacement(apres) {
     <label for="nCode">Code de l'emplacement *</label>
     <input id="nCode" placeholder="Ex. C004, D012 ou ARANGER" autocomplete="off" autocapitalize="characters">
     <div class="aide">C'est ce code qui sera imprimé sur l'étiquette QR collée sur la travée.</div>
-    <label for="nZone">Zone</label><select id="nZone">${optionsZones()}</select>
     <label for="nMode">Mode de rangement</label><select id="nMode">${optionsModes('gmd')}</select>
     <div class="aide">${AIDE_MODE}</div>
     <label for="nDesc">Description</label><input id="nDesc" placeholder="facultatif — ex. rack du fond, allée B">
@@ -3569,7 +3576,6 @@ function ouvrirNouvelEmplacement(apres) {
     try {
       const e = await api('/emplacements/', { method: 'POST', body: {
         code,
-        zone_cabine: corps.querySelector('#nZone').value || null,
         mode_places: corps.querySelector('#nMode').value,
         description: corps.querySelector('#nDesc').value.trim(),
         staging: corps.querySelector('#nStaging').checked,
@@ -3620,7 +3626,6 @@ function ouvrirNouveauRack(apres) {
     <div id="rApercu" class="apercu-rack"><span class="muted small">Saisissez le nom du rack.</span></div>
 
     <div class="sec" style="margin-top:16px">Réglages appliqués à tout le rack</div>
-    <label for="rZone">Zone</label><select id="rZone">${optionsZones()}</select>
     <label for="rMode">Mode de rangement</label><select id="rMode">${optionsModes('gmd')}</select>
     <label for="rDesc">Description</label><input id="rDesc" placeholder="facultatif — ex. allée centrale">
 
@@ -3676,7 +3681,6 @@ function ouvrirNouveauRack(apres) {
     try {
       const d = await api('/emplacements/generer/', { method: 'POST', body: {
         ...parametres(),
-        zone_cabine: corps.querySelector('#rZone').value || null,
         mode_places: corps.querySelector('#rMode').value,
         description: v('#rDesc'),
       } });
@@ -3773,7 +3777,6 @@ function occupationCourte(e) {
 
 async function renderEmplacements() {
   await refsCabine();
-  await chargerZones();
   const gerer = peut('ref');
 
   layout(`
@@ -4108,7 +4111,6 @@ async function ouvrirSuppressionRack(rack) {
 /* --- Fiche d'un emplacement : occupation + réglages + suppression ----------
    C'est ici, et nulle part ailleurs, qu'un emplacement se modifie.           */
 async function ficheEmplacement(emp, retour) {
-  await chargerZones();
   // Toujours relire la fiche : `EMPS` est une photo prise au démarrage, et un
   // collègue a pu créer ou déplacer un emplacement depuis. Le formulaire
   // affichait alors « Sans zone » sur un emplacement zoné — et l'enregistrement
@@ -4130,8 +4132,6 @@ async function ficheEmplacement(emp, retour) {
       <label for="fCode">Code</label>
       <input id="fCode" value="${esc(e.code)}" ${gerer ? '' : 'disabled'} autocomplete="off" autocapitalize="characters">
       <div class="aide">Renommer l'emplacement rend obsolètes les étiquettes QR déjà collées : réimprimez-la juste après.</div>
-      <label for="fZone">Zone</label>
-      <select id="fZone" ${gerer ? '' : 'disabled'}>${optionsZones(e.zone_cabine)}</select>
       ${e.zone_cabine ? '' : '<div class="aide alerte">Sans zone, le suivi du processus ne sait pas dire si cette cabine attend son départ ou sort de production. Rattachez l\'emplacement à une zone.</div>'}
       <label for="fMode">Mode de rangement</label>
       <select id="fMode" ${gerer ? '' : 'disabled'}>${optionsModes(e.mode_places)}</select>
@@ -4166,7 +4166,6 @@ async function ficheEmplacement(emp, retour) {
     try {
       await api(`/emplacements/${e.id}/`, { method: 'PATCH', body: {
         code,
-        zone_cabine: $('#fZone').value || null,
         mode_places: $('#fMode').value,
         description: $('#fDesc').value.trim(),
         staging: $('#fStaging').checked,
@@ -4288,62 +4287,6 @@ async function effacer(e, force, motif, revenir) {
 }
 
 // --- Recherche par chantier : toutes les cabines affectées ------------------
-let CHANTIER_TERME = '';
-
-function renderChantier() {
-  layout(`<h2 class="title">Cabines par chantier</h2>
-    <div class="card"><label>N° de chantier</label>
-      <input id="q" inputmode="numeric" placeholder="Ex. 000123 — recherche partielle acceptée"></div>
-    <div id="zone"></div>`, 'chantier');
-  const champ = $('#q');
-  champ.setAttribute('autocomplete', 'off');
-  champ.value = CHANTIER_TERME;
-  champ.oninput = debounce(() => { CHANTIER_TERME = champ.value.trim(); listerChantier(); }, 250);
-  champ.focus();
-  if (CHANTIER_TERME) listerChantier();
-}
-
-async function listerChantier() {
-  const zone = $('#zone');
-  if (!zone) return;
-  if (!CHANTIER_TERME) { zone.innerHTML = ''; return; }
-  // `toutes=1` : un chantier se consulte avec ses cabines déjà envoyées.
-  await listePaginee(zone, '/cabines/?toutes=1&chantier=' + encodeURIComponent(CHANTIER_TERME), {
-    ligne: ligneCabine,
-    vide: 'Aucune cabine sur ce chantier',
-    entete: (total, vus) => {
-      const envoyees = vus.filter(c => c.envoyee).length;
-      return `<div class="sec">${total} cabine${total === 1 ? '' : 's'} sur ce chantier`
-        + (envoyees ? ` · dont ${envoyees} envoyée${envoyees === 1 ? '' : 's'}` : '')
-        + (total > vus.length ? ` · ${vus.length} affichée${vus.length === 1 ? '' : 's'}` : '')
-        + '</div>';
-    },
-    onClic: (c) => ficheCabine(c, renderChantier),
-  });
-}
-
-// --- Archives : le « fichier à part » des cabines envoyées ------------------
-async function renderArchives() {
-  layout(`<h2 class="title">Cabines envoyées</h2>
-    <div class="card"><label for="q">Filtrer</label><input id="q" placeholder="N° de cabine ou de chantier"></div>
-    <div id="zone"><div class="empty">Chargement…</div></div>`, 'more');
-  const champ = $('#q');
-  champ.setAttribute('autocomplete', 'off');
-  const charger = () => listePaginee($('#zone'),
-    '/cabines/archives/' + (champ.value.trim() ? '?search=' + encodeURIComponent(champ.value.trim()) : ''), {
-      ligne: (c) => `<div class="item" data-cle="${c.id}">
-        <div class="r">${esc(c.numero)}</div>
-        <div class="d">Chantier ${esc(c.chantier || '—')}${c.modele ? ' · ' + esc(c.modele) : ''}</div>
-        <div class="meta">Envoyée le ${c.envoi_date ? new Date(c.envoi_date).toLocaleString('fr-FR') : '—'}</div>
-      </div>`,
-      vide: 'Aucune cabine envoyée',
-      entete: (total, vus) => `<div class="sec">${total} cabine${total === 1 ? '' : 's'} envoyée${total === 1 ? '' : 's'}`
-        + (total > vus.length ? ` · ${vus.length} affichée${vus.length === 1 ? '' : 's'}` : '') + '</div>',
-      onClic: (c) => ficheCabine(c, renderArchives),
-    });
-  champ.oninput = debounce(charger, 250);
-  charger();
-}
 
 // --- Journal : qui a fait quoi, quand --------------------------------------
 async function renderJournal() {
@@ -4375,121 +4318,6 @@ async function renderJournal() {
 // Même principe que les emplacements : création en haut dans une fenêtre, et
 // une fiche unique pour tout modifier. Avant, le clic sur une zone ne permettait
 // de changer que son rôle — pas son nom, pas son ordre, et rien ne se supprimait.
-
-function ouvrirNouvelleZone(roles, ordreParDefaut, apres) {
-  const corps = modale('Nouvelle zone', `
-    <label for="zNom">Nom *</label><input id="zNom" placeholder="Ex. Attente départ" autocomplete="off">
-    <label for="zRole">Rôle dans le processus</label>
-    <select id="zRole">${roles.map(r => `<option value="${r.code}">${esc(r.libelle)}</option>`).join('')}</select>
-    <div class="aide">C'est le rôle qui permet au suivi d'annoncer « en attente de départ » plutôt que le seul code d'emplacement.</div>
-    <label for="zDesc">Description</label><input id="zDesc" placeholder="facultatif">
-    <label for="zOrdre">Ordre d'affichage</label><input id="zOrdre" type="number" min="0" value="${ordreParDefaut}">
-    <div class="row modal-actions">
-      <button class="btn ghost" id="zAnnul">Annuler</button>
-      <button class="btn orange" id="zOk">Créer la zone</button>
-    </div>`);
-  const champ = corps.querySelector('#zNom');
-  champ.focus();
-  corps.querySelector('#zAnnul').onclick = fermerModale;
-  const creer = async () => {
-    const nom = champ.value.trim();
-    if (!nom) { toast('Le nom est obligatoire.', 'err'); champ.focus(); return; }
-    const bouton = corps.querySelector('#zOk');
-    bouton.disabled = true;
-    try {
-      await api('/zones/', { method: 'POST', body: {
-        nom, role: corps.querySelector('#zRole').value,
-        description: corps.querySelector('#zDesc').value.trim(),
-        ordre: corps.querySelector('#zOrdre').value || 0 } });
-      toast('Zone créée', 'ok');
-      fermerModale();
-      apres();
-    } catch (e) { bouton.disabled = false; toast(e.message, 'err'); }
-  };
-  corps.querySelector('#zOk').onclick = creer;
-  champ.addEventListener('keydown', ev => { if (ev.key === 'Enter') creer(); });
-}
-
-function ouvrirFicheZone(z, roles, apres) {
-  const corps = modale('Zone ' + z.nom, `
-    <label for="zeNom">Nom</label><input id="zeNom" value="${esc(z.nom)}" autocomplete="off">
-    <label for="zeRole">Rôle dans le processus</label>
-    <select id="zeRole">${roles.map(r => `<option value="${r.code}"${r.code === z.role ? ' selected' : ''}>${esc(r.libelle)}</option>`).join('')}</select>
-    <label for="zeDesc">Description</label><input id="zeDesc" value="${esc(z.description || '')}" placeholder="facultatif">
-    <label for="zeOrdre">Ordre d'affichage</label><input id="zeOrdre" type="number" min="0" value="${z.ordre || 0}">
-    <label class="case"><input type="checkbox" id="zeActif" ${z.actif ? 'checked' : ''}> Zone active</label>
-    <div class="aide">${z.nb_emplacements} emplacement${z.nb_emplacements === 1 ? '' : 's'} rattaché${z.nb_emplacements === 1 ? '' : 's'} à cette zone.</div>
-    <div class="modal-actions">
-      <button class="btn orange" id="zeOk">Enregistrer</button>
-      <button class="btn danger" id="zeSup">${icon('trash', 16)} Supprimer la zone</button>
-      <button class="btn ghost" id="zeAnnul">Annuler</button>
-    </div>`);
-  corps.querySelector('#zeAnnul').onclick = fermerModale;
-  corps.querySelector('#zeOk').onclick = async () => {
-    const nom = corps.querySelector('#zeNom').value.trim();
-    if (!nom) { toast('Le nom est obligatoire.', 'err'); return; }
-    try {
-      await api(`/zones/${z.id}/`, { method: 'PATCH', body: {
-        nom, role: corps.querySelector('#zeRole').value,
-        description: corps.querySelector('#zeDesc').value.trim(),
-        ordre: corps.querySelector('#zeOrdre').value || 0,
-        actif: corps.querySelector('#zeActif').checked } });
-      toast('Zone enregistrée', 'ok');
-      fermerModale();
-      apres();
-    } catch (e) { toast(e.message, 'err'); }
-  };
-  corps.querySelector('#zeSup').onclick = async () => {
-    fermerModale();
-    const ok = await confirmer({
-      titre: 'Supprimer la zone ' + z.nom + ' ?',
-      texte: z.nb_emplacements
-        ? `${z.nb_emplacements} emplacement(s) y sont rattachés : le serveur refusera tant qu'ils n'auront pas changé de zone.`
-        : 'Cette zone n\'est rattachée à aucun emplacement. La suppression est définitive.',
-      ok: 'Supprimer', danger: true });
-    if (!ok) return;
-    try {
-      await api(`/zones/${z.id}/`, { method: 'DELETE' });
-      toast('Zone supprimée', 'ok');
-      apres();
-    } catch (e) { toast(e.message, 'err'); }
-  };
-}
-
-async function renderZones() {
-  await refsCabine();
-  const roles = REFS_CABINE.roles_zone || [];
-  const libelleRole = (code) => (roles.find(r => r.code === code) || {}).libelle || code;
-  const gerer = peut('cab');
-
-  layout(`<div class="tete-ecran">
-      <h2 class="title" style="margin:0">Zones</h2>
-      ${gerer ? `<button class="btn orange bouton-tete" id="zNouvelle">${icon('plus', 18)} Nouvelle zone</button>` : ''}
-    </div>
-    ${gerer ? '' : '<div class="banner">Consultation seule : le droit « cabines » est nécessaire pour modifier les zones.</div>'}
-    <div id="zone"><div class="empty">Chargement…</div></div>`, 'more');
-
-  const charger = async () => {
-    const zs = await apiAll('/zones/').catch(() => []);
-    // Sur un réseau lent, la réponse arrive parfois après que l'opérateur a
-    // quitté l'écran : les nœuds n'existent plus. Sans cette sortie, la console
-    // levait « Cannot set properties of null (setting 'onclick') ».
-    const zone = $('#zone');
-    if (!zone) return;
-    const nouvelle = $('#zNouvelle');
-    if (gerer && nouvelle) nouvelle.onclick = () => ouvrirNouvelleZone(roles, zs.length + 1, charger);
-    zone.innerHTML = `<div class="list">${zs.length ? zs.map(z => `<div class="item" data-zone="${z.id}">
-        <div class="r">${esc(z.nom)} <span class="pill">${esc(libelleRole(z.role))}</span>${z.actif ? '' : '<span class="etat att">inactive</span>'}</div>
-        <div class="meta">${z.nb_emplacements} emplacement${z.nb_emplacements === 1 ? '' : 's'}${z.description ? ' · ' + esc(z.description) : ''}</div>
-      </div>`).join('') : '<div class="empty">Aucune zone. Commencez par « À ranger », « Sortie prod » et « Attente départ ».</div>'}</div>`;
-    if (!gerer) { zone.querySelectorAll('[data-zone]').forEach(n => n.style.cursor = 'default'); return; }
-    zone.querySelectorAll('[data-zone]').forEach(it => it.onclick = () => {
-      const z = zs.find(x => String(x.id) === it.dataset.zone);
-      if (z) ouvrirFicheZone(z, roles, charger);
-    });
-  };
-  charger();
-}
 
 /* --- Onglet Entrée : ajouter une cabine ------------------------------------
    La fiche imprimée en production ne porte aucun code : on la recopie une fois,
@@ -4803,43 +4631,7 @@ async function creerCabine(corps) {
    après un scan. Trois portes, trois jeux de champs, aucune suppression. Tout
    est désormais dans `renderEmplacements` → `ficheEmplacement`. Ce renvoi reste
    pour les raccourcis et les habitudes déjà prises.                          */
-const renderGestionEmplacements = renderEmplacements;
 
-// --- Suivi du processus : où en est le parc, qu'est-ce qui stagne ------------
-async function renderSuivi() {
-  layout('<h2 class="title">Suivi du processus</h2><div id="zone"><div class="empty">Chargement…</div></div>', 'home');
-  try {
-    const d = await api('/suivi-processus/');
-    const max = Math.max(1, ...d.etapes.map(e => e.total));
-    $('#zone').innerHTML = `
-      <div class="sec">${d.en_stock} cabine${d.en_stock === 1 ? '' : 's'} dans l'entrepôt</div>
-      <div class="list">${d.etapes.map(e => `
-        <div class="item" data-etape="${e.code}">
-          <div class="r">${esc(e.libelle)} <span class="etat ${e.total ? 'ok' : ''}">${e.total}</span>${e.immobiles ? `<span class="etat crit">${e.immobiles} immobile${e.immobiles === 1 ? '' : 's'}</span>` : ''}</div>
-          <div class="barre" style="margin-top:7px"><i style="width:${Math.round(100 * e.total / max)}%"></i></div>
-        </div>`).join('')}</div>
-      <div class="sec" style="margin-top:16px">Sans mouvement depuis plus de ${d.seuil_jours} jours</div>
-      <div class="list">${d.stagnantes.length
-        ? d.stagnantes.map(c => `<div class="item" data-cab="${c.id}">
-            <div class="r">${esc(c.numero)} ${badgeStatut(c)}<span class="etat crit">${c.jours_immobile} j</span></div>
-            <div class="d">${esc(c.etape_libelle)}${c.position ? ' · ' + esc(c.position) : ''}</div>
-            <div class="meta">Chantier ${c.chantier ? esc(c.chantier) : '<em>à affecter</em>'}</div></div>`).join('')
-        : '<div class="empty">Rien ne stagne. Tout le parc a bougé récemment.</div>'}</div>`;
-
-    // `ouvrirCabines` et non un objet écrit à la main : celui-ci datait d'avant
-    // l'écran de recherche et n'avait plus les bonnes clés. Les filtres absents
-    // valaient `undefined`, comptés comme actifs — le panneau annonçait
-    // « Filtres (8) » alors qu'une seule étape était filtrée. Et `renderCabines()`
-    // appelé directement laissait `ECRAN` sur « suivi » : au bureau, la barre
-    // latérale surlignait le suivi pendant qu'on regardait les cabines.
-    $('#zone').querySelectorAll('[data-etape]').forEach(it =>
-      it.onclick = () => ouvrirCabines({ etape: it.dataset.etape }));
-    $('#zone').querySelectorAll('[data-cab]').forEach(it => it.onclick = () => {
-      const c = d.stagnantes.find(x => String(x.id) === it.dataset.cab);
-      if (c) ficheCabine(c, renderSuivi);
-    });
-  } catch (e) { $('#zone').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-}
 
 /* --- Écran Stock (volet articles, archivé) -----------------------------------
    Tous les articles avec leur quantité totale ; au clic, les emplacements où
@@ -5162,33 +4954,6 @@ function brancherCamera(surLecture) {
   stop.onclick = eteindre;
 }
 
-/* --- « Scanner » : par où l'on entre ----------------------------------------
-   « Ranger » ne disait pas comment on y entre : faut-il scanner ? photographier ?
-   Le geste physique, lui, est toujours le même — on lit quelque chose. Cet écran
-   pose donc la seule question qui se pose devant la cabine : qu'est-ce que vous
-   avez sous les yeux, une étiquette de colonne ou une fiche papier ?
-
-   Il ne fait rien d'autre que conduire aux écrans qui existent déjà. C'est un
-   point d'entrée, pas une quatrième façon de ranger.                          */
-function renderEntreeScan() {
-  layout(`<h2 class="title">Scanner</h2>
-    <div class="meta" style="margin:-4px 0 12px">Qu'avez-vous sous les yeux ?</div>
-    <div class="gestes">
-      <button class="geste" data-go="scan-colonne">
-        <span class="ic">${icon('scan', 26)}</span>
-        <span class="t">Un QR code sur une colonne</span>
-        <span class="s">Voir ce qu'elle contient, ou y ranger une cabine</span>
-      </button>
-      <button class="geste" data-go="rangement">
-        <span class="ic">${icon('clip', 26)}</span>
-        <span class="t">Une fiche papier sur une cabine</span>
-        <span class="s">La photographier : l'application propose la suite</span>
-      </button>
-    </div>
-    <button class="btn ghost" data-go="trouver">
-      ${icon('search', 17)} Rien à scanner : chercher un n° de cabine</button>`, 'scanner');
-}
-
 async function renderTrouver(titre = 'Trouver une cabine') {
   const secure = window.isSecureContext;
   const hasLib = typeof Html5Qrcode !== 'undefined';
@@ -5426,10 +5191,11 @@ async function boot() {
   }
   // Premier barreau de la pile : sans lui, le tout premier « retour » sortirait
   // de l'application au lieu de ramener à l'accueil.
-  PILE = [() => { ECRAN = 'home'; renderHome(); }];
+  // Premier barreau de la pile : le Scanner, qui est l'accueil.
+  PILE = [() => { ECRAN = 'scanner'; renderScanner(); }];
   RANG = 0;
   try { history.replaceState({ rang: 0 }, '', '#home'); } catch (_) {}
-  renderHome();
+  renderScanner();
 }
 
 // Chargées à la demande : utiles seulement pour créer une référence.
@@ -5646,4 +5412,236 @@ async function appliquerImport(bouton) {
     bouton.textContent = `Importer ${d.retenues} ligne(s)`;
     toast(e.message, 'err');
   }
+}
+
+/* ===========================================================================
+   SCANNER — le point de départ de tout
+
+   Trois façons de lire un numéro, une seule suite. L'ancien écran ne faisait
+   qu'aiguiller vers « Ranger » ou vers « Trouver » : il fallait avoir choisi son
+   geste avant de savoir de quelle cabine on parlait. Ici on identifie d'abord,
+   et l'écran suivant propose ce que l'état de la cabine autorise.
+
+   Le champ de saisie n'est plus replié. Il l'était, et c'était un vrai défaut :
+   un navigateur pilotant l'application ne le « voyait » pas — au sens propre,
+   il le considérait invisible. Un cariste pressé ne le voyait pas davantage.
+   =========================================================================== */
+
+async function renderScanner() {
+  await refsCabine();
+  layout(`<h2 class="title">Scanner une cabine</h2>
+    ${rappelEnCours()}
+    <div class="meta" style="margin:-4px 0 12px">Tout part du numéro de la cabine.
+      Ce que vous pourrez en faire dépend de son état — l'écran suivant le dira.</div>
+    <div id="zone"></div>
+    <div id="aRanger"></div>`, 'scanner');
+  brancherRappelEnCours();
+
+  $('#zone').innerHTML = blocFiche('Qu’avez-vous sous les yeux ?');
+  brancherBlocFiche(
+    (cabine) => ouvrirGestes({ numero: cabine.numero, cabine }),
+    (champs) => ouvrirGestes({ numero: (champs && champs.numero) || '' }));
+
+  // Le compteur de l'ancien accueil : il dit s'il reste du travail, et il y mène.
+  compter('rangee=0').then(n => {
+    const z = $('#aRanger');
+    if (!z) return;
+    z.innerHTML = n
+      ? `<button type="button" class="banner clic" data-voir style="margin-top:16px;width:100%;text-align:left;border:none;font:inherit">${
+          n} cabine${n === 1 ? '' : 's'} en attente de rangement — voir la liste</button>`
+      : '';
+    const voir = z.querySelector('[data-voir]');
+    if (voir) voir.onclick = () => ouvrirCabines({ rangee: '0' });
+  }).catch(() => {});
+}
+
+/* ===========================================================================
+   LES GESTES POSSIBLES — c'est l'état qui décide
+
+   Un seul écran remplace le choix « Ranger / Sortir » fait à l'aveugle. Il
+   énonce d'abord ce qu'est la cabine, puis ne propose que ce qui a un sens :
+   une cabine qui n'est nulle part se range, une cabine rangée se déplace, se
+   complète ou se sort, une cabine partie se remet en stock.
+
+   Un geste impossible n'est pas masqué : il est affiché éteint, avec sa raison.
+   Masquer laisse chercher ; dire évite le déplacement jusqu'au rack.
+
+   Chaque bouton reprend un parcours qui existe déjà et qui est éprouvé — cet
+   écran est un aiguillage, pas une réécriture des gestes.
+   =========================================================================== */
+
+const GESTES_ECRAN = { numero: '', cabine: null, attendue: null };
+
+/** Point d'entrée unique : un numéro, et on va chercher ce qu'on en sait. */
+async function ouvrirGestes(depart) {
+  const numero = String((depart && depart.numero) || '').trim();
+  if (!numero) { toast('Aucun numéro lu.', 'err'); return; }
+  ouvrirEcran(async () => {
+    ECRAN = 'gestes';
+    layout(`<h2 class="title">${esc(numero)}</h2>
+      <div class="empty">Recherche…</div>`, 'scanner');
+    let cabine = (depart && depart.cabine) || null;
+    let attendue = null;
+    try {
+      if (!cabine) {
+        const d = await api('/cabines/?toutes=1&numero=' + encodeURIComponent(numero));
+        cabine = (d.results || []).find(c => c.numero === numero) || null;
+      }
+      if (!cabine) {
+        attendue = await api('/cabines-attendues/' + encodeURIComponent(numero) + '/')
+          .catch(() => null);
+      }
+    } catch (e) {
+      layout(`<h2 class="title">${esc(numero)}</h2>
+        <div class="banner">${esc(e.message)}</div>
+        <button class="btn ghost" data-go="scanner">Recommencer</button>`, 'scanner');
+      return;
+    }
+    GESTES_ECRAN.numero = numero;
+    GESTES_ECRAN.cabine = cabine;
+    GESTES_ECRAN.attendue = attendue;
+    dessinerGestes();
+  }, 'gestes');
+}
+
+/** Recharge la cabine puis redessine — après un geste qui l'a changée. */
+async function rafraichirGestes() {
+  const n = GESTES_ECRAN.numero;
+  if (!n) return;
+  try {
+    const d = await api('/cabines/?toutes=1&numero=' + encodeURIComponent(n));
+    GESTES_ECRAN.cabine = (d.results || []).find(c => c.numero === n) || null;
+  } catch (_) {}
+  dessinerGestes();
+}
+
+/* Nommé `gesteBouton` et pas `bouton` : une quinzaine de fonctions de ce
+   fichier déclarent déjà un `const bouton` local pour le bouton qu'elles
+   manipulent. Deux noms identiques à deux portées différentes se relisent mal,
+   même quand le langage s'en sort. */
+const gesteBouton = (id, titre, sous, options = {}) => `<button class="geste" id="${id}"${
+  options.empeche ? ' disabled' : ''}>
+  <span class="ic">${icon(options.icone || 'in', 26)}</span>
+  <span class="t">${esc(titre)}</span>
+  <span class="s">${esc(options.empeche || sous)}</span></button>`;
+
+function dessinerGestes() {
+  const { numero, cabine, attendue } = GESTES_ECRAN;
+  if (!cabine) return dessinerGestesSansCabine(numero, attendue);
+
+  const range = cabineRangee(cabine);
+  const partie = cabine.statut === 'envoye';
+  const quarantaine = cabine.statut === 'quarantaine';
+  // Sortir et envoyer exigent un n° de chantier pour TOUS les types : c'est la
+  // règle du serveur, autant l'annoncer ici plutôt que d'échouer au bout.
+  const sansChantier = !cabine.chantier
+    ? 'Il faut d’abord un n° de chantier — corrige la fiche.' : '';
+
+  const gestes = [];
+  if (partie) {
+    gestes.push(gesteBouton('gReprendre', 'La remettre en stock',
+      'Elle est revenue : retour de chantier, livraison refusée', { icone: 'in' }));
+  } else if (!range) {
+    gestes.push(gesteBouton('gRanger', 'La ranger',
+      'Scanner l’emplacement, puis toucher la place', { icone: 'in' }));
+  } else {
+    gestes.push(gesteBouton('gDeplacer', 'La déplacer',
+      `Elle quitte ${cabine.position} pour un autre emplacement`, { icone: 'transfer' }));
+    gestes.push(gesteBouton('gAjouter', 'Ajouter un emplacement',
+      `Elle reste aussi en ${cabine.position}`, { icone: 'plus' }));
+    gestes.push(gesteBouton('gSortir', 'La sortir de son emplacement',
+      `Libère ${cabine.position}, la cabine reste en stock`,
+      { icone: 'out', empeche: sansChantier }));
+  }
+  if (!partie) {
+    gestes.push(gesteBouton('gEnvoyer', 'L’envoyer',
+      'Elle quitte l’entrepôt — définitif',
+      { icone: 'truck', empeche: sansChantier }));
+    gestes.push(quarantaine
+      ? gesteBouton('gStatut', 'Lever la quarantaine',
+          'Elle redevient conforme', { icone: 'check' })
+      : gesteBouton('gStatut', 'La mettre en quarantaine',
+          'Un défaut la bloque : elle ne partira pas', { icone: 'alert' }));
+  }
+
+  layout(`<h2 class="title">${esc(cabine.numero)}</h2>
+    <div class="card">
+      <div class="r" style="font-size:17px;font-weight:700">${badgeStatut(cabine)}
+        ${range ? 'Rangée en ' + esc(cabine.position) : 'Non rangée'}</div>
+      <div class="meta" style="margin-top:5px">Chantier ${
+        cabine.chantier ? esc(cabine.chantier) : '<b>à affecter</b>'}${
+        cabine.modele ? ' · ' + esc(cabine.modele) : ''}${
+        cabine.client ? ' · ' + esc(cabine.client) : ''}</div>
+      ${quarantaine && cabine.statut_motif
+        ? `<div class="banner" style="margin:12px 0 0">Quarantaine : ${esc(cabine.statut_motif)}</div>` : ''}
+    </div>
+    <div class="sec">Que faites-vous ?</div>
+    <div class="gestes">${gestes.join('')}</div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn ghost" id="gFiche" style="margin-top:0">${icon('clip', 17)} Sa fiche</button>
+      <button class="btn ghost" id="gEtiq" style="margin-top:0">${icon('print', 17)} Étiquette QR</button>
+    </div>
+    <button class="btn ghost" data-go="scanner">Une autre cabine</button>`, 'scanner');
+
+  const sur = (id, fn) => { const b = $(id); if (b) b.onclick = fn; };
+  sur('#gFiche', () => ouvrirEcran(() => ficheCabine(cabine, () => rafraichirGestes()), 'fiche'));
+  sur('#gEtiq', () => printCabineLabel(cabine));
+  sur('#gRanger', () => versRangement(cabine, null));
+  sur('#gDeplacer', () => versRangement(cabine, 'deplacer'));
+  sur('#gAjouter', () => versRangement(cabine, 'ajouter'));
+  sur('#gSortir', () => ouvrirSortie(cabine));
+  sur('#gEnvoyer', async () => {
+    if (await envoyerCabine(cabine)) { toast(`${cabine.numero} envoyée`, 'ok'); rafraichirGestes(); }
+  });
+  sur('#gStatut', () => {
+    const vers = quarantaine ? 'libre' : 'quarantaine';
+    confirmerChangementStatut(cabine, vers, () => rafraichirGestes());
+  });
+  sur('#gReprendre', async () => {
+    const ok = await confirmer({
+      titre: `Remettre ${cabine.numero} en stock ?`,
+      texte: 'La cabine redevient conforme et non rangée. L’envoi reste écrit au '
+           + 'journal, le retour s’y ajoute.',
+      ok: 'La remettre en stock', annuler: 'Non',
+    });
+    if (!ok) return;
+    try {
+      await api(`/cabines/${cabine.id}/reprendre/`, { method: 'POST', body: {} });
+      toast(`${cabine.numero} remise en stock`, 'ok');
+      rafraichirGestes();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+/** Le geste de rangement, ouvert sur une cabine déjà identifiée. */
+function versRangement(cabine, intention) {
+  RANGEMENT = RANGEMENT_NEUF();
+  RANGEMENT.cabine = cabine;
+  RANGEMENT.intention = intention;
+  go('rangement');
+}
+
+/** Pas de cabine à ce numéro : soit la production l'annonce, soit personne. */
+function dessinerGestesSansCabine(numero, attendue) {
+  if (!attendue) {
+    layout(`<h2 class="title">${esc(numero)}</h2><div id="eSuite"></div>
+      <button class="btn ghost" data-go="scanner">Une autre cabine</button>`, 'scanner');
+    if (REFS_CABINE.fichier_production && !ADMIN) blocRefusHorsFichier(numero);
+    else { ENTREE_NUMERO = numero; go('entree'); }
+    return;
+  }
+  const lignes = LIGNES_ATTENDUE
+    .filter(([cle]) => (attendue[cle] || '') !== '')
+    .map(([cle, lib]) => `<tr><td>${esc(lib)}</td><td><b>${esc(attendue[cle])}</b></td></tr>`).join('');
+  layout(`<h2 class="title">${esc(numero)}</h2>
+    <div class="card">
+      <div class="banner" style="background:var(--ok-tint);color:var(--ok)">
+        Annoncée par la production, pas encore en stock.</div>
+      <div class="specs"><table><tbody>${lignes}</tbody></table></div>
+    </div>
+    <div class="sec">Que faites-vous ?</div>
+    <div class="gestes">${gesteBouton('gEntrer', 'La faire entrer en stock',
+      'Ses caractéristiques sont déjà là — rien à recopier', { icone: 'in' })}</div>
+    <button class="btn ghost" data-go="scanner">Une autre cabine</button>`, 'scanner');
+  $('#gEntrer').onclick = () => { ENTREE_NUMERO = numero; go('entree'); };
 }
