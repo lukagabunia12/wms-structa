@@ -747,7 +747,7 @@ function brancherGestes() {
 function rappelEnCours() {
   const r = rangementCommence(RANGEMENT) ? RANGEMENT : relireRangement();
   if (!r) return '';
-  const num = (r.cabine && r.cabine.numero) || (r.brouillon && r.brouillon.numero) || '';
+  const num = (r.cabine && r.cabine.numero) || '';
   const ou = r.d ? ` · emplacement ${r.d.code}` : '';
   return `<button type="button" class="banner clic" data-reprendre
     style="width:100%;text-align:left;border:none;font:inherit;margin-bottom:14px">
@@ -1472,6 +1472,47 @@ let REFS_CABINE = { statuts: [], types: [], places: [] };
 //: qu'il faille la rechercher — c'est le parcours « fiche d'abord, place ensuite ».
 let CABINE_A_RANGER = null;
 
+/* --- Un seul chemin d'entrée -----------------------------------------------
+
+   Trois écrans créaient une cabine à la volée, depuis les huit champs lus sur
+   la photo de la fiche : « Ranger », le scan d'un emplacement, et la saisie du
+   numéro à la main. C'était le bon geste tant que la fiche papier était la
+   seule source d'information.
+
+   Elle ne l'est plus. Le fichier de production annonce chaque cabine avec ses
+   caractéristiques exactes. Créer depuis une photo revient désormais à
+   fabriquer une fiche approximative — la reconnaissance confond 0 et O, 1 et
+   I — à côté d'une fiche juste que le WMS possède déjà. Et une cabine née au
+   pied du rack n'a jamais figuré nulle part comme « arrivée ».
+
+   Les écrans de rangement ne rangent donc que ce qui est DÉJÀ en stock. Une
+   cabine inconnue renvoie à l'entrée, avec son numéro déjà saisi : c'est un
+   aiguillage, pas un cul-de-sac.                                             */
+
+//: Numéro à reprendre au prochain passage sur l'écran d'entrée. Consommé une
+//: seule fois, comme `CABINE_A_RANGER` : un numéro qui resterait collé
+//: rouvrirait la même cabine à chaque visite de l'écran.
+let ENTREE_NUMERO = null;
+
+/** Écrit le refus dans `zone` et branche le renvoi vers l'entrée. */
+function afficherCabineAbsente(zone, numero, options = {}) {
+  if (!zone) return;
+  const num = (numero || '').trim();
+  zone.innerHTML = `<div class="card" style="margin-top:10px">
+      <div class="banner">La cabine <b>${esc(num || '?')}</b> n’est pas en stock :
+        elle n’a jamais été enregistrée à l’entrée. ${esc(options.geste || 'Le rangement')}
+        ne la crée pas.</div>
+      <div class="meta">Passe par « Entrée d’une cabine » : tape ce numéro, et ses
+        caractéristiques viennent du fichier de production — rien à recopier.</div>
+      ${peut('cab') ? '<button class="btn orange" data-entree>Aller à l’entrée avec ce numéro</button>' : ''}
+      <button class="btn ghost" data-refaire>Une autre cabine</button>
+    </div>`;
+  const aller = zone.querySelector('[data-entree]');
+  if (aller) aller.onclick = () => { ENTREE_NUMERO = num; go('entree'); };
+  const refaire = zone.querySelector('[data-refaire]');
+  if (refaire) refaire.onclick = options.refaire || (() => go(ECRAN));
+}
+
 /* --- Récents de cabines ------------------------------------------------------
    Stockés à part des récents d'articles : mélanger les deux faisait réapparaître
    des références de vitrage dans le scanner de cabines.
@@ -1881,18 +1922,17 @@ async function lireFichePourRangement(fichier, emp, d, redessiner) {
           .then(x => x.results || []).catch(() => []);
         const c = res.find(x => (x.numero || '').toUpperCase() === num.toUpperCase());
         if (c) { proposerRangement(c, emp, d, redessiner); return; }
-        // Inconnue : on garde ce que la photo a donné, l'opérateur complète.
-        formulaireCreationEtRangement(
-          { champs: Object.assign({}, rep.champs, { numero: num }) }, emp, d, redessiner);
+        // Inconnue : cet écran ne crée pas de cabine, il aiguille vers l'entrée.
+        replierPriseDeVue();
+        afficherCabineAbsente($('#fSuite'), num, { refaire: redessiner });
       };
       masquerNumero($('#fNum')).focus();
       return;
     }
-    // Cabine inconnue : on la crée depuis la fiche, après relecture à l'écran.
-    etat.innerHTML = `<div class="banner">Cabine ${esc(rep.champs.numero)} inconnue du WMS :
-      elle sera créée depuis la fiche. Relis les valeurs — la reconnaissance
-      confond 0 et O.</div>`;
-    formulaireCreationEtRangement(rep, emp, d, redessiner);
+    // Cabine inconnue : elle n'est pas en stock, donc rien à ranger ici.
+    etat.innerHTML = '';
+    replierPriseDeVue();
+    afficherCabineAbsente($('#fSuite'), rep.champs.numero, { refaire: redessiner });
   } catch (e) {
     etat.innerHTML = `<div class="banner">${esc(e.message)}<br>Utilise « Saisir le n° à la main ».</div>`;
   }
@@ -2069,46 +2109,6 @@ function proposerRangement(cabine, emp, d, redessiner, cible) {
   };
 }
 
-/** Cabine inconnue : les champs lus, relus, puis création et rangement d'un geste. */
-function formulaireCreationEtRangement(rep, emp, d, redessiner) {
-  const zone = $('#fSuite');
-  if (!zone) return;
-  replierPriseDeVue();
-  const lu = rep.champs || {};
-  zone.innerHTML = `<div class="card" style="margin-top:10px">
-      ${CHAMPS_ENTREE.map(([cle, lib, ph]) =>
-        `<label>${esc(lib)}</label><input id="f_${cle}" value="${esc(lu[cle] || '')}" placeholder="${esc(ph)}" autocomplete="off">`).join('')}
-      <label>Type de cabine</label>
-      <select id="f_type">${(REFS_CABINE.types || []).map(x => `<option value="${x.code}">${esc(x.libelle)}</option>`).join('')}</select>
-      ${placesHTML(d)}
-      <button class="btn orange" id="fOk">Créer et ranger en ${esc(d.code)}</button>
-    </div>`;
-  masquerNumero($('#f_numero'));
-  const boutonC = $('#fOk');
-  if (!d.illimite) { boutonC.disabled = true; boutonC.dataset.libelle = boutonC.textContent; boutonC.textContent = 'Touche une place libre'; }
-  const place = brancherPlaces(d, () => {
-    boutonC.disabled = false;
-    if (boutonC.dataset.libelle) boutonC.textContent = boutonC.dataset.libelle;
-  });
-  boutonC.onclick = async () => {
-    const corps = { type_cabine: $('#f_type').value };
-    CHAMPS_ENTREE.forEach(([cle]) => { corps[cle] = $('#f_' + cle).value.trim(); });
-    if (!corps.numero) { toast('Le n° de cabine est obligatoire.', 'err'); return; }
-    try {
-      const c = await api('/cabines/', { method: 'POST', body: corps });
-      const rangement = { emplacement: emp.id };
-      if (!d.illimite) rangement.place = place();
-      if (!d.illimite && !rangement.place) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
-      await api(`/cabines/${c.id}/ranger/`, { method: 'POST', body: rangement });
-      toast('Cabine ' + c.numero + ' créée et rangée en ' + d.code, 'ok');
-      noterRecentCabine(c);
-      arreterCamera();
-      ouvrirStatut(c, `Créée et rangée en ${d.code}${rangement.place ? ' · place ' + rangement.place : ''}. Quel est son état ?`,
-                   () => redessiner());
-    } catch (e) { toast(e.message, 'err'); }
-  };
-}
-
 /* ===========================================================================
    RANGER UNE CABINE — le parcours du cariste, dans l'ordre où il travaille
 
@@ -2120,8 +2120,9 @@ function formulaireCreationEtRangement(rep, emp, d, redessiner) {
    cabine AVANT de savoir laquelle on transportait, et à revenir en arrière dès
    que la place visée était prise.
 
-   La cabine inconnue n'est créée qu'à la validation finale : un parcours
-   abandonné au milieu ne laisse pas de cabine fantôme dans le référentiel.
+   Cet écran ne CRÉE plus de cabine : il ne range que ce qui est déjà en stock.
+   Une cabine inconnue est refusée et renvoyée à l'écran d'entrée — voir
+   `afficherCabineAbsente`.
    =========================================================================== */
 
 /* --- Rangement en cours : il ne se perd plus --------------------------------
@@ -2135,14 +2136,13 @@ function formulaireCreationEtRangement(rep, emp, d, redessiner) {
    (`sessionStorage`). Ce qu'il contient est du texte : la photo n'y est pas — une
    fois lue, elle ne sert plus. « Recommencer » reste à portée de doigt sur chaque
    étape, et le rangement se vide de lui-même une fois la cabine posée.         */
-const RANGEMENT_NEUF = () => ({ cabine: null, brouillon: null, verifie: false,
-                                emp: null, d: null, intention: null });
+const RANGEMENT_NEUF = () => ({ cabine: null, emp: null, d: null, intention: null });
 const CLE_RANGEMENT = 'wms_rangement_en_cours';
 
 let RANGEMENT = RANGEMENT_NEUF();
 
 /** Y a-t-il quelque chose à ne pas perdre ? */
-const rangementCommence = (r) => Boolean(r && (r.cabine || r.brouillon || r.emp));
+const rangementCommence = (r) => Boolean(r && (r.cabine || r.emp));
 
 function memoriserRangement() {
   try {
@@ -2198,8 +2198,7 @@ function etapeRangement() {
   const fil = $('#fil');
   memoriserRangement();
   const poser = (n) => { if (fil) fil.innerHTML = filEtapes(n); };
-  if (!RANGEMENT.cabine && !RANGEMENT.brouillon) { poser(1); return etapeFiche(); }
-  if (RANGEMENT.brouillon && !RANGEMENT.verifie) { poser(1); return etapeVerifierFiche(); }
+  if (!RANGEMENT.cabine) { poser(1); return etapeFiche(); }
   // Cabine envoyée : le serveur refusera de la ranger. Le dire ici évite au
   // cariste de marcher jusqu'à la travée, de scanner et de toucher une place
   // pour n'apprendre qu'à la fin que le geste était impossible.
@@ -2220,11 +2219,10 @@ function etapeRangement() {
 
 /** Bandeau de rappel : ce qui est déjà acquis, et comment y revenir. */
 function rappelRangement() {
-  const c = RANGEMENT.cabine, b = RANGEMENT.brouillon;
-  const numero = c ? c.numero : (b ? b.numero : null);
-  if (!numero) return '';
-  const lignes = [`<div class="r">${esc(numero)}${c ? ' ' + badgeStatut(c) : ' <span class="pill">nouvelle</span>'}</div>`];
-  const chantier = c ? c.chantier : (b ? b.chantier : '');
+  const c = RANGEMENT.cabine;
+  if (!c) return '';
+  const lignes = [`<div class="r">${esc(c.numero)} ${badgeStatut(c)}</div>`];
+  const chantier = c.chantier;
   lignes.push(`<div class="d">Chantier ${chantier ? esc(chantier) : '<em>à affecter</em>'}</div>`);
   // Le geste retenu, en clair, et de quoi revenir dessus. Sans cette ligne on
   // arrivait à l'étape des places sans plus savoir ce qu'on avait choisi.
@@ -2432,40 +2430,11 @@ function etapeFiche() {
   if (!zone) return;
   zone.innerHTML = blocFiche('Quelle cabine ?');
   brancherBlocFiche(
-    (c) => { RANGEMENT.cabine = c; RANGEMENT.brouillon = null; RANGEMENT.verifie = true; etapeRangement(); },
-    (champs) => { RANGEMENT.cabine = null; RANGEMENT.brouillon = champs; RANGEMENT.verifie = false; etapeRangement(); });
-}
-
-/* --- Étape 1 bis : la cabine est inconnue, on relit ce que la photo a donné -
-   Séparée de l'étape « place » à dessein : vérifier huit champs de
-   reconnaissance ET choisir une place sur le même écran, c'est deux décisions
-   à la fois, et c'est la vérification qui saute.                             */
-function etapeVerifierFiche() {
-  const zone = $('#zone');
-  if (!zone) return;
-  const lu = RANGEMENT.brouillon || {};
-  zone.innerHTML = `<div class="card">
-      <div class="sec" style="margin-top:0">Cabine inconnue — elle sera créée</div>
-      <div class="meta">Relis les valeurs : la reconnaissance confond 0 et O, 1 et I.</div>
-      ${CHAMPS_ENTREE.map(([cle, lib, ph]) =>
-        `<label>${esc(lib)}</label><input id="v_${cle}" value="${esc(lu[cle] || '')}" placeholder="${esc(ph)}" autocomplete="off">`).join('')}
-      <label>Type de cabine</label>
-      <select id="v_type">${(REFS_CABINE.types || []).map(x => `<option value="${x.code}">${esc(x.libelle)}</option>`).join('')}</select>
-      <div class="row" style="margin-top:12px">
-        <button class="btn orange" id="vOk" style="margin-top:0">Continuer</button>
-        <button class="btn ghost" id="vNon" style="margin-top:0">Recommencer</button>
-      </div>
-    </div>`;
-  masquerNumero($('#v_numero'));
-  $('#vNon').onclick = () => { repartirRangement(); etapeRangement(); };
-  $('#vOk').onclick = () => {
-    const b = { type_cabine: $('#v_type').value };
-    CHAMPS_ENTREE.forEach(([cle]) => { b[cle] = ($('#v_' + cle).value || '').trim(); });
-    if (!b.numero) { toast('Le n° de cabine est obligatoire.', 'err'); return; }
-    RANGEMENT.brouillon = b;
-    RANGEMENT.verifie = true;
-    etapeRangement();
-  };
+    (c) => { RANGEMENT.cabine = c; etapeRangement(); },
+    // Inconnue du WMS : on refuse et on aiguille. Cet écran créait la cabine
+    // depuis les huit champs de la photo — voir `afficherCabineAbsente`.
+    (champs) => afficherCabineAbsente($('#zone'), champs && champs.numero,
+                                      { refaire: () => { repartirRangement(); etapeRangement(); } }));
 }
 
 /** Une cabine est rangée dès qu'elle occupe un emplacement — c'est le serveur qui
@@ -2681,8 +2650,7 @@ async function retenirEmplacement(texte) {
 function etapePlace() {
   const zone = $('#zone');
   if (!zone) return;
-  const { cabine, brouillon, emp, d } = RANGEMENT;
-  const numero = cabine ? cabine.numero : brouillon.numero;
+  const { cabine, emp, d } = RANGEMENT;
   // Une cabine n'occupe qu'un emplacement : la ranger ailleurs la DÉPLACE.
   // Sans cet avertissement, ranger une cabine déjà posée vidait sa travée en
   // silence, et personne ne le voyait avant d'aller la chercher.
@@ -2720,9 +2688,6 @@ function etapePlace() {
     bouton.disabled = true;
     try {
       let c = cabine;
-      if (!c) {
-        c = await api('/cabines/', { method: 'POST', body: brouillon });
-      }
       const corps = { emplacement: emp.id };
       if (choix) corps.place = choix;
       if (ajout) corps.ajouter = true;
@@ -4621,6 +4586,12 @@ async function renderEntree() {
     if (ev.key === 'Enter') { ev.preventDefault(); interrogerAttendue(champ.value.trim()); }
   };
   champ.focus();
+
+  // Numéro apporté par un écran de rangement qui a refusé une cabine inconnue :
+  // le cariste ne le retape pas, il l'a déjà lu une fois.
+  const apporte = ENTREE_NUMERO;
+  ENTREE_NUMERO = null;
+  if (apporte) { champ.value = apporte; interrogerAttendue(apporte); }
 }
 
 /** Le numéro saisi est-il déjà en stock, annoncé par la production, ou inconnu ?

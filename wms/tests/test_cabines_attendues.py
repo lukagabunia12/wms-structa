@@ -111,11 +111,34 @@ class ServiceImportTest(APITestCase):
         self.assertEqual(erreur["indice"], "AF-3164")
 
     def test_numero_hors_format_refuse_avec_la_valeur_lue(self):
-        """Les cinq lignes où le n° de chantier avait été recopié partout."""
-        rapport = services_import.analyser(classeur([ligne(CABINE=251280)]))
+        rapport = services_import.analyser(classeur([ligne(CABINE="26/03/33")]))
         self.assertEqual(rapport["retenues"], 0)
-        self.assertEqual(rapport["erreurs"][0]["numero"], "251280")
+        self.assertEqual(rapport["erreurs"][0]["numero"], "26/03/33")
         self.assertIn("hors format", rapport["erreurs"][0]["motif"])
+
+    def test_ligne_ecrasee_par_un_collage_est_diagnostiquee(self):
+        """Les cinq lignes 109-113 du fichier réel.
+
+        Un collage a recouvert sept colonnes d'un coup : CABINE, JOUR, GAMME…
+        portent toutes le n° de chantier de la ligne. Dire « hors format » est
+        vrai mais inutile — on cherche alors une faute de frappe qui n'existe
+        pas. Le message nomme la cause.
+        """
+        rapport = services_import.analyser(
+            classeur([ligne(CHANTIER=251280, CABINE=251280, JOUR=251280,
+                            GAMME=251280, MODELE=251280)]))
+        self.assertEqual(rapport["retenues"], 0)
+        motif = rapport["erreurs"][0]["motif"]
+        self.assertIn("251280", motif)
+        self.assertIn("chantier de cette même ligne", motif)
+        self.assertIn("écrasées", motif)
+
+    def test_un_numero_hors_format_qui_n_est_pas_le_chantier_garde_l_autre_message(self):
+        """Sans quoi toute erreur de format serait attribuée à un collage."""
+        rapport = services_import.analyser(
+            classeur([ligne(CHANTIER=251280, CABINE="26_03_3333")]))
+        self.assertIn("hors format", rapport["erreurs"][0]["motif"])
+        self.assertNotIn("écrasées", rapport["erreurs"][0]["motif"])
 
     def test_numero_en_double_dans_le_fichier_refuse_a_la_seconde_ligne(self):
         rapport = services_import.analyser(classeur([ligne(), ligne()]))

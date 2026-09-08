@@ -127,6 +127,31 @@ if (!bloc) {
   }
 }
 
+/** 5. Une cabine ne se crée que depuis l'écran d'entrée.
+
+    Trois écrans la créaient à la volée depuis les huit champs lus sur la photo
+    de la fiche : « Ranger », le scan d'un emplacement, la saisie du numéro à la
+    main. Depuis que le fichier de production donne les caractéristiques exactes,
+    créer depuis une photo fabrique une fiche approximative à côté d'une fiche
+    juste — et une cabine née au pied du rack n'a jamais figuré comme « arrivée ».
+
+    Un seul `POST /cabines/`, donc. Le rangement ne range que ce qui est déjà en
+    stock. Ce contrôle est le garde-fou : la règle se perdrait au premier écran
+    qui « aurait bien besoin » de créer une cabine au passage. */
+{
+  const creations = [...source.matchAll(/api\('\/cabines\/',\s*\{\s*method:\s*'POST'/g)];
+  if (creations.length !== 1) {
+    erreurs.push(`Une cabine est créée depuis ${creations.length} endroit(s) : `
+      + 'la création passe par `creerCabine()`, appelée par le seul écran '
+      + "d'entrée. Un écran de rangement ne crée pas une cabine absente du stock.");
+  }
+  if (!declares.has('creerCabine')) erreurs.push('creerCabine() a disparu.');
+  if (!declares.has('afficherCabineAbsente')) {
+    erreurs.push('afficherCabineAbsente() a disparu : c\'est elle qui refuse et '
+                 + "aiguille vers l'entrée.");
+  }
+}
+
 /** 3. Les fonctions appelées par les menus du bas et de « Plus » existent aussi. */
 for (const nom of ['layout', 'go', 'api', 'toast', 'modale', 'confirmer', 'listePaginee']) {
   if (!declares.has(nom)) erreurs.push(`Fonction de base manquante : ${nom}()`);

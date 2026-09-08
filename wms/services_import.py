@@ -237,10 +237,19 @@ def analyser(fichier, *, nom=""):
                 "indice": _texte(champs.get("num_unique")) or ""})
             continue
         if not MOTIF_NUMERO.match(numero):
+            # Le cas le plus fréquent n'est pas une faute de frappe : c'est un
+            # collage qui a recouvert plusieurs colonnes d'un coup, et la colonne
+            # CABINE porte alors le n° de chantier de sa propre ligne. Le dire
+            # évite de chercher un problème de format là où il n'y en a pas.
+            ecrasee = numero and numero == champs["chantier_brut"]
             rapport["erreurs"].append({
                 "ligne": ligne, "numero": numero,
-                "motif": "n° de cabine hors format (attendu 26_02_49, "
-                         "jusqu'à 3 chiffres à la fin)", "indice": ""})
+                "motif": ("la colonne CABINE contient « " + numero + " », le n° de "
+                          "chantier de cette même ligne : les colonnes de cette ligne "
+                          "ont été écrasées dans le classeur")
+                         if ecrasee else
+                         ("n° de cabine hors format (attendu 26_02_49, jusqu'à "
+                          "3 chiffres à la fin)"), "indice": ""})
             continue
         if numero in vus:
             rapport["erreurs"].append({
