@@ -165,6 +165,36 @@ if (!bloc) {
   }
 }
 
+/** 6. Une fiche ouverte depuis un scan pose son propre écran.
+
+    `montrerEmplacement` et `ficheCabine` s'écrivent dans un `#zone` que le
+    Scanner et l'écran des gestes ne posent pas. Toutes deux commençaient par
+    `const zone = $('#zone'); if (!zone) return;` — et rendaient donc la main en
+    SILENCE quand on les appelait depuis un scan : le QR d'un emplacement
+    n'affichait plus son contenu, « Voir sa fiche » ne faisait rien. Aucun
+    message, aucune erreur en console, rien à chercher dans un journal.
+
+    Les deux passent maintenant par `zoneEcran()`, qui pose l'écran s'il manque.
+    Ce contrôle refuse le retour en arrière : c'est un oubli d'une seule ligne,
+    invisible à la relecture, et il s'est déjà produit deux fois. */
+{
+  if (!declares.has('zoneEcran')) {
+    erreurs.push('zoneEcran() a disparu : c\'est elle qui pose le conteneur d\'une '
+                 + 'fiche ouverte depuis le Scanner, qui n\'en a pas.');
+  }
+  for (const nom of ['montrerEmplacement', 'ficheCabine']) {
+    const i = source.search(new RegExp('(?:async\\s+)?function\\s+' + nom + '\\b'));
+    if (i < 0) { erreurs.push(`${nom}() a disparu.`); continue; }
+    // Les vingt premières lignes suffisent : le conteneur se prend en ouverture.
+    const tete = source.slice(i, i + 1200);
+    if (!/zoneEcran\(/.test(tete)) {
+      erreurs.push(`${nom}() ne passe pas par zoneEcran() : appelée depuis le `
+        + 'Scanner ou l\'écran des gestes, qui ne posent pas de `#zone`, elle '
+        + 'rendrait la main en silence et l\'écran resterait tel quel.');
+    }
+  }
+}
+
 /** 3. Les fonctions appelées par les menus du bas et de « Plus » existent aussi. */
 for (const nom of ['layout', 'go', 'api', 'toast', 'modale', 'confirmer', 'listePaginee']) {
   if (!declares.has(nom)) erreurs.push(`Fonction de base manquante : ${nom}()`);

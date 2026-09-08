@@ -1650,8 +1650,26 @@ const ligneCabine = (c) => `<div class="item" data-id="${c.id}" data-cle="${c.id
 </div>`;
 
 // --- Emplacement scanné : les deux options demandées, ranger et sortir -------
+/** Le conteneur `#zone` de l'écran courant, posé si l'écran n'en a pas.
+
+    Les fiches — celle d'une cabine, celle d'un emplacement — s'écrivent dans le
+    `#zone` de l'écran qui les appelle. Le Scanner et l'écran des gestes n'en
+    posent pas : ils écrivent leurs cartes directement. Ces fiches rendaient donc
+    la main en silence, sans message ni erreur en console. Deux fois le même
+    oubli, et deux fois le même symptôme sur le terrain : scanner le QR d'un
+    emplacement n'affichait plus ce qu'il contient, et « Voir sa fiche » ne
+    faisait rien du tout. D'où ce passage obligé, contrôlé par
+    `verifier_interface.js` : la troisième fois n'arrivera pas.
+
+    L'onglet reste « Scanner » : une fiche ouverte depuis un scan est une étape
+    du parcours, pas une destination du menu. */
+function zoneEcran(onglet = 'scanner') {
+  if (!$('#zone')) layout('<div id="zone"></div>', onglet);
+  return $('#zone');
+}
+
 async function montrerEmplacement(emp, opts = {}) {
-  const zone = $('#zone');
+  const zone = zoneEcran();
   // Toutes les re-lectures de l'écran repassent par ici : sans cela, la première
   // action (ranger, sortir) perdait les options et faisait réapparaître le bouton
   // de réglage au milieu de la fiche, qui en porte déjà un.
@@ -1689,7 +1707,14 @@ async function montrerEmplacement(emp, opts = {}) {
         </div>` : ''}
         ${d.complet ? '<div class="banner" style="margin:12px 0 0">Les trois places sont occupées : impossible de ranger ici.</div>' : ''}
         <div id="eAct"></div></div>
-      ${(peut('ref') && !opts.sansReglages) ? `<button class="btn ghost" id="eReglage" style="margin-top:12px">${icon('cog', 17)} Régler / supprimer cet emplacement</button>` : ''}`;
+      ${(peut('ref') && !opts.sansReglages) ? `<button class="btn ghost" id="eReglage" style="margin-top:12px">${icon('cog', 17)} Régler / supprimer cet emplacement</button>` : ''}
+      ${opts.pied ? piedGestes({ suite: 'Scanner autre chose' }) : ''}`;
+
+    // Le pied est posé par `layout()` pour les écrans, pas ici : ce bloc est
+    // écrit dans un `#zone`, et ses `data-go` n'ont donc pas été branchés.
+    if (opts.pied) {
+      zone.querySelectorAll('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
+    }
 
     // Un seul formulaire de réglage dans toute l'application : celui de la fiche.
     // Il y en avait trois, avec des champs différents — on ne savait plus lequel
@@ -2926,14 +2951,7 @@ function blocEmplacements(c) {
 
 async function ficheCabine(cabine, retour) {
   await refsCabine();
-  /* La fiche s'écrit dans le `#zone` de l'écran qui l'appelle. L'écran des
-     gestes n'en a pas — il pose ses cartes directement — et ce garde-fou
-     rendait donc la main en silence : « Voir sa fiche » ne faisait rien, sans
-     message ni erreur en console. Là où il n'y a pas de conteneur, la fiche
-     pose le sien. L'onglet reste « Scanner » : la fiche est une étape du
-     parcours de scan, pas une destination du menu. */
-  if (!$('#zone')) layout('<div id="zone"></div>', 'scanner');
-  const zone = $('#zone');
+  const zone = zoneEcran();
   if (!zone) return;
   zone.innerHTML = '<div class="empty">Chargement…</div>';
   try {
@@ -5551,7 +5569,8 @@ const gesteBouton = (id, titre, sous, options = {}) => `<button class="geste" id
    Deux pastilles tiennent aussi sur une seule ligne — trois en font deux. */
 const piedGestes = (options = {}) => `<div class="pied">
   ${options.fiche ? `<button id="gFiche">${icon('clip', 16)} Voir sa fiche</button>` : ''}
-  <button data-go="scanner">${icon('scan', 16)} Une autre cabine</button>
+  <button data-go="scanner">${icon('scan', 16)} ${
+    esc(options.suite || 'Une autre cabine')}</button>
 </div>`;
 
 function dessinerGestes() {
@@ -5732,6 +5751,9 @@ async function retenirScanEmplacement(texte) {
         « ${esc(code)} ». Vérifie l’étiquette, ou saisis le n° de la cabine.</div>`;
       return;
     }
-    await montrerEmplacement(e, { retour: () => go('scanner') });
+    // `pied: true` : cette fiche est le bout d'un scan, pas une destination du
+    // menu. Sans porte de sortie visible, on n'a que l'onglet du bas pour
+    // revenir — et l'écran des gestes, lui, en propose une.
+    await montrerEmplacement(e, { retour: () => go('scanner'), pied: true });
   } catch (err) { toast(err.message, 'err'); }
 }
