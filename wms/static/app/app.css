@@ -465,11 +465,14 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
 .statut[data-st="envoye"][aria-pressed="true"] .n{color:var(--bordeaux)}
 
 /* ============================ gestes du poste =============================
-   Les trois actions du métier, en grand. Un cariste porte des gants et tient
-   le téléphone d'une main : une cible de 44 px se rate, une bande pleine
-   largeur ne se rate pas.                                                   */
+   Les actions du métier, en grand. Un cariste porte des gants et tient le
+   téléphone d'une main : une cible de 44 px se rate, une bande pleine largeur
+   ne se rate pas. Elles ne sont plus fixes : l'écran des gestes n'affiche que
+   ce que l'état de la cabine autorise, et le Scanner n'en pose que deux — la
+   fiche, ou le QR d'un emplacement.                                         */
 .gestes{display:grid;gap:10px;margin:14px 0}
-.geste{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;
+.geste{position:relative;display:grid;grid-template-columns:auto 1fr;
+  grid-template-rows:auto auto;
   column-gap:14px;align-items:center;width:100%;text-align:left;cursor:pointer;
   background:var(--surface);border:1px solid var(--ligne);border-radius:var(--radius);
   padding:16px 18px;box-shadow:var(--ombre);font-family:inherit;color:var(--txt);
@@ -485,7 +488,56 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
   border-radius:12px;background:var(--marine-tint);color:var(--marine)}
 .geste .t{font-size:17px;font-weight:700;line-height:1.2}
 .geste .s{font-size:13px;color:var(--muted);line-height:1.3}
-.geste[data-geste="rangement"] .ic{background:var(--brique-tint);color:var(--brique)}
+/* « Photographier la fiche » est un <label> qui enveloppe un <input type=file> :
+   c'est la seule façon d'ouvrir l'appareil photo en gardant l'apparence d'une
+   carte. Sans cette règle, le champ s'affiche en clair dans la carte avec son
+   bouton « Choisir un fichier » du navigateur, et on a deux cibles au lieu
+   d'une. Il reste dans le document — donc au clavier et aux lecteurs d'écran. */
+.geste>input[type=file]{position:absolute;inset:0;width:100%;height:100%;
+  opacity:0;cursor:pointer}
+/* Le geste qui déclenche l'appareil photo porte la couleur brique — c'est le
+   départ du parcours, et il se repère avant d'être lu. */
+#sFicheLab .ic{background:var(--brique-tint);color:var(--brique)}
+
+/* ============================ lecture en cours ==============================
+   Ce qu'on regarde pendant que le serveur lit la photo de la fiche. Une
+   attente muette de dix secondes ressemble à une panne : l'opérateur reprend
+   la photo, et le second envoi part par-dessus le premier. Le bandeau dit ce
+   qui se passe, la barre qui le balaie dit que ça travaille toujours.       */
+.lecture{position:relative;overflow:hidden;margin:14px 0;padding:15px 17px;
+  background:var(--marine-tint);border:1px solid var(--marine-2);
+  border-radius:var(--radius)}
+.lecture .l{font-size:15.5px;font-weight:700;color:var(--marine)}
+.lecture .s{margin-top:4px;font-size:13px;color:var(--muted);line-height:1.35}
+/* Pas de pourcentage : on ne sait pas combien de temps la reconnaissance
+   prendra, et une barre qui monte à 80 % puis s'arrête est un mensonge.
+   Une bande qui traverse ne promet rien d'autre que « en cours ».          */
+.lecture::after{content:"";position:absolute;top:0;left:0;height:4px;width:38%;
+  background:var(--brique);border-radius:0 4px 4px 0;
+  animation:balayage 1.15s ease-in-out infinite}
+@keyframes balayage{from{transform:translateX(-100%)}to{transform:translateX(263%)}}
+/* Animation coupée : la barre reste, pleine largeur et en retrait. Le bandeau
+   garde son texte, qui porte l'essentiel de l'information. */
+@media (prefers-reduced-motion:reduce){
+  .lecture::after{animation:none;width:100%;opacity:.45}
+}
+
+/* ======================== pied des écrans de scan ==========================
+   Les portes de sortie du parcours : voir la fiche, scanner autre chose,
+   ouvrir le parc. Elles étaient posées à la main écran par écran, en boutons
+   pleine largeur de la même taille que les gestes du métier — « Recommencer »
+   sur l'un, « Une autre cabine » sur l'autre — si bien que le geste principal
+   ne se distinguait plus de la sortie. Un seul pied, les mêmes libellés
+   partout, en pastilles sur une ligne : le regard va d'abord aux gestes.   */
+.pied{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 4px;padding-top:14px;
+  border-top:1px solid var(--ligne)}
+.pied>button{display:inline-flex;align-items:center;gap:7px;width:auto;margin:0;
+  min-height:44px;padding:10px 15px;font:inherit;font-size:14px;font-weight:600;
+  color:var(--marine);background:var(--surface-2);cursor:pointer;
+  border:1px solid var(--ligne);border-radius:999px;
+  transition:background .15s,border-color .15s}
+.pied>button:hover{background:var(--marine-tint);border-color:var(--marine-2)}
+.pied>button:active{transform:scale(.98)}
 
 /* ============================ fil des étapes ============================== */
 .fil{display:flex;gap:8px;list-style:none;padding:0;margin:12px 0 4px}

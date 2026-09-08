@@ -587,8 +587,7 @@ window.addEventListener('popstate', (ev) => {
    Seuls les écrans qui se lisent sont concernés. Une fiche, un formulaire, un
    rangement en cours ne se redessinent jamais tout seuls.                    */
 const POULS_MS = 10000;
-const ECRANS_TEMPS_REEL = ['home', 'cabines', 'emplacements', 'rack', 'chantier',
-                           'archives', 'journal'];
+const ECRANS_TEMPS_REEL = ['home', 'cabines', 'emplacements', 'rack', 'journal'];
 let EMPREINTE = null;
 
 function rafraichissementPossible() {
@@ -737,30 +736,6 @@ function pickerScreen(title, active, onPick) {
 // Compte les cabines d'un filtre sans rapatrier les lignes : seul `count` est lu.
 const compter = (filtre) => api('/cabines/?' + filtre).then(d => d.count).catch(() => '—');
 
-/* Les gestes du métier, en grand. Un cariste porte des gants et tient le
-   téléphone d'une main : une cible de 44 px se rate, une bande pleine largeur
-   ne se rate pas. C'est aussi ce qui évite de chercher l'action parmi des
-   compteurs qui ne servent qu'à l'encadrement. */
-function grosBoutons() {
-  const b = [];
-  if (peut('cab')) {
-    b.push(['rangement', 'in', 'Ranger une cabine', 'Photographier la fiche, puis scanner l’emplacement']);
-    b.push(['sortie-cabine', 'out', 'Sortir une cabine', 'Elle est marquée envoyée — définitif']);
-  }
-  b.push(['trouver', 'search', 'Trouver une cabine', 'Par son numéro, ou en scannant un emplacement']);
-  return `<div class="gestes">${b.map(([cle, ic, titre, sous]) =>
-    `<button class="geste" data-geste="${cle}">
-       <span class="ic">${icon(ic, 26)}</span>
-       <span class="t">${esc(titre)}</span>
-       <span class="s">${esc(sous)}</span>
-     </button>`).join('')}</div>`;
-}
-
-/** Rend les gros boutons cliquables. À appeler après chaque layout qui en pose. */
-function brancherGestes() {
-  el().querySelectorAll('[data-geste]').forEach(b => b.onclick = () => go(b.dataset.geste));
-}
-
 /** Bandeau d'accueil : un rangement laissé en plan se reprend d'un doigt.
     Il ne suffit pas de garder l'état — encore faut-il que celui qui a été
     interrompu sache qu'il l'a été, et où reprendre. */
@@ -779,69 +754,55 @@ function brancherRappelEnCours() {
   if (b) b.onclick = () => go('rangement');
 }
 
-/* Vignettes de l'accueil, filtrées par les droits — comme la barre latérale.
-   Elles ne l'étaient pas : un compte en lecture seule se voyait proposer
-   « Entrée — créer une cabine » et « Emplacements — occupation, ajout et
-   réglages », deux écrans qui l'accueillaient par « Ton compte n'a pas le droit ».
-   Chercher son bouton parmi des destinations interdites fait perdre le temps que
-   l'accueil est censé faire gagner. */
+/* Vignettes du tableau de bord, filtrées par les droits — comme la barre
+   latérale. Elles ne l'étaient pas : un compte en lecture seule se voyait
+   proposer « Entrée — créer une cabine », un écran qui l'accueillait par « Ton
+   compte n'a pas le droit ». Chercher son bouton parmi des destinations
+   interdites fait perdre le temps qu'un tableau de bord est censé gagner.
+   « Entrée » et « Par chantier » ont disparu : la première n'existe plus comme
+   porte d'entrée (tout part du Scanner), la seconde est devenue un filtre du
+   Parc. Une vignette qui mène à un écran supprimé ne mène nulle part. */
 function vignettesAccueil() {
   const v = [];
-  if (peut('cab')) v.push(tile('in', 'Entrée', 'créer une cabine', 'entree'));
-  v.push(tile('scan', 'Scanner', 'un QR code ou une fiche cabine', 'scanner'));
-  v.push(tile('build', 'Parc', 'chercher, filtrer, agir', 'cabines'));
+  // Ni « Scanner » ni « Parc » : les deux sont des onglets de la barre du bas,
+  // visible en permanence à trois centimètres de ces vignettes. Une vignette
+  // qui double un onglet fait chercher lequel des deux est le bon.
   v.push(tile('box', 'Emplacements', peut('ref')
     ? 'occupation, ajout et réglages' : 'occupation des racks', 'emplacements'));
-  v.push(tile('search', 'Par chantier', 'toutes les cabines d’un chantier', 'chantier'));
+  v.push(tile('history', 'Journal', 'tous les mouvements', 'journal'));
+  if (ADMIN) v.push(tile('clip', 'Fichier de production',
+    'importer les cabines attendues', 'import'));
   return v.join('');
 }
 
+/* Tableau de bord — des compteurs, et rien que des compteurs. Les trois gros
+   boutons « Ranger / Sortir / Trouver » ont quitté cet écran : le geste ne part
+   plus d'un choix d'action mais du numéro de cabine, donc du Scanner, qui est
+   devenu l'écran d'accueil. Ce tableau reste pour l'encadrement, joignable par
+   « Plus ». Chaque compteur ouvre la liste qu'il annonce : un « 12 non rangées »
+   qui n'y mène pas oblige à retrouver l'écran, puis à reposer les filtres. */
 async function renderHome() {
-  // Le cariste n'a pas d'écran de chargement à regarder : ses trois gestes sont
-  // affichés tout de suite, les compteurs ne le concernent pas.
-  if (profil() === 'cariste') {
-    layout(`<h2 class="title">Bonjour ${esc(USER)}</h2>${rappelEnCours()}${grosBoutons()}
-      <div id="aRanger"></div>`, 'home');
-    brancherGestes();
-    brancherRappelEnCours();
-    compter('rangee=0').then(n => {
-      const z = $('#aRanger');
-      if (!z) return;
-      z.innerHTML = n
-        ? `<button type="button" class="banner clic" data-voir style="margin-top:16px;width:100%;text-align:left;border:none;font:inherit">${n} cabine${n === 1 ? '' : 's'} en attente de rangement — voir la liste</button>`
-        : '';
-      const voir = z.querySelector('[data-voir]');
-      if (voir) voir.onclick = () => ouvrirCabines({ rangee: '0' });
-    }).catch(() => {});
-    return;
-  }
-
   layout('<div class="empty">Chargement…</div>', 'home');
   try {
     // `archivees` était compté puis jamais affiché : une requête pour rien à
-    // chaque ouverture de l'accueil.
-    // « Chargées » comptait `statut=charge`, un statut qui n'existe plus : la
-    // vignette affichait 0 en toutes circonstances. Remplacée par les cabines
-    // sans chantier, qui elles bloquent réellement un départ.
+    // chaque ouverture. « Chargées » comptait `statut=charge`, un statut qui
+    // n'existe plus : la vignette affichait 0 en toutes circonstances.
+    // Remplacée par les cabines sans chantier, qui elles bloquent un départ.
     const [actives, quarantaine, sansChantier, nonRangees] = await Promise.all([
       compter(''), compter('statut=quarantaine'), compter('sans_chantier=1'),
       compter('rangee=0'),
     ]);
-    layout(`<h2 class="title">Bonjour ${esc(USER)}</h2>
+    layout(`<h2 class="title">Tableau de bord</h2>
       ${rappelEnCours()}
-      ${grosBoutons()}
       <div class="kpis">
         <div class="kpi clic" data-cab="{}"><div class="l">Cabines en stock</div><div class="v">${actives}</div></div>
         <div class="kpi clic ${quarantaine ? 'warn' : ''}" data-cab='{"statut":"quarantaine"}'><div class="l">En quarantaine</div><div class="v">${quarantaine}</div></div>
         <div class="kpi clic" data-cab='{"sans_chantier":"1"}'><div class="l">Sans chantier</div><div class="v">${sansChantier}</div></div>
         <div class="kpi clic" data-cab='{"rangee":"0"}'><div class="l">Non rangées</div><div class="v">${nonRangees}</div></div>
       </div>
-      <div class="sec">Actions</div>
+      <div class="sec">Aller à</div>
       <div class="tiles">${vignettesAccueil()}</div>`, 'home');
-    brancherGestes();
     brancherRappelEnCours();
-    // Un compteur qui annonce « 12 non rangées » sans y mener oblige à retrouver
-    // l'écran, les filtres, puis à les poser soi-même. Il ouvre maintenant la liste.
     el().querySelectorAll('[data-cab]').forEach(n => n.onclick = () => {
       try { ouvrirCabines(JSON.parse(n.dataset.cab)); } catch (_) { ouvrirCabines(); }
     });
@@ -1243,42 +1204,6 @@ function bandesDepuisEmplacements(emplacements, nomRack) {
     }));
 }
 
-// Étiquette QR d'une cabine, à coller sur la fiche papier ou sur la cabine.
-// C'est ce qui rend le scan possible : la fiche imprimée en production ne porte
-// aucun code, il n'y a donc rien à lire dessus sans cette étiquette.
-function printCabineLabel(cabine) {
-  if (typeof QRCode === 'undefined') { toast('Générateur de QR non chargé : lancez « python manage.py telecharger_libs » sur le serveur.', 'err'); return; }
-  const holder = document.createElement('div');
-  holder.style.display = 'none';
-  document.body.appendChild(holder);
-  try { new QRCode(holder, { text: 'CAB:' + cabine.numero, width: 240, height: 240, correctLevel: QRCode.CorrectLevel.M }); }
-  catch (e) { document.body.removeChild(holder); toast('Erreur QR', 'err'); return; }
-  setTimeout(() => {
-    const cv = holder.querySelector('canvas');
-    const img = holder.querySelector('img');
-    const url = cv ? cv.toDataURL('image/png') : (img ? img.src : '');
-    document.body.removeChild(holder);
-    if (!url) { toast('Erreur QR', 'err'); return; }
-    const w = window.open('', '_blank', 'width=380,height=560');
-    if (!w) { toast('Autorise les pop-up pour imprimer.', 'err'); return; }
-    const lignes = [
-      ['Chantier', cabine.chantier || '—'],
-      ['Modèle', cabine.modele || '—'],
-      ['Client', cabine.client || '—'],
-    ].map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(v)}</td></tr>`).join('');
-    w.document.write(`<title>${esc(cabine.numero)}</title>
-      <style>body{font-family:system-ui;text-align:center;padding:18px}
-        img{width:230px;height:230px}
-        .n{font-size:26px;font-weight:700;margin-top:8px;font-family:monospace}
-        table{margin:12px auto 0;border-collapse:collapse;font-size:13px}
-        td{padding:3px 8px;text-align:left}.k{color:#555}</style>
-      <img src="${url}"><div class="n">${esc(cabine.numero)}</div>
-      <table>${lignes}</table>
-      <script>window.onload=function(){window.print()}<\/script>`);
-    w.document.close();
-  }, 150);
-}
-
 async function showLocation(emp) {
   try {
     const lines = await apiAll('/stock/?emplacement=' + emp.id);
@@ -1317,7 +1242,9 @@ function renderEtiquettes() {
   // elles qu'on scanne pour ranger une cabine.
   const onglets = VOLET_ARTICLES
     ? '<div class="row"><button class="btn ghost" id="ta">Article</button><button class="btn ghost" id="te">Emplacement</button></div>'
-    : '<div class="row"><button class="btn ghost" id="tc">Cabines</button><button class="btn ghost" id="te">Emplacements</button></div>';
+    // Les cabines ne portent pas de QR code : seules les étiquettes
+    // d'emplacement s'impriment, et il n'y a donc plus de choix à faire.
+    : '';
   layout(`<h2 class="title">Étiquettes QR</h2>${onglets}<div id="zone"></div>`, 'more');
   const artMode = () => {
     $('#zone').innerHTML = '<div class="card"><label>Article</label><input id="q" placeholder="Réf ou désignation"><div class="list" id="res"></div></div>';
@@ -1447,36 +1374,8 @@ function renderEtiquettes() {
     });
     zone.querySelector('[data-portee="cellule"]').click();
   };
-  // Étiquettes de cabine : sans elles, rien n'est scannable sur la cabine, la fiche
-  // imprimée en production ne portant aucun code.
-  const cabMode = () => {
-    $('#zone').innerHTML = `<div class="card"><label>Cabine</label>
-      <input id="q" placeholder="N° de cabine (ex. 26_03_47)" autocomplete="off">
-      <div class="list" id="res"></div></div>`;
-    const champ = masquerNumero($('#q'));
-    champ.focus();
-    const charger = debounce(async () => {
-      const t = champ.value.trim();
-      try {
-        const cabs = (await api('/cabines/?numero=' + encodeURIComponent(t))).results || [];
-        $('#res').innerHTML = cabs.length
-          ? cabs.slice(0, 12).map(c => `<div class="item" data-id="${c.id}">
-              <div class="r">${esc(c.numero)} ${badgeStatut(c)}</div>
-              <div class="d">Chantier ${esc(c.chantier || '—')}${c.modele ? ' · ' + esc(c.modele) : ''}</div>
-              <div class="meta">${icon('print', 15)} imprimer l'étiquette</div></div>`).join('')
-          : '<div class="empty">Aucune cabine</div>';
-        $('#res').querySelectorAll('.item').forEach(it => it.onclick = () => {
-          const c = cabs.find(x => String(x.id) === it.dataset.id);
-          if (c) printCabineLabel(c);
-        });
-      } catch (e) { toast(e.message, 'err'); }
-    }, 250);
-    champ.oninput = charger;
-    charger();
-  };
-
   if (VOLET_ARTICLES) { $('#ta').onclick = artMode; $('#te').onclick = empMode; artMode(); }
-  else { $('#tc').onclick = cabMode; $('#te').onclick = empMode; cabMode(); }
+  else { empMode(); }
 }
 
 /* ============================ CABINES =======================================
@@ -1643,8 +1542,12 @@ function pastilleType(c) {
    de l'emplacement — le serveur le calcule, personne ne le saisit — tandis que le
    statut dit l'état de la cabine. Les mélanger dans un seul champ laissait
    apparaître des cabines « Rangé » qui n'étaient nulle part.                   */
-const badgeStatut = (c) => {
-  const range = (c.rangement_libelle !== undefined)
+/* `rangement: false` retire la pastille « Rangée » : sur l'écran des gestes,
+   la ligne d'en dessous dit déjà « Rangée en A-01-2 ». Deux fois le même mot
+   à trois centimètres d'écart se lit comme deux informations, et on cherche
+   la différence. */
+const badgeStatut = (c, options = {}) => {
+  const range = (options.rangement !== false && c.rangement_libelle !== undefined)
     ? `<span class="etat ${c.rangee ? 'ok' : ''}">${esc(c.rangement_libelle)}</span> `
     : '';
   return range + `<span class="etat ${CLASSE_STATUT[c.statut] || ''}">${esc(c.statut_libelle || c.statut)}</span>`;
@@ -2292,9 +2195,6 @@ function blocFiche(titre) {
       <div class="sec" style="margin-top:18px">Ou saisir le numéro</div>
       <input id="fNum" placeholder="Ex. 26_03_47" autocomplete="off">
       <button class="btn ghost" id="fNumOk">Continuer</button>
-      <details style="margin-top:14px"><summary class="meta">La cabine porte une étiquette QR du WMS</summary>
-        ${blocCameraHTML('Scanner un QR code', 'Étiquette imprimée par le WMS')}
-      </details>
     </div>`;
 }
 
@@ -2375,15 +2275,22 @@ async function preparerPhoto(fichier) {
 const ko = (n) => Math.max(1, Math.round(n / 1024));
 
 /** Envoie la photo, interprète la réponse. Commun au rangement et à la sortie. */
+/* Une attente muette de plusieurs secondes ressemble à une panne. Le bandeau
+   dit ce qui se passe, et la ligne qui le balaie dit que ça travaille encore —
+   c'est le seul repère quand la reconnaissance prend dix secondes sur un
+   téléphone. Elle s'arrête d'elle-même si l'appareil demande moins d'animation. */
+const blocLecture = (titre, sous) => `<div class="lecture">
+  <div class="l">${esc(titre)}</div><div class="s">${esc(sous)}</div></div>`;
+
 async function lireFiche(fichier, surCabine, surInconnue, chercher) {
   if (!fichier) return;
   const etat = $('#fEtat');
-  if (etat) etat.innerHTML = '<div class="meta">Préparation de la photo…</div>';
+  if (etat) etat.innerHTML = blocLecture('Préparation de la photo…',
+    'Réduction avant l’envoi : l’image de l’appareil pèse trop lourd.');
   try {
     const photo = await preparerPhoto(fichier);
-    if (etat) {
-      etat.innerHTML = `<div class="meta">Lecture en cours… (${ko(photo.size)} Ko envoyés)</div>`;
-    }
+    if (etat) etat.innerHTML = blocLecture(`Lecture de la fiche…`,
+      `${ko(photo.size)} Ko envoyés au serveur — quelques secondes.`);
     // Sans délai maximum, un réseau qui ne répond plus laisse « Lecture en
     // cours… » indéfiniment : l'opérateur attend devant un écran qui ne dira
     // jamais rien. Quarante-cinq secondes, puis on rend la main et la saisie.
@@ -2930,6 +2837,13 @@ function blocEmplacements(c) {
 
 async function ficheCabine(cabine, retour) {
   await refsCabine();
+  /* La fiche s'écrit dans le `#zone` de l'écran qui l'appelle. L'écran des
+     gestes n'en a pas — il pose ses cartes directement — et ce garde-fou
+     rendait donc la main en silence : « Voir sa fiche » ne faisait rien, sans
+     message ni erreur en console. Là où il n'y a pas de conteneur, la fiche
+     pose le sien. L'onglet reste « Scanner » : la fiche est une étape du
+     parcours de scan, pas une destination du menu. */
+  if (!$('#zone')) layout('<div id="zone"></div>', 'scanner');
   const zone = $('#zone');
   if (!zone) return;
   zone.innerHTML = '<div class="empty">Chargement…</div>';
@@ -2953,8 +2867,7 @@ async function ficheCabine(cabine, retour) {
         ${c.envoyee ? `<div class="banner" style="margin:12px 0 0">Cabine envoyée le ${new Date(c.envoi_date).toLocaleString('fr-FR')} — fiche archivée. La fiche reste corrigeable, et la cabine peut être remise en stock si elle revient.</div>
           ${peut('cab') ? `<button class="btn orange" id="fReprendre">La remettre en stock</button>` : ''}` : ''}
         <div id="fAct"></div>
-        <button class="btn ghost" id="fEtiq">${icon('print', 17)} Imprimer l'étiquette QR à coller</button>
-        ${peut('cab') ? `<div class="row" style="margin-top:10px">
+          ${peut('cab') ? `<div class="row" style="margin-top:10px">
           <button class="btn ghost" id="fCorriger" style="margin-top:0">${icon('edit', 17)} Corriger la fiche</button>
           <button class="btn danger" id="fSupprimer" style="margin-top:0">${icon('trash', 17)} Supprimer</button>
         </div>` : ''}
@@ -2967,7 +2880,6 @@ async function ficheCabine(cabine, retour) {
       </div>`).join('') : '<div class="empty">Aucun événement</div>'}</div>`;
 
     if (retour) $('#fRetour').onclick = retour;
-    $('#fEtiq').onclick = () => printCabineLabel(c);
 
     // Corriger et supprimer restent accessibles sur une cabine envoyée : une faute
     // de frappe reste une faute de frappe une fois la cabine partie, et corriger
@@ -4608,17 +4520,13 @@ async function creerCabine(corps) {
   noterRecentCabine(c);
   $('#apres').innerHTML = `<div class="card" style="margin-top:12px">
     <div class="r">${esc(c.numero)} — ${esc(c.chantier || 'sans chantier')}</div>
-    <div class="sec" style="margin-top:12px">Coller l'étiquette</div>
-    <button class="btn" id="aEtiq">Imprimer l'étiquette QR</button>
-    <div class="meta" style="margin-top:6px">À coller sur la fiche ou sur la cabine : c'est elle qui rend le scan possible ensuite.</div>
-    <div class="sec" style="margin-top:14px">Ranger</div>
+    <div class="sec" style="margin-top:12px">Ranger</div>
     <div class="row">
       <button class="btn ghost" id="aScan" style="margin-top:0">Scanner l'emplacement</button>
       <button class="btn ghost" id="aFiche" style="margin-top:0">Saisir le code</button>
     </div>
     <button class="btn ghost" id="aPlus">Entrer une autre cabine</button>
     <div id="aZone"></div></div>`;
-  $('#aEtiq').onclick = () => printCabineLabel(c);
   $('#aPlus').onclick = renderEntree;
   $('#aScan').onclick = () => { CABINE_A_RANGER = c; go('trouver'); };
   $('#aFiche').onclick = () => ficheCabine(c, renderEntree);
@@ -5429,18 +5337,35 @@ async function appliquerImport(bouton) {
 
 async function renderScanner() {
   await refsCabine();
-  layout(`<h2 class="title">Scanner une cabine</h2>
+  layout(`<h2 class="title">Scanner</h2>
     ${rappelEnCours()}
-    <div class="meta" style="margin:-4px 0 12px">Tout part du numéro de la cabine.
-      Ce que vous pourrez en faire dépend de son état — l'écran suivant le dira.</div>
-    <div id="zone"></div>
+    <div class="meta" style="margin:-4px 0 14px">Deux choses se scannent :
+      la <b>fiche</b> collée sur la cabine, et le <b>QR d'un emplacement</b>.
+      Les cabines ne portent pas de QR code.</div>
+    <div class="gestes">
+      <label class="geste" id="sFicheLab">
+        <span class="ic">${icon('camera', 26)}</span>
+        <span class="t">Photographier la fiche cabine</span>
+        <span class="s">Le tableau à deux colonnes, collé sur la cabine</span>
+        <input type="file" id="sFiche" accept="image/*" capture="environment">
+      </label>
+      <button class="geste" id="sQr">
+        <span class="ic">${icon('scan', 26)}</span>
+        <span class="t">Scanner le QR d’un emplacement</span>
+        <span class="s">L’étiquette collée sur la travée</span>
+      </button>
+    </div>
+    <div id="fEtat"></div>
+    <div id="sCam"></div>
+    <div class="card" style="margin-top:14px">
+      <div class="sec" style="margin-top:0">Ou saisir le n° de cabine</div>
+      <input id="sNum" placeholder="Ex. 26_03_47" autocomplete="off">
+      <button class="btn ghost" id="sNumOk">Continuer</button>
+    </div>
     <div id="aRanger"></div>`, 'scanner');
   brancherRappelEnCours();
 
-  $('#zone').innerHTML = blocFiche('Qu’avez-vous sous les yeux ?');
-  brancherBlocFiche(
-    (cabine) => ouvrirGestes({ numero: cabine.numero, cabine }),
-    (champs) => ouvrirGestes({ numero: (champs && champs.numero) || '' }));
+  brancherChoixScanner();
 
   // Le compteur de l'ancien accueil : il dit s'il reste du travail, et il y mène.
   compter('rangee=0').then(n => {
@@ -5494,7 +5419,7 @@ async function ouvrirGestes(depart) {
     } catch (e) {
       layout(`<h2 class="title">${esc(numero)}</h2>
         <div class="banner">${esc(e.message)}</div>
-        <button class="btn ghost" data-go="scanner">Recommencer</button>`, 'scanner');
+        ${piedGestes()}`, 'scanner');
       return;
     }
     GESTES_ECRAN.numero = numero;
@@ -5524,6 +5449,18 @@ const gesteBouton = (id, titre, sous, options = {}) => `<button class="geste" id
   <span class="ic">${icon(options.icone || 'in', 26)}</span>
   <span class="t">${esc(titre)}</span>
   <span class="s">${esc(options.empeche || sous)}</span></button>`;
+
+/* Le pied de tous les écrans du parcours de scan — voir plus haut, côté CSS,
+   pourquoi il est commun. `fiche` n'est proposé que si la cabine existe : sans
+   cabine en stock, il n'y a pas de fiche à ouvrir.
+   Pas de troisième pastille vers le Parc : l'onglet « Parc » est en bas de
+   l'écran en permanence, et un raccourci de plus vers ce qui est déjà à un
+   doigt de distance est exactement le doublon qu'on retire partout ailleurs.
+   Deux pastilles tiennent aussi sur une seule ligne — trois en font deux. */
+const piedGestes = (options = {}) => `<div class="pied">
+  ${options.fiche ? `<button id="gFiche">${icon('clip', 16)} Voir sa fiche</button>` : ''}
+  <button data-go="scanner">${icon('scan', 16)} Une autre cabine</button>
+</div>`;
 
 function dessinerGestes() {
   const { numero, cabine, attendue } = GESTES_ECRAN;
@@ -5566,7 +5503,8 @@ function dessinerGestes() {
 
   layout(`<h2 class="title">${esc(cabine.numero)}</h2>
     <div class="card">
-      <div class="r" style="font-size:17px;font-weight:700">${badgeStatut(cabine)}
+      <div class="r" style="font-size:17px;font-weight:700">${
+        badgeStatut(cabine, { rangement: false })}
         ${range ? 'Rangée en ' + esc(cabine.position) : 'Non rangée'}</div>
       <div class="meta" style="margin-top:5px">Chantier ${
         cabine.chantier ? esc(cabine.chantier) : '<b>à affecter</b>'}${
@@ -5577,15 +5515,10 @@ function dessinerGestes() {
     </div>
     <div class="sec">Que faites-vous ?</div>
     <div class="gestes">${gestes.join('')}</div>
-    <div class="row" style="margin-top:14px">
-      <button class="btn ghost" id="gFiche" style="margin-top:0">${icon('clip', 17)} Sa fiche</button>
-      <button class="btn ghost" id="gEtiq" style="margin-top:0">${icon('print', 17)} Étiquette QR</button>
-    </div>
-    <button class="btn ghost" data-go="scanner">Une autre cabine</button>`, 'scanner');
+    ${piedGestes({ fiche: true })}`, 'scanner');
 
   const sur = (id, fn) => { const b = $(id); if (b) b.onclick = fn; };
   sur('#gFiche', () => ouvrirEcran(() => ficheCabine(cabine, () => rafraichirGestes()), 'fiche'));
-  sur('#gEtiq', () => printCabineLabel(cabine));
   sur('#gRanger', () => versRangement(cabine, null));
   sur('#gDeplacer', () => versRangement(cabine, 'deplacer'));
   sur('#gAjouter', () => versRangement(cabine, 'ajouter'));
@@ -5625,7 +5558,7 @@ function versRangement(cabine, intention) {
 function dessinerGestesSansCabine(numero, attendue) {
   if (!attendue) {
     layout(`<h2 class="title">${esc(numero)}</h2><div id="eSuite"></div>
-      <button class="btn ghost" data-go="scanner">Une autre cabine</button>`, 'scanner');
+      ${piedGestes()}`, 'scanner');
     if (REFS_CABINE.fichier_production && !ADMIN) blocRefusHorsFichier(numero);
     else { ENTREE_NUMERO = numero; go('entree'); }
     return;
@@ -5642,6 +5575,71 @@ function dessinerGestesSansCabine(numero, attendue) {
     <div class="sec">Que faites-vous ?</div>
     <div class="gestes">${gesteBouton('gEntrer', 'La faire entrer en stock',
       'Ses caractéristiques sont déjà là — rien à recopier', { icone: 'in' })}</div>
-    <button class="btn ghost" data-go="scanner">Une autre cabine</button>`, 'scanner');
+    ${piedGestes()}`, 'scanner');
   $('#gEntrer').onclick = () => { ENTREE_NUMERO = numero; go('entree'); };
+}
+
+/* --- Les deux choses qui se scannent ---------------------------------------
+
+   La fiche papier collée sur la cabine, et le QR collé sur la travée. Rien
+   d'autre : **les cabines ne portent pas de QR code**, et l'application n'en
+   propose donc plus ni la lecture ni l'impression.
+
+   Un choix explicite, pas une caméra qui devine. Faire chercher les deux à la
+   même caméra doublerait le travail de décodage à chaque image — sur les
+   téléphones du parc, c'est la mise au point qui souffre en premier. Deux
+   boutons coûtent une pression et rendent le geste sûr.                      */
+function brancherChoixScanner() {
+  const photo = $('#sFiche');
+  if (photo) {
+    photo.onchange = (ev) => lireFiche(
+      ev.target.files[0],
+      (cabine) => ouvrirGestes({ numero: cabine.numero, cabine }),
+      (champs) => ouvrirGestes({ numero: (champs && champs.numero) || '' }),
+      (numero) => ouvrirGestes({ numero }));
+  }
+
+  const qr = $('#sQr');
+  if (qr) qr.onclick = () => {
+    const zone = $('#sCam');
+    if (!zone) return;
+    zone.innerHTML = blocCameraHTML('Scanner le QR d’un emplacement',
+                                    'L’étiquette collée sur la travée');
+    brancherCamera((texte) => retenirScanEmplacement(texte));
+    // Un choix, puis la caméra : sans ce déclenchement il faudrait deux
+    // pressions pour un geste que l'opérateur a déjà demandé.
+    const go = $('#camGo');
+    if (go) go.click();
+    zone.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+
+  const champ = masquerNumero($('#sNum'));
+  const suivre = () => {
+    const n = (champ.value || '').trim();
+    if (!n) { toast('Saisis le n° de cabine.', 'err'); return; }
+    ouvrirGestes({ numero: n });
+  };
+  $('#sNumOk').onclick = suivre;
+  champ.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); suivre(); } };
+}
+
+/** QR lu : c'est un emplacement. On tolère un n° de cabine par prudence — un
+    code mal collé ne doit pas être un cul-de-sac. */
+async function retenirScanEmplacement(texte) {
+  const code = String(texte || '').replace(/^(LOC|CAB):/i, '').trim();
+  if (!code) return;
+  await arreterCamera();
+  if (MOTIF_NUMERO_CABINE.test(code)) { ouvrirGestes({ numero: code }); return; }
+  try {
+    const res = (await api('/emplacements/?search=' + encodeURIComponent(code))).results || [];
+    const e = res.find(x => (x.code || '').toUpperCase() === code.toUpperCase())
+           || (res.length === 1 ? res[0] : null);
+    if (!e) {
+      const etat = $('#fEtat');
+      if (etat) etat.innerHTML = `<div class="banner">Aucun emplacement ne porte le code
+        « ${esc(code)} ». Vérifie l’étiquette, ou saisis le n° de la cabine.</div>`;
+      return;
+    }
+    await montrerEmplacement(e, { retour: () => go('scanner') });
+  } catch (err) { toast(err.message, 'err'); }
 }
