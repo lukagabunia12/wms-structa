@@ -110,6 +110,24 @@ if (!bloc) {
   if (!declares.has('envoyerCabine')) erreurs.push('envoyerCabine() a disparu.');
 }
 
+/* Fonction englobante = la dernière déclaration de premier niveau avant une
+   position donnée. Sert à nommer le coupable dans les messages : « telle
+   fonction fait ceci », plutôt qu'un numéro de ligne à aller chercher. */
+const debuts = [...source.matchAll(/^(?:async\s+)?function\s+([A-Za-z0-9_]+)/gm)]
+  .map(m => ({ index: m.index, nom: m[1] }));
+const englobante = (position) => {
+  let nom = '(premier niveau)';
+  for (const d of debuts) { if (d.index > position) break; nom = d.nom; }
+  return nom;
+};
+/** Le texte de la fonction englobante jusqu'à `position` : ce qui a été écrit
+    AVANT le point examiné, dans la même fonction. */
+const avantDans = (position) => {
+  let debut = 0;
+  for (const d of debuts) { if (d.index > position) break; debut = d.index; }
+  return source.slice(debut, position);
+};
+
 /** 4. Toute requête réseau passe par fetchReseau().
 
     Un `fetch` nu qui échoue lève « TypeError: Failed to fetch » : ce message
@@ -123,14 +141,6 @@ if (!bloc) {
     'doLogin',       // dit mieux : « le serveur ne répond pas, vérifie l'adresse »
     'lireFiche',     // distingue le délai de 45 s dépassé de l'absence de réseau
   ]);
-  // Fonction englobante = la dernière déclaration de premier niveau avant l'appel.
-  const debuts = [...source.matchAll(/^(?:async\s+)?function\s+([A-Za-z0-9_]+)/gm)]
-    .map(m => ({ index: m.index, nom: m[1] }));
-  const englobante = (position) => {
-    let nom = '(premier niveau)';
-    for (const d of debuts) { if (d.index > position) break; nom = d.nom; }
-    return nom;
-  };
   for (const appel of source.matchAll(/\bfetch\(/g)) {
     const nom = englobante(appel.index);
     if (!TOLERES.has(nom)) {
@@ -192,6 +202,52 @@ if (!bloc) {
         + 'Scanner ou l\'écran des gestes, qui ne posent pas de `#zone`, elle '
         + 'rendrait la main en silence et l\'écran resterait tel quel.');
     }
+  }
+}
+
+/** 7. Une place se touche, elle ne se déroule pas.
+
+    Le choix « gauche / milieu / droite » a un composant tactile : trois cases
+    pleine largeur qui disent ce qui est libre et QUI occupe le reste. Trois
+    écrans avaient pourtant dérivé vers un `<select>` — le rangement après scan
+    de l'emplacement, la saisie du n° devant le rack, « Choisir dans la liste ».
+    Dérouler un menu pour dire « droite » est un geste de bureau : devant un
+    rack, avec des gants, on ne déroule rien. La dérive est facile parce qu'un
+    `<select>` s'écrit en une ligne, et invisible à la relecture parce qu'elle
+    fonctionne. Ce contrôle la refuse.
+
+    Deux conditions : aucune liste déroulante de places, et toute écriture de
+    `corps.place` vient d'un choix tactile lu dans la même fonction. */
+{
+  for (const s of source.matchAll(/<select\b[^>]{0,160}?id="[^"]*[Pp]lace/g)) {
+    erreurs.push(`${englobante(s.index)}() fait choisir la place dans une liste `
+      + 'déroulante. Pose `blocPlaces(d)` et branche `choixPlace(d, bouton)` : '
+      + 'trois cases qu\'on touche avec des gants, sans viser.');
+  }
+  for (const a of source.matchAll(/corps\.place\s*=/g)) {
+    if (!/choixPlace\(|brancherPlaces\(/.test(avantDans(a.index))) {
+      erreurs.push(`${englobante(a.index)}() écrit corps.place sans avoir branché `
+        + 'de choix tactile : la place vient donc d\'ailleurs — une liste '
+        + 'déroulante, ou une valeur devinée. Passe par `choixPlace(d, bouton)`.');
+    }
+  }
+  /* Et surtout : la place ne se DEVINE pas. « Saisir le code » rangeait la
+     cabine dans `d.libres[0]` — la première place libre — sans rien demander,
+     puis annonçait « Rangée en C001·G ». Personne ne choisissait : une cabine
+     posée à droite était écrite à gauche, et l'erreur ne se voyait qu'en allant
+     la chercher, des semaines plus tard. Le contrôle par fonction ne suffit pas
+     ici : il reste vert si un `choixPlace()` traîne ailleurs dans la même
+     fonction, ce qui est le cas dans une fonction longue. Celui-ci regarde
+     l'affectation elle-même, et refuse toute place prise dans un tableau. */
+  for (const a of source.matchAll(/\bplace\s*[:=]\s*[A-Za-z_$][\w.$]*\s*\[/g)) {
+    erreurs.push(`${englobante(a.index)}() prend la place dans un tableau `
+      + `(« ${a[0].trim()}… ») : c'est la deviner. Une place se touche — `
+      + '`blocPlaces(d)` puis `choixPlace(d, bouton)` — et rien n\'est '
+      + 'présélectionné, pour qu\'une cabine posée à droite ne soit pas '
+      + 'enregistrée à gauche.');
+  }
+  for (const nom of ['placesHTML', 'brancherPlaces', 'choixPlace', 'blocPlaces']) {
+    if (!declares.has(nom)) erreurs.push(`${nom}() a disparu : c'est le choix tactile des places.`);
   }
 }
 

@@ -1663,10 +1663,22 @@ const ligneCabine = (c) => `<div class="item" data-id="${c.id}" data-cle="${c.id
 
     L'onglet reste « Scanner » : une fiche ouverte depuis un scan est une étape
     du parcours, pas une destination du menu. */
-function zoneEcran(onglet = 'scanner') {
-  if (!$('#zone')) layout('<div id="zone"></div>', onglet);
+function zoneEcran(options = {}) {
+  // `neuf` : l'écran est reposé même s'il existe déjà un `#zone`. C'est le cas
+  // des fiches, qui sont des écrans entiers. Écrite dans le `#zone` du Parc, la
+  // fiche d'une cabine s'affichait SOUS le titre, la recherche, les cinq
+  // pastilles, le panneau de filtres et le bouton d'export — il fallait
+  // dérouler tout cela pour la voir, et toucher une cabine dans la liste
+  // semblait ne rien faire du tout.
+  if (options.neuf || !$('#zone')) layout('<div id="zone"></div>', ongletCourant());
   return $('#zone');
 }
+
+/** L'onglet à garder allumé quand un écran se pose de lui-même : celui d'où
+    l'on vient, s'il fait partie de la barre du bas. Une fiche ouverte depuis le
+    Parc laisse « Parc » allumé ; ouverte depuis un scan, « Scanner ». */
+const ongletCourant = () =>
+  (ONGLETS_COMMUNS.some(([cle]) => cle === ECRAN) ? ECRAN : 'scanner');
 
 async function montrerEmplacement(emp, opts = {}) {
   const zone = zoneEcran();
@@ -1683,6 +1695,16 @@ async function montrerEmplacement(emp, opts = {}) {
     const occupants = d.illimite
       ? (d.cabines || []).map(c => ({ code: '—', cabine: c }))
       : d.places.filter(p => !p.libre);
+    /* Une cabine attend une place : le choix tactile qui s'affiche plus bas dit
+       déjà, case par case, ce qui est libre et QUI occupe le reste. Garder aussi
+       la liste du haut donnait deux fois les trois mêmes lignes sur un écran de
+       téléphone — « G — Gauche libre » au-dessus de « G / Gauche / libre » —
+       et repoussait le geste hors de l'écran. Hors de ce cas, la liste reste :
+       c'est elle qu'on vient lire quand on scanne une travée pour savoir ce
+       qu'elle contient. */
+    const attendUnePlace = Boolean(CABINE_A_RANGER) && peut('cab')
+      && !d.complet && !d.illimite
+      && !(d.cabines || []).some(x => x.id === CABINE_A_RANGER.id);
     const contenu = d.illimite
       ? ((d.cabines || []).length
           ? d.cabines.map(c => `<div class="item" style="cursor:default">
@@ -1697,7 +1719,7 @@ async function montrerEmplacement(emp, opts = {}) {
       <div class="card"><div class="muted small">${esc(d.zone || 'Sans zone')}</div>
         <div class="r" style="font-size:17px;font-weight:700">Emplacement ${esc(d.code)}</div>
         <div class="meta" style="margin-top:3px">${esc(d.mode_libelle)}${d.illimite ? ` · ${d.nb_cabines} cabine${d.nb_cabines === 1 ? '' : 's'}` : ''}</div>
-        <div class="list" style="margin-top:10px">${contenu}</div>
+        ${attendUnePlace ? '' : `<div class="list" style="margin-top:10px">${contenu}</div>`}
         ${peut('cab') ? `
           ${d.complet ? '' : `<button class="btn orange btn-fiche" id="eFiche">${icon('fiche', 20)} Scanner la fiche de la cabine</button>
           <div class="meta" style="margin-top:5px;text-align:center">Photographie le tableau collé sur la cabine : le n° est lu tout seul.</div>`}
@@ -1732,16 +1754,19 @@ async function montrerEmplacement(emp, opts = {}) {
       const dejaLa = (d.cabines || []).some(x => x.id === c.id);
       if (!dejaLa && !d.complet) {
         $('#eAct').innerHTML = `<div class="banner" style="margin-top:12px">Cabine ${esc(c.numero)} en attente de rangement.</div>
-          ${d.illimite ? '' : `<label>Place</label><select id="wPlace">${d.libres.map(p => `<option value="${p}">${p}</option>`).join('')}</select>`}
+          ${blocPlaces(d)}
           <div class="row" style="margin-top:10px">
             <button class="btn orange" id="wOk" style="margin-top:0">Ranger ici</button>
             <button class="btn ghost" id="wNon" style="margin-top:0">Annuler</button>
           </div>`;
+        const placeW = choixPlace(d, $('#wOk'));
         $('#wNon').onclick = () => { CABINE_A_RANGER = null; redessiner(); };
         $('#wOk').onclick = async () => {
+          const choix = placeW();
+          if (!d.illimite && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
           try {
             const corps = { emplacement: emp.id };
-            if (!d.illimite) corps.place = $('#wPlace').value;
+            if (choix) corps.place = choix;
             await api(`/cabines/${c.id}/ranger/`, { method: 'POST', body: corps });
             toast('Cabine ' + c.numero + ' rangée', 'ok');
             CABINE_A_RANGER = null;
@@ -1778,13 +1803,15 @@ async function montrerEmplacement(emp, opts = {}) {
             $('#cres').innerHTML = '';
             champ.value = cab.numero;
             // En capacité illimitée il n'y a pas de place à choisir.
-            $('#cform').innerHTML = (d.illimite ? '' : `<label>Place</label>
-              <select id="cplace">${d.libres.map(p => `<option value="${p}">${p} — ${esc((REFS_CABINE.places.find(x => x.code === p) || {}).libelle || p)}</option>`).join('')}</select>`)
+            $('#cform').innerHTML = blocPlaces(d)
               + `<button class="btn orange" id="cok">Ranger ${esc(cab.numero)}</button>`;
+            const placeC = choixPlace(d, $('#cok'));
             $('#cok').onclick = async () => {
+              const choix = placeC();
+              if (!d.illimite && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
               try {
                 const corps = { emplacement: emp.id };
-                if (!d.illimite) corps.place = $('#cplace').value;
+                if (choix) corps.place = choix;
                 await api(`/cabines/${cab.id}/ranger/`, { method: 'POST', body: corps });
                 toast('Cabine rangée', 'ok');
                 ouvrirStatut(cab, `Rangée en ${d.code}${corps.place ? ' · place ' + corps.place : ''}. Quel est son état ?`,
@@ -1885,6 +1912,41 @@ function brancherPlaces(d, surChoix) {
   });
   return () => choisie;
 }
+
+/** Le choix tactile d'une place, posé et branché d'un seul appel.
+
+    Trois écrans avaient dérivé vers une liste déroulante : le rangement après
+    scan de l'emplacement, la saisie du n° à la main devant le rack, et
+    « Choisir dans la liste » depuis la fiche. Dérouler un menu pour dire
+    « droite » est un geste de bureau — devant un rack, avec des gants, on ne
+    déroule rien. Les trois cases montrent d'un coup d'œil ce qui est libre et
+    QUI occupe le reste, et se touchent sans viser.
+
+    Le bouton reste éteint tant qu'aucune place n'est touchée. Rien n'est
+    présélectionné : la version d'avant cochait la première libre, un cariste
+    pressé validait sans regarder, et la cabine était enregistrée à gauche alors
+    qu'il l'avait posée à droite — une erreur muette, retrouvée des semaines plus
+    tard en cherchant la cabine.
+
+    Rend une fonction : la place retenue, ou `null` en capacité illimitée. */
+function choixPlace(d, bouton, options = {}) {
+  if (!bouton) return () => null;
+  const libelle = bouton.textContent;
+  if (!d.illimite) {
+    bouton.disabled = true;
+    bouton.textContent = options.attente || 'Touche une place libre';
+  }
+  const lire = brancherPlaces(d, () => {
+    bouton.disabled = false;
+    bouton.textContent = libelle;
+  });
+  return () => (d.illimite ? null : lire());
+}
+
+/** Le bloc des places, ou la phrase qui explique qu'il n'y en a pas à choisir. */
+const blocPlaces = (d) => (d.illimite
+  ? '<div class="meta" style="padding:6px 2px">Capacité illimitée : aucune place à désigner.</div>'
+  : placesHTML(d));
 
 /** Libellé court d'un champ de fiche, pour un message. */
 function etiquetteChamp(cle) {
@@ -2951,7 +3013,7 @@ function blocEmplacements(c) {
 
 async function ficheCabine(cabine, retour) {
   await refsCabine();
-  const zone = zoneEcran();
+  const zone = zoneEcran({ neuf: true });
   if (!zone) return;
   zone.innerHTML = '<div class="empty">Chargement…</div>';
   try {
@@ -3050,11 +3112,31 @@ async function ficheCabine(cabine, retour) {
             try {
               const d = await api(`/emplacements/${e.id}/places/`);
               if (d.complet) { toast('Les trois places de ' + e.code + ' sont prises.', 'err'); return; }
-              const corps = { emplacement: e.id };
-              if (!d.illimite) corps.place = d.libres[0];
-              await api(`/cabines/${c.id}/ranger/`, { method: 'POST', body: corps });
-              toast('Rangée en ' + e.code + (corps.place ? '·' + corps.place : ''), 'ok');
-              ficheCabine(c, retour);
+              // Ce chemin rangeait la cabine dans `d.libres[0]` — la première place
+              // libre — SANS RIEN DEMANDER, et annonçait « Rangée en C001·G ».
+              // Personne ne choisissait : une cabine posée à droite était écrite à
+              // gauche, et l'erreur ne se voyait qu'en allant la chercher. La place
+              // se touche ici comme partout ailleurs.
+              $('#fCodeRes').innerHTML = '';
+              champ.value = e.code;
+              $('#fZone').insertAdjacentHTML('beforeend',
+                `<div class="card" style="margin-top:12px">
+                   <div class="r" style="font-weight:700">Emplacement ${esc(e.code)}</div>
+                   ${blocPlaces(d)}
+                   <button class="btn orange" id="fCodeOk">Ranger en ${esc(e.code)}</button>
+                 </div>`);
+              const placeCode = choixPlace(d, $('#fCodeOk'));
+              $('#fCodeOk').onclick = async () => {
+                const choix = placeCode();
+                if (!d.illimite && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
+                try {
+                  const corps = { emplacement: e.id };
+                  if (choix) corps.place = choix;
+                  await api(`/cabines/${c.id}/ranger/`, { method: 'POST', body: corps });
+                  toast('Rangée en ' + e.code + (choix ? ' · ' + choix : ''), 'ok');
+                  ficheCabine(c, retour);
+                } catch (err) { toast(err.message, 'err'); }
+              };
             } catch (err) { toast(err.message, 'err'); }
           });
         } catch (err) { toast(err.message, 'err'); }
@@ -3072,14 +3154,15 @@ async function ficheCabine(cabine, retour) {
         try {
           const d = await api(`/emplacements/${$('#fEmp').value}/places/`);
           if (d.complet) { bloc.innerHTML = '<div class="banner">Les trois places sont occupées : choisis un autre emplacement.</div>'; return; }
-          bloc.innerHTML = (d.illimite
-              ? `<div class="meta" style="padding:6px 2px">${esc(d.mode_libelle)} · ${d.nb_cabines} cabine${d.nb_cabines === 1 ? '' : 's'} — pas de place à choisir</div>`
-              : `<label>Place</label><select id="fPlace">${d.libres.map(p => `<option value="${p}">${p}</option>`).join('')}</select>`)
+          bloc.innerHTML = blocPlaces(d)
             + '<button class="btn orange" id="fRangerOk">Confirmer</button>';
+          const placeF = choixPlace(d, $('#fRangerOk'));
           $('#fRangerOk').onclick = async () => {
+            const choix = placeF();
+            if (!d.illimite && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
             try {
               const corps = { emplacement: $('#fEmp').value };
-              if (!d.illimite) corps.place = $('#fPlace').value;
+              if (choix) corps.place = choix;
               await api(`/cabines/${c.id}/ranger/`, { method: 'POST', body: corps });
               toast('Cabine rangée', 'ok');
               ficheCabine(c, retour);
