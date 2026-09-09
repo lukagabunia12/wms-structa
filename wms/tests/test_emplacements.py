@@ -112,7 +112,7 @@ class SuppressionAvecStockTest(BaseEmplacement):
 
     def test_un_administrateur_peut_forcer(self):
         r = self.client.delete(
-            f"/api/emplacements/{self.emp.id}/?force=1&motif=travée+démontée")
+            f"/api/emplacements/{self.emp.id}/?force=1&motif=emplacement+démonté")
         self.assertEqual(r.status_code, 204, getattr(r, "data", None))
         self.assertFalse(Emplacement.objects.filter(pk=self.emp.pk).exists())
         self.assertFalse(Stock.objects.filter(emplacement_id=self.emp.pk).exists())
@@ -124,13 +124,13 @@ class SuppressionAvecStockTest(BaseEmplacement):
         totaux sans la moindre écriture, et `recalculer_stock()` ne pourrait rien
         reconstituer.
         """
-        self.client.delete(f"/api/emplacements/{self.emp.id}/?force=1&motif=travée+démontée")
+        self.client.delete(f"/api/emplacements/{self.emp.id}/?force=1&motif=emplacement+démonté")
         sortie = Mouvement.objects.filter(type=Mouvement.SORTIE).first()
         self.assertIsNotNone(sortie)
         self.assertEqual(sortie.qte, 12)
         self.assertEqual(sortie.article_id, self.article.pk)
         self.assertEqual(sortie.utilisateur_id, self.admin.pk)
-        self.assertIn("travée démontée", sortie.note)
+        self.assertIn("emplacement démonté", sortie.note)
         self.assertIn("C001", sortie.note)
 
     def test_sans_force_meme_un_administrateur_est_arrete(self):

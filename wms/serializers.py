@@ -418,10 +418,12 @@ class CabineSerializer(serializers.ModelSerializer):
 
 
 class ModeleCabineSerializer(serializers.ModelSerializer):
-    """Un modèle et sa taille. `nb_attendues` et `nb_en_stock` disent combien de
-    cabines la bascule concerne : régler « QUATTRO » sur grand modèle touche 404
-    lignes du fichier de production, et c'est une information qu'on veut AVANT
-    de toucher le bouton, pas après."""
+    """Un modèle et sa taille — une place, ou tout l'emplacement.
+
+    `nb_attendues` et `nb_en_stock` disent combien de cabines la bascule
+    concerne : régler « QUATTRO » sur grand modèle touche 404 lignes du fichier
+    de production, et c'est une information qu'on veut AVANT de toucher le
+    bouton, pas après."""
 
     nb_attendues = serializers.IntegerField(read_only=True, required=False)
     nb_en_stock = serializers.IntegerField(read_only=True, required=False)

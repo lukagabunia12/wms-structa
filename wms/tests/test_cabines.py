@@ -66,7 +66,7 @@ class ZonesTest(BaseCabines):
 
 class PlacesTest(BaseCabines):
     def test_deux_places_libres_au_depart(self):
-        """Deux places, plus trois : les modèles ont grandi, la travée non."""
+        """Deux places, plus trois : les modèles ont grandi, l'emplacement non."""
         r = self.client.get(f"/api/emplacements/{self.e1.id}/places/")
         self.assertEqual(r.data["libres"], ["G", "D"])
         self.assertFalse(r.data["complet"])
@@ -98,7 +98,7 @@ class PlacesTest(BaseCabines):
     def test_place_liberee_redevient_disponible(self):
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=self.e1, place="D", utilisateur=self.user)
-        services_cabines.sortir_de_l_emplacement(cabine=c, utilisateur=self.user)
+        services_cabines.sortir_de_l_emplacement(cabine=c, utilisateur=self.user, note="remontée à l’atelier")
         r = self.client.get(f"/api/emplacements/{self.e1.id}/places/")
         self.assertEqual(r.data["libres"], ["G", "D"])
 
@@ -148,7 +148,7 @@ class RangementTest(BaseCabines):
     def test_sortir_une_cabine_non_rangee_refuse(self):
         c = self.cabine()
         with self.assertRaises(services_cabines.ErreurCabine):
-            services_cabines.sortir_de_l_emplacement(cabine=c, utilisateur=self.user)
+            services_cabines.sortir_de_l_emplacement(cabine=c, utilisateur=self.user, note="remontée à l’atelier")
 
     def test_emplacement_inactif_refuse(self):
         self.e1.actif = False
@@ -210,7 +210,10 @@ class ExpressTest(BaseCabines):
         c = services_cabines.creer_cabine(numero="00_00_08", chantier="",
                                           type_cabine=Cabine.EXPRESS, utilisateur=self.user)
         services_cabines.ranger(cabine=c, emplacement=self.e1, place="G", utilisateur=self.user)
-        r = self.client.post(f"/api/cabines/{c.id}/sortir/", {}, format="json")
+        # Avec un motif : sinon c'est la garde du motif qui répond, et ce
+        # test ne dirait plus rien du n° de chantier.
+        r = self.client.post(f"/api/cabines/{c.id}/sortir/",
+                             {"note": "départ chantier"}, format="json")
         self.assertEqual(r.status_code, 400)
         self.assertIn("chantier", " ".join(r.data["erreur"]).lower())
         c.refresh_from_db()
@@ -223,7 +226,8 @@ class ExpressTest(BaseCabines):
         r = self.client.post(f"/api/cabines/{c.id}/chantier/", {"chantier": "123456"},
                              format="json")
         self.assertEqual(r.status_code, 200)
-        r = self.client.post(f"/api/cabines/{c.id}/sortir/", {}, format="json")
+        r = self.client.post(f"/api/cabines/{c.id}/sortir/",
+                             {"note": "départ chantier"}, format="json")
         self.assertEqual(r.status_code, 200)
         c.refresh_from_db()
         self.assertEqual(c.place, "")
@@ -251,8 +255,12 @@ class StatutsTest(BaseCabines):
     def test_parcours_des_statuts(self):
         c = self.cabine()
         for statut in (Cabine.QUARANTAINE, Cabine.LIBRE):
-            r = self.client.post(f"/api/cabines/{c.id}/statut/", {"statut": statut},
-                                 format="json")
+            # Le motif n'est exigé QUE pour poser la quarantaine ; l'envoyer
+            # aussi à la levée masquerait une régression dans un sens.
+            corps = {"statut": statut}
+            if statut == Cabine.QUARANTAINE:
+                corps["motif"] = "paroi à reprendre"
+            r = self.client.post(f"/api/cabines/{c.id}/statut/", corps, format="json")
             self.assertEqual(r.status_code, 200)
             self.assertEqual(r.data["statut"], statut)
         c.refresh_from_db()
@@ -261,8 +269,13 @@ class StatutsTest(BaseCabines):
 
     def test_historique_des_statuts_avec_auteur(self):
         c = self.cabine()
-        self.client.post(f"/api/cabines/{c.id}/statut/", {"statut": Cabine.QUARANTAINE},
-                         format="json")
+        r = self.client.post(f"/api/cabines/{c.id}/statut/",
+                             {"statut": Cabine.QUARANTAINE, "motif": "paroi à reprendre"},
+                             format="json")
+        # Le code de retour AVANT de lire le journal : sans lui, un refus
+        # laisserait le journal vide et l'échec dirait « NoneType », pas
+        # « la requête a été refusée ».
+        self.assertEqual(r.status_code, 200, r.data)
         mv = MouvementCabine.objects.filter(type=MouvementCabine.STATUT).first()
         self.assertEqual(mv.statut_avant, Cabine.LIBRE)
         self.assertEqual(mv.statut_apres, Cabine.QUARANTAINE)
@@ -359,7 +372,7 @@ class EnvoiEtArchivesTest(BaseCabines):
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=self.e1, place="G", utilisateur=self.user)
         services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user)
+                                        utilisateur=self.user, motif="paroi à reprendre")
         services_cabines.ranger(cabine=c, emplacement=self.e2, place="D", utilisateur=self.user)
         services_cabines.envoyer(cabine=c, utilisateur=self.user)
         r = self.client.get(f"/api/cabines/{c.id}/historique/")
@@ -371,7 +384,8 @@ class EnvoiEtArchivesTest(BaseCabines):
 
     def test_historique_survit_a_la_suppression_du_compte(self):
         c = self.cabine()
-        services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE, utilisateur=self.user)
+        services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE,
+                                        utilisateur=self.user, motif="paroi à reprendre")
         self.user.delete()
         mv = MouvementCabine.objects.filter(type=MouvementCabine.STATUT).first()
         self.assertIsNone(mv.utilisateur)
@@ -403,7 +417,7 @@ class RechercheCabinesTest(BaseCabines):
 
     def test_filtre_par_statut(self):
         services_cabines.changer_statut(cabine=self.c1, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user)
+                                        utilisateur=self.user, motif="paroi à reprendre")
         r = self.client.get(f"/api/cabines/?statut={Cabine.QUARANTAINE}")
         self.assertEqual([c["numero"] for c in r.data["results"]], ["00_00_01"])
 
@@ -444,7 +458,7 @@ class RechercheCabinesTest(BaseCabines):
 
     def test_journal_filtrable_par_chantier(self):
         services_cabines.changer_statut(cabine=self.c1, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user)
+                                        utilisateur=self.user, motif="paroi à reprendre")
         r = self.client.get("/api/mouvements-cabine/?chantier=000123")
         self.assertTrue(r.data["count"] >= 1)
         self.assertTrue(all(m["chantier"] == "000123" for m in r.data["results"]))
@@ -482,7 +496,7 @@ class ListeEmplacementsTest(BaseCabines):
         self.assertEqual(sorted(c["numero"] for c in e["cabines"]),
                          ["00_00_01", "00_00_02"])
         self.assertEqual(e["places_occupees"], ["D", "G"])
-        # Les deux places sont prises : la travée est pleine.
+        # Les deux places sont prises : l'emplacement est plein.
         self.assertEqual(e["places_libres"], [])
         self.assertEqual(e["zone_cabine_nom"], "À ranger cabines")
 
@@ -504,7 +518,7 @@ class ListeEmplacementsTest(BaseCabines):
 
     def test_filtre_par_statut_de_cabine(self):
         services_cabines.changer_statut(cabine=self.c3, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user)
+                                        utilisateur=self.user, motif="paroi à reprendre")
         self.assertEqual(self.codes(f"/api/emplacements/?statut={Cabine.QUARANTAINE}"), ["C002"])
 
     def test_filtres_cumules_visent_la_meme_cabine(self):
@@ -514,7 +528,7 @@ class ListeEmplacementsTest(BaseCabines):
         porte le chantier 000111 et sa place D pourrait porter le statut cherché.
         """
         services_cabines.changer_statut(cabine=self.c1, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user)
+                                        utilisateur=self.user, motif="paroi à reprendre")
         self.assertEqual(
             self.codes(f"/api/emplacements/?chantier=000222&statut={Cabine.QUARANTAINE}"), [])
         self.assertEqual(
@@ -535,7 +549,7 @@ class ListeEmplacementsTest(BaseCabines):
         self.assertEqual(self.codes("/api/emplacements/?occupation=complet"), ["C001"])
 
     def test_emplacement_complet_detecte(self):
-        """Une troisième cabine n'entre plus : la travée n'a que deux places."""
+        """Une troisième cabine n'entre plus : l'emplacement n'a que deux places."""
         self.assertEqual(self.codes("/api/emplacements/?occupation=complet"), ["C001"])
         self.assertNotIn("C001", self.codes("/api/emplacements/?occupation=partiel"))
 
@@ -618,7 +632,8 @@ class ModeDeRangementTest(BaseCabines):
     def test_sortie_depuis_un_illimite(self):
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=self.tampon, utilisateur=self.user)
-        r = self.client.post(f"/api/cabines/{c.id}/sortir/", {}, format="json")
+        r = self.client.post(f"/api/cabines/{c.id}/sortir/",
+                             {"note": "reprise en atelier"}, format="json")
         self.assertEqual(r.status_code, 200)
         c.refresh_from_db()
         self.assertIsNone(c.emplacement)
@@ -738,14 +753,15 @@ class EtapesProcessusTest(BaseCabines):
         services_cabines.ranger(cabine=c, emplacement=self.quai, place="G",
                                 utilisateur=self.user)
         services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user)
+                                        utilisateur=self.user, motif="paroi à reprendre")
         self.assertEqual(self.etape(c), "quarantaine")
         services_cabines.changer_statut(cabine=c, statut=Cabine.LIBRE, utilisateur=self.user)
         self.assertEqual(self.etape(c), "envoi")   # redevient conforme, position reprise
 
     def test_etapes_chargee_et_envoyee(self):
         c = self.cabine()
-        services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE, utilisateur=self.user)
+        services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE,
+                                        utilisateur=self.user, motif="paroi à reprendre")
         self.assertEqual(self.etape(c), "quarantaine")
         services_cabines.envoyer(cabine=c, utilisateur=self.user)
         self.assertEqual(self.etape(c), "envoyee")
@@ -785,7 +801,7 @@ class EtapesProcessusTest(BaseCabines):
         cabines.append(c3)
         c4 = self.cabine(numero="00_00_04", chantier="000004")
         services_cabines.changer_statut(cabine=c4, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user)
+                                        utilisateur=self.user, motif="paroi à reprendre")
         cabines.append(c4)
 
         for code, _ in Cabine.ETAPES:
@@ -806,13 +822,37 @@ class MotifTest(BaseCabines):
         mv = MouvementCabine.objects.filter(type=MouvementCabine.STATUT).first()
         self.assertEqual(mv.note, "Rayure sur le vitrage")
 
-    def test_motif_facultatif(self):
+    def test_motif_obligatoire_pour_poser_une_quarantaine(self):
+        """Ce test disait l'inverse jusqu'à cette règle.
+
+        Une quarantaine immobilise une cabine. Sans la raison au journal,
+        personne ne sait quoi réparer pour la lever, et la cabine reste en
+        travers du rack.
+        """
         c = self.cabine()
         r = self.client.post(f"/api/cabines/{c.id}/statut/", {"statut": Cabine.QUARANTAINE},
                              format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("quoi réparer", " ".join(r.data["erreur"]))
+        c.refresh_from_db()
+        self.assertEqual(c.statut, Cabine.LIBRE)
+        self.assertFalse(MouvementCabine.objects.filter(type=MouvementCabine.STATUT).exists())
+
+    def test_motif_reste_facultatif_pour_lever_une_quarantaine(self):
+        """L'autre moitié de la règle, celle qu'on casse en la durcissant.
+
+        Constater qu'une cabine est redevenue conforme n'a rien à expliquer.
+        Exiger un motif dans les deux sens ferait taper « ok » à la levée, et
+        l'habitude gagnerait ensuite la pose — là où le motif compte.
+        """
+        c = self.cabine()
+        services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE,
+                                        utilisateur=self.user, motif="choc à réception")
+        r = self.client.post(f"/api/cabines/{c.id}/statut/", {"statut": Cabine.LIBRE},
+                             format="json")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(MouvementCabine.objects.filter(type=MouvementCabine.STATUT)
-                         .first().note, "")
+        c.refresh_from_db()
+        self.assertEqual(c.statut, Cabine.LIBRE)
 
     def test_motif_de_levee(self):
         c = self.cabine(numero="00_00_02", chantier="000002")
@@ -861,7 +901,8 @@ class TypesEtStatutsTest(BaseCabines):
                 services_cabines.ranger(cabine=c, emplacement=self.e1,
                                         place=Cabine.PLACES[i][0], utilisateur=self.user)
                 with self.assertRaises(services_cabines.ErreurCabine):
-                    services_cabines.sortir_de_l_emplacement(cabine=c, utilisateur=self.user)
+                    services_cabines.sortir_de_l_emplacement(
+                        cabine=c, utilisateur=self.user, note="remontée à l’atelier")
 
     def test_le_statut_levee_n_existe_plus(self):
         c = self.cabine(numero="00_12_00", chantier="000012")
@@ -901,7 +942,7 @@ class SuiviProcessusTest(BaseCabines):
                                 utilisateur=self.user)                   # envoi
         d = self.cabine(numero="00_00_04", chantier="000004")
         services_cabines.changer_statut(cabine=d, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user)           # quarantaine
+                                        utilisateur=self.user, motif="paroi à reprendre")           # quarantaine
         e = self.cabine(numero="00_00_05", chantier="000005")
         services_cabines.envoyer(cabine=e, utilisateur=self.user)        # envoyée
 
@@ -924,7 +965,7 @@ class SuiviProcessusTest(BaseCabines):
                                         utilisateur=self.user)
             if i == 3:
                 services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE,
-                                                utilisateur=self.user)
+                                                utilisateur=self.user, motif="paroi à reprendre")
         r = self.client.get("/api/suivi-processus/")
         self.assertEqual(sum(x["total"] for x in r.data["etapes"]), Cabine.objects.count())
 
@@ -1021,7 +1062,8 @@ class DroitsCabinesTest(BaseCabines):
         op = Utilisateur.objects.create_user(username="op3", password="secret123",
                                              role=Utilisateur.OPERATEUR, droit_cab=True)
         self.client.force_authenticate(user=op)
-        r = self.client.post(f"/api/cabines/{c.id}/statut/", {"statut": Cabine.QUARANTAINE},
+        r = self.client.post(f"/api/cabines/{c.id}/statut/",
+                             {"statut": Cabine.QUARANTAINE, "motif": "paroi à reprendre"},
                              format="json")
         self.assertEqual(r.status_code, 200)
 

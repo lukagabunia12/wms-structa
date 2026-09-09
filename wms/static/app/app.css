@@ -230,7 +230,7 @@ input:focus,select:focus{outline:none;border-color:var(--marine);box-shadow:0 0 
 /* ==================== barre de titre avec action principale ================
    Le bouton de création vit EN HAUT, à côté du titre. Il était auparavant en bas
    de page : sur l'écran des emplacements, il fallait faire défiler tout
-   l'entrepôt pour ajouter une travée.                                        */
+   l'entrepôt pour ajouter un emplacement.                                        */
 .tete-ecran{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}
 .tete-ecran .title{flex:1 1 auto}
 .bouton-tete{margin-top:0;width:auto;flex:0 0 auto;padding:10px 16px;font-size:14px;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
@@ -242,6 +242,18 @@ input:focus,select:focus{outline:none;border-color:var(--marine);box-shadow:0 0 
 /* Texte d'aide sous un champ : dit ce que le réglage change réellement. */
 .aide{font-size:12px;color:var(--muted);line-height:1.45;margin-top:6px}
 .aide.alerte{color:var(--warn-tx);background:var(--warn-bg);border-radius:9px;padding:8px 10px}
+
+/* Ce qui manque pour pouvoir enregistrer. Vide, le bloc n'occupe aucune place :
+   sans `:empty`, la marge du message reservait un trou sous chaque champ et on
+   croyait a un defaut d'affichage. Rempli, il est rouge et colle au champ pour
+   qu'on lise la cause a l'endroit ou on vient d'echouer. */
+.manque{font-size:12.5px;font-weight:700;color:var(--danger);background:var(--danger-tint);
+        border-radius:9px;padding:8px 10px;margin-top:6px;line-height:1.4}
+.manque:empty{display:none}
+/* Le champ refuse porte la meme couleur que son message : le lien entre les
+   deux doit se voir sans le lire. */
+input[aria-invalid="true"],textarea[aria-invalid="true"]{border-color:var(--danger);
+        box-shadow:0 0 0 3px var(--danger-tint)}
 
 /* Case à cocher alignée avec son libellé (les <label> du formulaire sont en bloc). */
 label.case{display:flex;align-items:center;gap:9px;margin-top:14px;font-size:14px;color:var(--txt);cursor:pointer}

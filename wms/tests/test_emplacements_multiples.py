@@ -72,7 +72,7 @@ class LeCasCourantNeChangePasTest(BaseMulti):
 
 
 class AjouterUnEmplacementTest(BaseMulti):
-    """Le cas rare : la cabine ne tient pas dans une seule travée."""
+    """Le cas rare : la cabine ne tient pas dans un seul emplacement."""
 
     def test_ajouter_ne_libere_pas_le_premier(self):
         cabine = self.cabine()
@@ -198,7 +198,7 @@ class SortieEtEnvoiTest(BaseMulti):
 
     def test_sortir_libere_tout(self):
         cabine = self.cabine_a_deux_endroits()
-        services_cabines.sortir_de_l_emplacement(cabine=cabine, utilisateur=self.u)
+        services_cabines.sortir_de_l_emplacement(cabine=cabine, utilisateur=self.u, note="remontée à l’atelier")
         cabine.refresh_from_db()
         self.assertEqual(cabine.emplacements_occupes, [])
         self.assertIn("G", services_cabines.places_libres(self.e1))
@@ -208,7 +208,7 @@ class SortieEtEnvoiTest(BaseMulti):
         cabine = self.cabine_a_deux_endroits()
         premier = cabine.occupations.order_by("numero").first()
         services_cabines.sortir_de_l_emplacement(cabine=cabine, occupation=premier,
-                                                 utilisateur=self.u)
+                                                 utilisateur=self.u, note="remontée à l’atelier")
         cabine.refresh_from_db()
         self.assertEqual(len(cabine.emplacements_occupes), 1)
         self.assertEqual(cabine.position, "AC-110-1·D")

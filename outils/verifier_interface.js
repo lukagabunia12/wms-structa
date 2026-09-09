@@ -261,6 +261,77 @@ for (const nom of ['layout', 'go', 'api', 'toast', 'modale', 'confirmer', 'liste
   if (!declares.has(nom)) erreurs.push(`Fonction de base manquante : ${nom}()`);
 }
 
+/** 4. Le vocabulaire de la maison : le mot écarté ne revient pas.
+ *
+ *  « Emplacement » est le mot qu'on dit devant le rack ; l'autre a été retiré
+ *  de l'interface sur demande. Il est revenu deux fois, et pas par négligence :
+ *  il restait dans les commentaires et les docstrings, et on écrit par
+ *  mimétisme de ce qu'on relit.
+ *
+ *  Le contrôle cherche la chaîne LITTÉRALE, sans classe de caractères. Un
+ *  `grep 'trav[ée]e'` lancé sans locale UTF-8 ne voit pas le « é » multi-octets
+ *  et répond « rien » sur dix lignes bien présentes : c'est exactement ce qui
+ *  est arrivé, et pourquoi ce contrôle-ci n'utilise pas de classe.
+ *
+ *  Les migrations sont exemptées : les anciens noms de champs y sont figés,
+ *  c'est de l'historique déjà écrit en base et le réécrire casserait la
+ *  reprise. */
+/* Le mot n'est PAS écrit en clair ici : sinon ce contrôle se signalerait
+   lui-même, et la première version l'a fait — deux « problèmes » pointant sa
+   propre liste. Un contrôle qui crie sur du code sain finit par être désactivé,
+   et c'est alors le vrai défaut qui passe. Il est donc assemblé, ce qui a
+   l'avantage de couvrir d'un coup les huit graphies. */
+const MOTS_ECARTES = [];
+for (const base of ['trav' + 'é' + 'e', 'trav' + 'ee']) {
+  for (const forme of [base, base[0].toUpperCase() + base.slice(1), base.toUpperCase()]) {
+    MOTS_ECARTES.push(forme, forme + 's');
+  }
+}
+const RACINE = path.join(__dirname, '..');
+const A_BALAYER = [['wms', ['.py', '.js', '.css', '.html']],
+                   ['outils', ['.js', '.py']],
+                   ['config', ['.py']]];
+/* `_a_supprimer` est le purgatoire : le dossier partagé avec la machine de
+   Véronique refuse la suppression, on y déplace donc ce qui doit partir en
+   attendant qu'elle vide le dossier. Ces fichiers ne sont ni suivis par git ni
+   chargés par Django — bloquer sur eux ferait échouer le contrôle à cause de
+   code déjà condamné. */
+const EXEMPTS = [path.join('wms', 'migrations'), '__pycache__', 'node_modules',
+                 '_a_supprimer'];
+
+function fichiers(dossier, extensions) {
+  const trouves = [];
+  const descendre = (d) => {
+    let entrees;
+    try { entrees = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entrees) {
+      const complet = path.join(d, e.name);
+      if (EXEMPTS.some(x => complet.includes(x))) continue;
+      if (e.isDirectory()) descendre(complet);
+      else if (extensions.includes(path.extname(e.name))) trouves.push(complet);
+    }
+  };
+  descendre(path.join(RACINE, dossier));
+  return trouves;
+}
+
+for (const [dossier, extensions] of A_BALAYER) {
+  for (const chemin of fichiers(dossier, extensions)) {
+    const lignes = fs.readFileSync(chemin, 'utf8').split('\n');
+    lignes.forEach((ligne, i) => {
+      for (const mot of MOTS_ECARTES) {
+        if (ligne.includes(mot)) {
+          erreurs.push(`${path.relative(RACINE, chemin)}:${i + 1} contient `
+            + `« ${mot} ». Le mot de la maison est « emplacement » — y compris `
+            + `dans les commentaires, parce que c'est là qu'on le relit et `
+            + `qu'il revient : ${ligne.trim().slice(0, 70)}`);
+          return;
+        }
+      }
+    });
+  }
+}
+
 if (erreurs.length) {
   console.error('Interface : ' + erreurs.length + ' problème(s)');
   erreurs.forEach(e => console.error('  - ' + e));

@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import (Count, IntegerField, Max, OuterRef, Prefetch, Q,
                               Subquery, Sum)
 from django.db.models.functions import Coalesce
+from django.db import transaction
 from django.db.models.deletion import ProtectedError
 import time
 from django.conf import settings
@@ -23,8 +24,8 @@ from . import (export_inventaire, lecture_fiche, ocr_fiche, services, services_c
                services_import)
 from .models import (Article, Cabine, CabineAttendue, Categorie, Occupation,
                      Emplacement, EtatCabine, ModeleCabine, Mouvement, MouvementCabine,
-                     Reception, Stock, Zone)
-from .permissions import EstAdministrateur
+                     Reception, Stock, Utilisateur, Zone)
+from .permissions import EstAdministrateur, EstAdministrateurStrict
 from .serializers import (ArticleSerializer, CabineAttendueSerializer, CabineSerializer,
                           OccupationSerializer, CategorieSerializer,
                           EmplacementSerializer, EtatCabineSerializer,
@@ -126,7 +127,7 @@ class EmplacementViewSet(viewsets.ModelViewSet):
 
         `?pour_cabine=<id>` change la réponse, et c'est nécessaire : un grand
         modèle ne se glisse pas à côté d'une autre cabine. Sans cela l'écran
-        proposerait « Gauche » à une cabine qui prend la travée entière, et le
+        proposerait « Gauche » à une cabine qui prend l'emplacement entier, et le
         serveur refuserait au dernier moment — après que le cariste l'a posée.
 
         Le paramètre ne s'appelle pas `cabine` : ce nom est déjà celui du filtre
@@ -171,7 +172,7 @@ class EmplacementViewSet(viewsets.ModelViewSet):
                 "id": cabine.id,
                 "numero": cabine.numero,
                 "modele": cabine.modele,
-                "toute_la_travee": cabine.prend_toute_la_travee,
+                "tout_l_emplacement": cabine.prend_tout_l_emplacement,
             } if cabine is not None else None),
         })
 
@@ -866,6 +867,76 @@ class CabineViewSet(viewsets.ModelViewSet):
             cabine=self.get_object(), utilisateur=request.user,
             motif=(request.data.get("motif") or "")[:255]))
 
+    #: Le mot à retaper pour vider le stock. Un POST accidentel — un bouton
+    #: touché deux fois, une requête rejouée par le navigateur — ne doit pas
+    #: vider un entrepôt.
+    MOT_POUR_VIDER = "EFFACER"
+
+    @action(detail=False, methods=["get", "post"],
+            permission_classes=[EstAdministrateurStrict])
+    def vider_le_stock(self, request):
+        """Efface TOUTES les cabines et leur journal. Rien d'autre.
+
+        Pourquoi une action dans l'application alors que `manage.py
+        reinitialiser` existe : la remise à zéro sert PENDANT les essais,
+        plusieurs fois de suite, et le terminal est sur le serveur — pas dans la
+        poche de la personne qui teste. La commande reste le geste de la mise en
+        service ; celle-ci est le geste courant, et elle est volontairement plus
+        étroite.
+
+        Ce qu'elle ne touche pas, et c'est le point : les emplacements, les
+        zones, les comptes, le fichier de production et les réglages de taille de
+        modèle. Effacer le fichier de production désarmerait au passage la règle
+        « une cabine non annoncée ne s'enregistre pas », et il faudrait réimporter
+        2 000 lignes pour pouvoir entrer la première cabine.
+
+        Le journal part avec les cabines : il ne survit pas à ce qu'il raconte.
+        `MouvementCabine.cabine` est en SET_NULL, donc l'effacer d'abord évite
+        de laisser des lignes orphelines qui parleraient de cabines disparues.
+        """
+        # GET : ce que le POST effacerait. L'ecran a besoin de ces nombres pour
+        # annoncer la portee du geste ; les afficher au conditionnel serait pire
+        # que ne rien afficher.
+        if request.method == "GET":
+            return Response(self._etat_du_stock())
+
+        mot = str(request.data.get("confirmation") or "").strip()
+        if mot != self.MOT_POUR_VIDER:
+            raise ErreurAPI(
+                f"Pour vider le stock, retapez « {self.MOT_POUR_VIDER} ». "
+                "L'opération est irréversible et n'est pas journalisée : c'est le "
+                "journal lui-même qui part.")
+
+        with transaction.atomic():
+            journal = MouvementCabine.objects.count()
+            cabines = Cabine.objects.count()
+            MouvementCabine.objects.all().delete()
+            Cabine.objects.all().delete()
+
+        logger.warning("Stock des cabines vidé par %s : %s cabines, %s lignes de journal",
+                       getattr(request.user, "username", "?"), cabines, journal)
+        etat = self._etat_du_stock()
+        etat.update({"cabines": cabines, "journal": journal, "efface": True})
+        return Response(etat)
+
+    def _etat_du_stock(self):
+        """Ce que vider effacerait, et ce qui resterait. Une seule definition :
+        l'ecran annonce exactement ce que le POST renvoie ensuite."""
+        return {
+            "efface": False,
+            "mot": self.MOT_POUR_VIDER,
+            "cabines": Cabine.objects.count(),
+            "rangees": Occupation.objects.values("cabine").distinct().count(),
+            "journal": MouvementCabine.objects.count(),
+            "conserves": {
+                "emplacements": Emplacement.objects.count(),
+                "zones": Zone.objects.count(),
+                "comptes": Utilisateur.objects.count(),
+                "cabines_attendues": CabineAttendue.objects.count(),
+                "modeles_regles": ModeleCabine.objects.count(),
+            },
+        }
+
     @action(detail=True, methods=["post"])
     def chantier(self, request, pk=None):
         return self._run(lambda: services_cabines.affecter_chantier(
@@ -926,7 +997,7 @@ def referentiels_cabine(request):
         # lot a été accepté, aucun ne l'a su et tous continuaient à refuser
         # « 251213-1 » au clavier avant même que le serveur soit consulté.
         # Les grands modèles, pour que l'écran puisse le dire AVANT le scan de
-        # l'emplacement : « cette cabine prendra toute la travée ».
+        # l'emplacement : « cette cabine prendra tout l'emplacement ».
         "grands_modeles": sorted(ModeleCabine.objects.filter(grand=True)
                                  .values_list("nom", flat=True)),
         "aide_chantier": Cabine.AIDE_CHANTIER,
@@ -946,7 +1017,7 @@ class ModeleCabineViewSet(viewsets.ModelViewSet):
     tous les modèles VUS dans le fichier de production et dans le stock. Un
     modèle qui apparaît au prochain import se règle donc sans que personne ait à
     le créer, et sans qu'on découvre son existence le jour où une cabine ne
-    rentre pas dans sa travée.
+    rentre pas dans son emplacement.
     """
 
     queryset = ModeleCabine.objects.all()
@@ -987,7 +1058,7 @@ class ModeleCabineViewSet(viewsets.ModelViewSet):
             "modeles": lignes,
             "nb_grands": sum(1 for ligne in lignes if ligne["grand"]),
             # Ce que le dernier reclassement a laissé derrière lui.
-            "travees_hors_regle": services_cabines.travees_hors_regle(),
+            "emplacements_hors_regle": services_cabines.emplacements_hors_regle(),
         })
 
     @action(detail=False, methods=["post"])

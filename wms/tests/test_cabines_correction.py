@@ -136,7 +136,7 @@ class SuppressionCabineTest(BaseCorrection):
     def test_cabine_avec_historique_demande_confirmation(self):
         c = self.cabine()
         services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user)
+                                        utilisateur=self.user, motif="paroi à reprendre")
         refus = self.client.delete(f"/api/cabines/{c.id}/")
         self.assertEqual(refus.status_code, 400)
         self.assertIn("corriger la fiche", " ".join(refus.data["erreur"]).lower())

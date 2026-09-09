@@ -103,8 +103,8 @@ class Zone(models.Model):
 
 class Emplacement(models.Model):
     #: Mode de rangement des cabines, réglable emplacement par emplacement.
-    #: « gd » : deux places nommées, une cabine chacune (travée de rack) — ou une
-    #: seule cabine qui prend la travée entière, si c'est un grand modèle.
+    #: « gd » : deux places nommées, une cabine chacune (rang de rack) — ou une
+    #: seule cabine qui prend l'emplacement entier, si c'est un grand modèle.
     #: « illimite » : pas de place nommée, autant de cabines que nécessaire
     #: (zone tampon « à ranger », aire de sortie prod…).
     GD, ILLIMITE = "gd", "illimite"
@@ -303,9 +303,9 @@ class Cabine(models.Model):
     STATUTS = [(LIBRE, "Conforme"), (QUARANTAINE, "En quarantaine"),
                (ENVOYE, "Envoyée")]
 
-    #: Deux places, plus trois. Une travée tenait trois cabines quand les modèles
-    #: étaient plus petits ; elle en tient deux aujourd'hui, et une seule quand
-    #: c'est un grand modèle — voir `ModeleCabine`. « Milieu » a donc disparu :
+    #: Deux places, plus trois. Un emplacement tenait trois cabines quand les
+    #: modèles étaient plus petits ; il en tient deux aujourd'hui, et une seule
+    #: quand c'est un grand modèle — voir `ModeleCabine`. « Milieu » a disparu :
     #: le garder « au cas où » aurait laissé l'écran proposer une place qui
     #: n'existe pas, et un cariste y aurait rangé une cabine.
     GAUCHE, DROITE = "G", "D"
@@ -492,8 +492,8 @@ class Cabine(models.Model):
         return ", ".join(o.position for o in self.emplacements_occupes)
 
     @property
-    def prend_toute_la_travee(self):
-        """Cette cabine occupe-t-elle la travée entière ?
+    def prend_tout_l_emplacement(self):
+        """Cette cabine occupe-t-elle l'emplacement entier ?
 
         Lu à chaque rangement plutôt que stocké sur la cabine : la taille est une
         propriété du MODÈLE, et le jour où un modèle est reclassé, les cabines
@@ -535,10 +535,10 @@ class Cabine(models.Model):
 class ModeleCabine(models.Model):
     """La taille d'un modèle de cabine, et rien d'autre.
 
-    Deux cabines tiennent dans une travée — une seule si c'est un grand modèle.
-    La liste des grands modèles ne peut pas vivre dans le code : le catalogue
-    bouge, et « COLLAB » était déjà annoncé comme grand modèle avant d'apparaître
-    dans un fichier de production. Elle se règle donc à l'écran.
+    Deux cabines tiennent dans un emplacement — une seule si c'est un grand
+    modèle. La liste des grands modèles ne peut pas vivre dans le code : le
+    catalogue bouge, et « COLLAB » était déjà annoncé comme grand modèle avant
+    d'apparaître dans un fichier de production. Elle se règle donc à l'écran.
 
     Un modèle inconnu compte pour NORMAL. C'est le choix qui laisse ranger : un
     modèle nouveau apparaît dans l'écran des modèles au premier import, marqué
@@ -557,7 +557,7 @@ class ModeleCabine(models.Model):
 
     nom = models.CharField("modèle", max_length=120)
     cle = models.CharField("clé de comparaison", max_length=120, unique=True)
-    grand = models.BooleanField("prend toute la travée", default=False)
+    grand = models.BooleanField("prend tout l'emplacement", default=False)
     modifie_le = models.DateTimeField("modifié le", auto_now=True)
     modifie_par = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
@@ -580,7 +580,7 @@ class ModeleCabine(models.Model):
 
     @classmethod
     def grands(cls):
-        """Les clés des modèles qui prennent toute la travée."""
+        """Les clés des modèles qui prennent tout l'emplacement."""
         return set(cls.objects.filter(grand=True).values_list("cle", flat=True))
 
     @classmethod
@@ -591,7 +591,7 @@ class ModeleCabine(models.Model):
         return cls.objects.filter(cle=cle, grand=True).exists()
 
     def __str__(self):
-        return f"{self.nom} — {'toute la travée' if self.grand else 'une place'}"
+        return f"{self.nom} — {'tout l’emplacement' if self.grand else 'une place'}"
 
 
 class Occupation(models.Model):
@@ -599,7 +599,8 @@ class Occupation(models.Model):
 
     Une cabine occupe UN emplacement dans l'immense majorité des cas. Il arrive
     qu'elle en occupe plusieurs — un morceau posé ailleurs faute de place dans la
-    travée. Tant que la position vivait sur la cabine, il fallait choisir : soit
+    l'emplacement. Tant que la position vivait sur la cabine, il fallait
+    choisir : soit
     écraser la première position par la seconde, soit créer une deuxième fiche et
     perdre l'unité de la cabine. Cette table tranche : la cabine reste une, ses
     emplacements sont une liste.
@@ -613,13 +614,16 @@ class Occupation(models.Model):
     """
     #: Les places STOCKABLES, qui ne sont pas les places CHOISISSABLES. « T »
     #: n'apparaît dans aucun écran de choix : personne ne décide qu'une cabine
-    #: prend toute la travée, c'est son modèle qui le décide. Mais il faut bien
+    #: prend tout l'emplacement, c'est son modèle qui le décide. Mais il faut
     #: l'écrire quelque part, et une place nommée le dit mieux qu'une place vide
     #: — laquelle veut déjà dire « emplacement à capacité illimitée ».
     #: La contrainte d'unicité (emplacement, place) fait le reste : deux cabines
-    #: ne peuvent pas prendre la même travée entière.
-    GAUCHE, DROITE, TRAVEE = "G", "D", "T"
-    PLACES = [(GAUCHE, "Gauche"), (DROITE, "Droite"), (TRAVEE, "Toute la travée")]
+    #: ne peuvent pas prendre le même emplacement entier.
+    GAUCHE, DROITE, ENTIER = "G", "D", "T"
+    #: Le code stocké reste « T » — l'historique déjà écrit doit rester lisible.
+    #: Seul le libellé a changé : le mot d'avant ne fait pas partie du
+    #: vocabulaire de la maison, c'est « emplacement » qu'on dit devant le rack.
+    PLACES = [(GAUCHE, "Gauche"), (DROITE, "Droite"), (ENTIER, "Tout l'emplacement")]
 
     cabine = models.ForeignKey("Cabine", on_delete=models.CASCADE, related_name="occupations")
     #: Rang d'enregistrement, 1..n. Le premier est celui qu'affichent les écrans
@@ -669,10 +673,19 @@ class Occupation(models.Model):
 
     @property
     def position(self):
-        """« AC5601·G » en mode places, « AC5601 » seul en capacité illimitée."""
+        """« AC5601·G » quand la cabine partage l'emplacement, « AC5601 » seul
+        quand elle le prend en entier — ou en capacité illimitée.
+
+        Le suffixe « ·T » n'apparaît nulle part. Il ne désigne pas un endroit, il
+        dit « partout » : « AC550·T » se lisait comme un code de rack qui n'existe
+        sur aucune étiquette, et on le cherchait. L'étendue se dit sur la fiche de
+        l'emplacement — « Tout l'emplacement » — là où elle a un sens.
+        """
         if not self.emplacement_id:
             return ""
-        return f"{self.emplacement.code}·{self.place}" if self.place else self.emplacement.code
+        if not self.place or self.place == self.ENTIER:
+            return self.emplacement.code
+        return f"{self.emplacement.code}·{self.place}"
 
     @property
     def libelle_court(self):

@@ -57,3 +57,21 @@ class EstAdministrateur(BasePermission):
         if request.method in SAFE_METHODS:
             return True
         return bool(getattr(utilisateur, "est_administrateur", False))
+
+
+class EstAdministrateurStrict(EstAdministrateur):
+    """Comme `EstAdministrateur`, mais la LECTURE aussi est réservée.
+
+    `EstAdministrateur` ouvre les GET parce que l'écran d'entrée a besoin de
+    lire le fichier de production pour se pré-remplir. Ici, il n'y a rien à
+    lire pour travailler : la lecture annonce la portée d'un geste
+    d'administration. L'ouvrir afficherait à un cariste des nombres qu'il ne
+    peut rien en faire, sous un bouton qui répondra 403.
+    """
+
+    message = "Cette opération est réservée aux comptes administrateurs."
+
+    def has_permission(self, request, view):
+        utilisateur = request.user
+        return bool(utilisateur and utilisateur.is_authenticated
+                    and getattr(utilisateur, "est_administrateur", False))

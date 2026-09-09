@@ -8,6 +8,7 @@ quand » est précisément ce que l'exploitation demande.
 Règles portées ici :
 - une place (emplacement × G/M/D) ne porte qu'une cabine ;
 - une cabine envoyée est sortie de l'entrepôt : plus aucun mouvement possible ;
+- la mise en quarantaine et la sortie d'emplacement exigent un motif écrit ;
 - la sortie d'emplacement et l'envoi exigent un n° de chantier, y compris pour une
   cabine express — c'est la seule contrainte qu'express ne relâche pas.
 """
@@ -66,11 +67,16 @@ def _nom(utilisateur):
 
 
 def _libelle(emplacement, place):
-    """« Zone / A001·G » — recopié dans l'historique pour survivre aux suppressions."""
+    """« Zone / A001·G » — recopié dans l'historique pour survivre aux suppressions.
+
+    Un emplacement pris en entier s'écrit sans suffixe : « ·T » ne désigne aucun
+    endroit, et le journal est relu par des humains devant un rack.
+    """
     if not emplacement:
         return ""
     zone = emplacement.zone_cabine.nom if emplacement.zone_cabine_id else ""
-    position = f"{emplacement.code}·{place}" if place else emplacement.code
+    entier = (not place) or place == Occupation.ENTIER
+    position = emplacement.code if entier else f"{emplacement.code}·{place}"
     return f"{zone} / {position}" if zone else position
 
 
@@ -105,7 +111,8 @@ def _refuser_si_envoyee(cabine):
 def occupations_presentes(emplacement):
     """Occupations réelles de cet emplacement, quel que soit son mode.
 
-    Une cabine peut occuper cette travée et se prolonger trois travées plus loin :
+    Une cabine peut occuper cet emplacement et se prolonger trois rangs plus
+    loin :
     ce sont les occupations qu'on compte, pas les cabines.
     """
     return (Occupation.objects.filter(emplacement=emplacement)
@@ -133,11 +140,11 @@ def places_libres(emplacement, cabine=None):
         return []
     prises = set(occupations_presentes(emplacement).exclude(place="")
                  .values_list("place", flat=True))
-    # Une travée prise en entier ne laisse rien, quel que soit ce qui arrive.
-    if Occupation.TRAVEE in prises:
+    # Un emplacement pris en entier ne laisse rien, quel que soit ce qui arrive.
+    if Occupation.ENTIER in prises:
         return []
-    if cabine is not None and cabine.prend_toute_la_travee:
-        return [] if prises else [Occupation.TRAVEE]
+    if cabine is not None and cabine.prend_tout_l_emplacement:
+        return [] if prises else [Occupation.ENTIER]
     return [p for p in PLACES if p not in prises]
 
 
@@ -152,7 +159,7 @@ def occupation(emplacement):
     Vide pour un emplacement à capacité illimitée : il n'a pas de place nommée,
     ses occupants se lisent par `occupations_presentes()`.
 
-    Une cabine qui prend la travée entière remplit les DEUX places : c'est ce
+    Une cabine qui prend l'emplacement entier remplit les DEUX places : c'est ce
     qu'on voit devant le rack, et l'écran affiche ainsi « occupée par 26_02_49 »
     des deux côtés au lieu d'une place mystérieusement vide où rien ne rentre.
     """
@@ -160,7 +167,7 @@ def occupation(emplacement):
         return {}
     etat = {p: None for p in PLACES}
     for occ in occupations_presentes(emplacement).exclude(place=""):
-        if occ.place == Occupation.TRAVEE:
+        if occ.place == Occupation.ENTIER:
             for p in PLACES:
                 etat[p] = occ
         elif occ.place in etat:
@@ -171,12 +178,12 @@ def occupation(emplacement):
     return etat
 
 
-def travees_hors_regle():
-    """Travées où deux cabines cohabitent alors que l'une prend toute la place.
+def emplacements_hors_regle():
+    """Emplacements où deux cabines cohabitent alors que l'une prend toute la place.
 
     Régler « QUATTRO » sur grand modèle ne déplace aucune cabine, et c'est
     voulu : le WMS écrirait une position que personne n'a vérifiée devant le
-    rack. Mais la travée qui portait un QUATTRO et une DUO côte à côte ne
+    rack. Mais l'emplacement qui portait un QUATTRO et une DUO côte à côte ne
     respecte plus la règle, et il faut le dire — c'est un travail à faire dans
     l'entrepôt, pas une donnée à corriger à l'écran. Sans cette liste, le
     reclassement serait silencieux et l'écart se découvrirait un par un, au
@@ -291,14 +298,15 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
     Le mode de l'emplacement commande : « gd » exige une place G ou D libre,
     « illimite » n'en accepte aucune et ne limite pas le nombre de cabines.
 
-    Un grand modèle ne choisit rien : il prend la travée entière, et n'entre que
-    si elle est vide. La place envoyée par l'écran est alors corrigée plutôt que
+    Un grand modèle ne choisit rien : il prend l'emplacement entier, et n'entre
+    que s'il est vide. La place envoyée par l'écran est alors corrigée plutôt que
     refusée — c'est le modèle qui décide, pas l'écran, et un écran qui ignore
     encore la règle ne doit pas empêcher de ranger.
 
     Sans précision, une cabine déjà rangée est DÉPLACÉE — le comportement de
     toujours. `ajouter=True` lui donne un emplacement DE PLUS, sans libérer le
-    premier : c'est le cas de la cabine qui ne tient pas dans une seule travée.
+    premier : c'est le cas de la cabine qui ne tient pas dans un seul
+    emplacement.
     """
     _refuser_si_envoyee(cabine)
     if not emplacement.actif:
@@ -311,25 +319,25 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
             raise ErreurCabine(
                 f"L'emplacement {emplacement.code} est à capacité illimitée : "
                 "il ne se range pas par place G ou D.")
-    elif cabine.prend_toute_la_travee:
-        place = Occupation.TRAVEE
+    elif cabine.prend_tout_l_emplacement:
+        place = Occupation.ENTIER
         voisine = (occupations_presentes(emplacement).exclude(pk=cible.pk)
                    .exclude(place="").select_related("cabine").first())
         if voisine:
             raise ErreurCabine(
-                f"{cabine.numero} est un {cabine.modele} : elle prend toute la "
-                f"travée. {emplacement.code} porte déjà la cabine "
-                f"{voisine.cabine.numero} — libérez la travée, ou choisissez-en "
-                "une autre.")
+                f"{cabine.numero} est un {cabine.modele} : elle prend tout "
+                f"l'emplacement. {emplacement.code} porte déjà la cabine "
+                f"{voisine.cabine.numero} — libérez l'emplacement, ou "
+                "choisissez-en un autre.")
     else:
         if place not in PLACES:
             raise ErreurCabine(f"Place inconnue : « {place} ». Attendu G ou D.")
-        entiere = (occupations_presentes(emplacement).exclude(pk=cible.pk)
-                   .filter(place=Occupation.TRAVEE).select_related("cabine").first())
-        if entiere:
+        entier = (occupations_presentes(emplacement).exclude(pk=cible.pk)
+                  .filter(place=Occupation.ENTIER).select_related("cabine").first())
+        if entier:
             raise ErreurCabine(
-                f"{emplacement.code} est occupée en entier par la cabine "
-                f"{entiere.cabine.numero}, un {entiere.cabine.modele or 'grand modèle'} : "
+                f"{emplacement.code} est occupé en entier par la cabine "
+                f"{entier.cabine.numero}, un {entier.cabine.modele or 'grand modèle'} : "
                 "il n'y reste aucune place.")
 
     if cible.emplacement_id == emplacement.pk and cible.place == place:
@@ -367,11 +375,20 @@ def sortir_de_l_emplacement(*, cabine, occupation=None, utilisateur=None, note="
     circuler sans (express, salon, occasion) : c'est la règle explicite du métier
     (« on ne doit pas pouvoir sortir sans attribuer un numéro de chantier »).
     L'exemption vaut pour entrer en stock, jamais pour en sortir.
+
+    Exige aussi un MOTIF. Sortir une cabine de son emplacement libère une place
+    et laisse la cabine nulle part : le lendemain, personne ne sait si elle est
+    partie en pose, remontée à l'atelier ou simplement déplacée à la main. Le
+    motif est la seule chose qui répondra, et il coûte une phrase.
     """
     _refuser_si_envoyee(cabine)
     poses = cabine.emplacements_occupes
     if not poses:
         raise ErreurCabine(f"La cabine {cabine.numero} n'est rangée nulle part.")
+    if not (note or "").strip():
+        raise ErreurCabine(
+            "Dites pourquoi vous la sortez de son emplacement : le motif est "
+            "écrit au journal, et c'est lui qui dira où elle est passée.")
     if not cabine.chantier:
         raise ErreurCabine(
             "Affectez un n° de chantier à cette cabine avant de la sortir de son emplacement.")
@@ -400,13 +417,20 @@ def changer_statut(*, cabine, statut, utilisateur=None, motif=""):
     par la quarantaine, et bloquer un enchaînement légitime arrêterait la production.
     Seul l'envoi est verrouillé (terminal, et il exige un chantier).
 
-    `motif` est facultatif — jamais bloquant au poste — mais consigné dans l'historique :
-    c'est lui qui explique pourquoi une quarantaine a été posée puis levée.
+    `motif` est EXIGÉ pour poser une quarantaine, facultatif pour le reste. Une
+    quarantaine bloque une cabine et empêche son départ : sans la raison écrite
+    au journal, personne ne sait ce qu'il faut réparer pour la lever, et la
+    cabine reste immobile des semaines. Le lever ne l'exige pas — constater
+    qu'une cabine est redevenue conforme n'a pas besoin d'explication.
     """
     _refuser_si_envoyee(cabine)
     valides = [c for c, _ in Cabine.STATUTS]
     if statut not in valides:
         raise ErreurCabine(f"Statut inconnu : « {statut} ».")
+    if statut == Cabine.QUARANTAINE and not (motif or "").strip():
+        raise ErreurCabine(
+            "Dites pourquoi cette cabine passe en quarantaine : le motif est "
+            "écrit au journal, et c'est lui qui dira quoi réparer pour la lever.")
     if statut == Cabine.ENVOYE:
         return envoyer(cabine=cabine, utilisateur=utilisateur, note=motif)
     if statut == cabine.statut:
@@ -430,7 +454,7 @@ def envoyer(*, cabine, utilisateur=None, note=""):
 
     avant_statut = cabine.statut
     # `_libelle` et non `position` : le journal nomme la ZONE en plus de la
-    # travée (« À ranger cabines / C001·M »). Sans elle, l'archive perd où la
+    # place (« À ranger cabines / C001·G »). Sans elle, l'archive perd où la
     # cabine se trouvait dans l'entrepôt, pas seulement dans quel rack.
     avant_position = ", ".join(_libelle(c.emplacement, c.place)
                                for c in cabine.emplacements_occupes)
@@ -440,7 +464,7 @@ def envoyer(*, cabine, utilisateur=None, note=""):
     cabine.envoi_date = maintenant
     cabine.save(update_fields=["statut", "statut_date", "envoi_date"])
     # Tous les emplacements sont libérés : la cabine part entière, y compris le
-    # morceau qui dormait dans une autre travée.
+    # morceau qui dormait dans un autre emplacement.
     cabine.occupations.update(emplacement=None, place="")
     _tracer(cabine, MouvementCabine.ENVOI, utilisateur, depuis=avant_position,
             statut_avant=avant_statut, statut_apres=Cabine.ENVOYE, note=note)
