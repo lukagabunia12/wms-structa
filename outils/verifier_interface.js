@@ -261,7 +261,41 @@ for (const nom of ['layout', 'go', 'api', 'toast', 'modale', 'confirmer', 'liste
   if (!declares.has(nom)) erreurs.push(`Fonction de base manquante : ${nom}()`);
 }
 
-/** 4. Le vocabulaire de la maison : le mot écarté ne revient pas.
+/** 4. Aucune poignée posée sur un bouton qui n'existe plus.
+ *
+ *  Ce défaut a frappé trois fois, toujours pareil : on retire un bouton du HTML
+ *  et on oublie le `$('#leBouton').onclick = …` juste en dessous. `onclick` sur
+ *  `null` lève, donc TOUT le reste de la fonction est sauté — l'écran reste
+ *  blanc, ou s'affiche à moitié, et rien ne le dit à qui n'a pas ouvert les
+ *  outils de développement. `node --check` passe : le fichier est valide.
+ *
+ *  On cherche le signal exact de ces trois cas : un id atteint par `$('#x')` et
+ *  qui n'apparaît NULLE PART ailleurs dans le fichier. La formulation est
+ *  étroite volontairement — une version plus large signalait neuf id sains,
+ *  ceux que fabriquent `champChantier('scha')`, `choixRack('pRack')` ou
+ *  `gesteBouton('gEntrer')`, et un contrôle qui crie sur du code sain finit
+ *  désactivé.
+ *
+ *  Les id construits par interpolation (`id="e_${cle}"`) sont reconnus par leur
+ *  préfixe, relevé dans le source : une liste tenue à la main aurait vieilli. */
+const PREFIXES_DYNAMIQUES = [...source.matchAll(/id="([A-Za-z][\w-]*)\$\{/g)]
+  .map(m => m[1]);
+
+const acces = new Map();
+for (const m of source.matchAll(/\$\('#([A-Za-z][\w-]*)'\)/g)) {
+  acces.set(m[1], (acces.get(m[1]) || 0) + 1);
+}
+for (const [nom, combien] of acces) {
+  if (PREFIXES_DYNAMIQUES.some(p => nom.startsWith(p))) continue;
+  const partout = (source.match(new RegExp(`\\b${nom}\\b`, 'g')) || []).length;
+  if (partout > combien) continue;
+  erreurs.push(`« ${nom} » est atteint par $('#${nom}') mais aucun élément ne `
+    + `porte cet id : la poignée survit à son bouton. Au premier appel, `
+    + `onclick sur null lève et le reste de la fonction ne s'exécute pas — `
+    + `l'écran reste blanc, sans message.`);
+}
+
+/** 5. Le vocabulaire de la maison : le mot écarté ne revient pas.
  *
  *  « Emplacement » est le mot qu'on dit devant le rack ; l'autre a été retiré
  *  de l'interface sur demande. Il est revenu deux fois, et pas par négligence :

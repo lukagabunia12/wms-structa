@@ -3435,11 +3435,8 @@ async function ficheCabine(cabine, retour) {
       ${statutsPossibles.map(s => `<button class="btn ghost" data-vers="${s.code}"
         >${esc(verbeStatut(c, s.code))}</button>`).join('')}
       <div class="sec" style="margin-top:14px">${c.position ? 'Changer d’emplacement' : 'Ranger cette cabine'}</div>
-      <div class="row">
-        <button class="btn ghost" id="fScanEmp" style="margin-top:0">Scanner l'emplacement</button>
-        <button class="btn ghost" id="fCodeEmp" style="margin-top:0">Saisir le code</button>
-      </div>
-      <button class="btn ghost" id="fRanger">Choisir dans la liste</button>
+      <button class="btn ghost" id="fRanger">${icon('in', 17)} ${
+        c.position ? 'La ranger ailleurs' : 'Choisir son emplacement'}</button>
       ${c.position ? '<button class="btn ghost" id="fSortir">Sortir de l’emplacement</button>' : ''}
       <button class="btn orange" id="fEnvoyer">Envoyer (définitif)</button>
       <div id="fZone"></div>`;
@@ -3448,93 +3445,12 @@ async function ficheCabine(cabine, retour) {
       () => confirmerChangementStatut(c, b.dataset.vers, () => ficheCabine(c, retour)));
 
     // Retient la cabine, puis renvoie au scanner : le scan de l'emplacement la range.
-    $('#fScanEmp').onclick = () => { CABINE_A_RANGER = c; go('trouver'); };
-
-    // Saisie du code au clavier : indispensable quand la caméra ne peut pas servir
-    // (étiquette abîmée, gants, éclairage) — c'est le repli du scan, pas un luxe.
-    $('#fCodeEmp').onclick = () => {
-      $('#fZone').innerHTML = `<label>Code de l'emplacement</label>
-        <input id="fCode" placeholder="Ex. C001" autocomplete="off">
-        <div class="list" id="fCodeRes"></div>`;
-      const champ = $('#fCode');
-      champ.focus();
-      champ.oninput = debounce(async () => {
-        const t = champ.value.trim();
-        if (t.length < 1) { $('#fCodeRes').innerHTML = ''; return; }
-        try {
-          const emps = (await api('/emplacements/?search=' + encodeURIComponent(t))).results || [];
-          $('#fCodeRes').innerHTML = emps.length
-            ? emps.slice(0, 6).map(e => `<div class="item" data-e="${e.id}">
-                <div class="r">${esc(e.code)}</div>
-                <div class="d">${esc(e.zone_cabine_nom || 'Sans zone')} · ${esc(e.mode_libelle)}</div>
-                <div class="meta">${e.illimite ? e.nb_cabines + ' cabine(s)' : 'places libres : ' + (e.places_libres.join(', ') || 'aucune')}</div></div>`).join('')
-            : '<div class="empty">Aucun emplacement</div>';
-          $('#fCodeRes').querySelectorAll('[data-e]').forEach(it => it.onclick = async () => {
-            const e = emps.find(x => String(x.id) === it.dataset.e);
-            try {
-              const d = await api(`/emplacements/${e.id}/places/?pour_cabine=${c.id}`);
-              if (d.complet) { toast(e.code + ' n’a plus de place libre pour cette cabine.', 'err'); return; }
-              // Ce chemin rangeait la cabine dans `d.libres[0]` — la première place
-              // libre — SANS RIEN DEMANDER, et annonçait « Rangée en C001·G ».
-              // Personne ne choisissait : une cabine posée à droite était écrite à
-              // gauche, et l'erreur ne se voyait qu'en allant la chercher. La place
-              // se touche ici comme partout ailleurs.
-              $('#fCodeRes').innerHTML = '';
-              champ.value = e.code;
-              $('#fZone').insertAdjacentHTML('beforeend',
-                `<div class="card" style="margin-top:12px">
-                   <div class="r" style="font-weight:700">Emplacement ${esc(e.code)}</div>
-                   ${blocPlaces(d)}
-                   <button class="btn orange" id="fCodeOk">Ranger en ${esc(e.code)}</button>
-                 </div>`);
-              const placeCode = choixPlace(d, $('#fCodeOk'));
-              $('#fCodeOk').onclick = async () => {
-                const choix = placeCode();
-                if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
-                try {
-                  const corps = { emplacement: e.id };
-                  if (choix) corps.place = choix;
-                  await api(`/cabines/${c.id}/ranger/`, { method: 'POST', body: corps });
-                  toast('Rangée en ' + e.code + (choix ? ' · ' + choix : ''), 'ok');
-                  ficheCabine(c, retour);
-                } catch (err) { toast(err.message, 'err'); }
-              };
-            } catch (err) { toast(err.message, 'err'); }
-          });
-        } catch (err) { toast(err.message, 'err'); }
-      }, 250);
-    };
-
-    $('#fRanger').onclick = async () => {
-      const emplacements = EMPS.filter(e => e.actif !== false);
-      if (!emplacements.length) { $('#fZone').innerHTML = '<div class="empty">Aucun emplacement.</div>'; return; }
-      $('#fZone').innerHTML = `<label>Emplacement</label>
-        <select id="fEmp">${emplacements.map(e => `<option value="${e.id}">${esc(e.code)}${e.zone_cabine_nom ? ' — ' + esc(e.zone_cabine_nom) : ''}</option>`).join('')}</select>
-        <div id="fPlaces"><div class="empty">Chargement des places…</div></div>`;
-      const majPlaces = async () => {
-        const bloc = $('#fPlaces');
-        try {
-          const d = await api(`/emplacements/${$('#fEmp').value}/places/?pour_cabine=${c.id}`);
-          if (d.complet) { bloc.innerHTML = '<div class="banner">Plus de place libre ici pour cette cabine : choisis un autre emplacement.</div>'; return; }
-          bloc.innerHTML = blocPlaces(d)
-            + '<button class="btn orange" id="fRangerOk">Confirmer</button>';
-          const placeF = choixPlace(d, $('#fRangerOk'));
-          $('#fRangerOk').onclick = async () => {
-            const choix = placeF();
-            if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
-            try {
-              const corps = { emplacement: $('#fEmp').value };
-              if (choix) corps.place = choix;
-              await api(`/cabines/${c.id}/ranger/`, { method: 'POST', body: corps });
-              toast('Cabine rangée', 'ok');
-              ficheCabine(c, retour);
-            } catch (e) { toast(e.message, 'err'); }
-          };
-        } catch (e) { bloc.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-      };
-      $('#fEmp').onchange = majPlaces;
-      majPlaces();
-    };
+    /* Les trois chemins de rangement — scan, saisie du code, liste — sont
+       maintenant UN écran, `ecranRangement`. Ils vivaient ici en trois
+       fermetures qui se ressemblaient, et la copie de la saisie du code était
+       celle qui marchait : celle du bloc d'après-création renvoyait vers cette
+       fiche, où il fallait appuyer une seconde fois sur le même libellé. */
+    $('#fRanger').onclick = () => ecranRangement(c, () => ficheCabine(c, retour));
 
     /* Reste pour l'ENVOI seul : il exige un n° de chantier, et ce chemin sait
        l'affecter avant de continuer. La sortie d'emplacement, elle, exige un
@@ -5191,6 +5107,170 @@ async function creerCabineDepuisEntree() {
   try { await creerCabine(corps); } catch (e) { toast(e.message, 'err'); }
 }
 
+/* --- Ranger une cabine : UN écran, trois façons d'y désigner l'emplacement ---
+   Ce geste vivait en trois endroits qui se ressemblaient : dans la fiche de la
+   cabine (trois boutons et leurs fermetures), dans le bloc affiché après une
+   création, et derrière le scan. Deux défauts en sont sortis :
+
+   - « Saisir le code », après une création, ouvrait la FICHE de la cabine — où
+     il fallait appuyer sur « Saisir le code » une seconde fois. Le libellé
+     promettait un champ et livrait un détour ;
+   - les gestes s'écrivaient sous le formulaire de création, donc sous
+     quarante-trois caractéristiques à dérouler.
+
+   D'où cet écran unique, qui est un ÉCRAN (`layout`) et non un bloc ajouté en
+   bas : le bouton « retour » du navigateur y fonctionne, et il s'ouvre en haut.
+   Le champ de code est posé et focalisé d'emblée — c'est la voie la plus
+   courante quand la caméra ne sert pas, et la faire mériter un appui de plus
+   n'apporte rien. */
+async function ecranRangement(cabine, retour) {
+  const revenir = retour || (() => ficheCabine(cabine));
+  const deja = (cabine.occupations || []).some(o => o.emplacement);
+
+  layout(`<button class="btn ghost retour" id="rgRetour">← Retour</button>
+    <h2 class="title">${deja ? 'Changer d’emplacement' : 'Ranger la cabine'}</h2>
+    <div class="card">
+      <div class="r" style="font-size:17px;font-weight:700">${esc(cabine.numero)}</div>
+      <div class="meta" style="margin-top:3px">Chantier ${cabine.chantier
+        ? esc(cabine.chantier) : '<em>à affecter</em>'}${
+        cabine.modele ? ' · ' + esc(cabine.modele) : ''}</div>
+      ${deja ? `<div class="meta" style="margin-top:5px">Actuellement : <b>${
+        esc(ouEstLaCabine(cabine))}</b>. La ranger ailleurs libère cette place.</div>` : ''}
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <div class="sec" style="margin-top:0">Où la posez-vous ?</div>
+      <label for="rgCode">Code de l'emplacement</label>
+      <input id="rgCode" placeholder="Ex. AC550" autocomplete="off"
+             autocapitalize="characters" spellcheck="false">
+      <div class="meta" style="margin-top:6px">Tapez les premières lettres : la
+        liste se réduit à mesure. Ou scannez l'étiquette QR du rack.</div>
+      <div class="list" id="rgResultats"></div>
+      <button class="btn ghost" id="rgScan">${icon('scan', 17)} Scanner l’emplacement</button>
+      <button class="btn ghost" id="rgListe">Voir tous les emplacements</button>
+      <div id="rgZone"></div>
+    </div>`, ongletCourant());
+
+  $('#rgRetour').onclick = revenir;
+  // Retient la cabine, puis renvoie au scanner : le scan de l'emplacement la range.
+  $('#rgScan').onclick = () => { CABINE_A_RANGER = cabine; go('trouver'); };
+
+  const champ = $('#rgCode');
+  champ.focus();
+  champ.oninput = debounce(() => chercherEmplacements(cabine, champ.value.trim(), revenir), 250);
+  champ.onkeydown = (ev) => {
+    /* Entrée sur un code complet : au poste on tape « AC550 » et on valide, on
+       ne cherche pas l'élément d'une liste à la souris. On prend le premier
+       résultat SEULEMENT s'il n'y en a qu'un — sinon on choisirait pour la
+       personne, ce qui est exactement l'erreur qu'on a corrigée sur les places. */
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    const items = document.querySelectorAll('#rgResultats [data-e]');
+    if (items.length === 1) items[0].click();
+  };
+
+  $('#rgListe').onclick = () => listerEmplacements(cabine, revenir);
+}
+
+/** Les emplacements qui correspondent à ce qu'on tape. */
+async function chercherEmplacements(cabine, texte, revenir) {
+  const zone = $('#rgResultats');
+  if (!zone) return;
+  if (!texte) { zone.innerHTML = ''; return; }
+  try {
+    const emps = (await api('/emplacements/?search=' + encodeURIComponent(texte))).results || [];
+    dessinerEmplacements(emps.slice(0, 8), cabine, revenir,
+                         'Aucun emplacement ne commence par « ' + texte + ' »');
+  } catch (e) {
+    zone.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+/** Tous les emplacements, pour qui préfère parcourir que taper. */
+async function listerEmplacements(cabine, revenir) {
+  const zone = $('#rgResultats');
+  if (!zone) return;
+  zone.innerHTML = '<div class="empty">Chargement…</div>';
+  try {
+    const emps = (await api('/emplacements/?page_size=200')).results || [];
+    dessinerEmplacements(emps, cabine, revenir, 'Aucun emplacement.');
+  } catch (e) {
+    zone.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+/* Une ligne par emplacement, avec de quoi choisir SANS ouvrir : la zone, le
+   mode, et ce qui reste libre. Un emplacement hors service reste visible et
+   dit pourquoi — le faire disparaître ferait chercher un code qui existe. */
+function dessinerEmplacements(emps, cabine, revenir, vide) {
+  const zone = $('#rgResultats');
+  if (!zone) return;
+  if (!emps.length) { zone.innerHTML = `<div class="empty">${esc(vide)}</div>`; return; }
+  zone.innerHTML = emps.map(e => {
+    const hs = e.actif === false;
+    const libres = e.illimite ? null : (e.places_libres || []);
+    return `<div class="item${hs ? ' condamnee' : ''}" ${hs ? '' : `data-e="${e.id}"`}>
+      <div class="r">${esc(e.code)}${hs ? ' <span class="etat hs">hors service</span>' : ''}</div>
+      <div class="d">${esc(e.zone_cabine_nom || 'Sans zone')} · ${esc(e.mode_libelle)}</div>
+      <div class="meta">${hs
+        ? esc(e.motif_inactif || 'Aucun motif enregistré.')
+        : (e.illimite ? `${e.nb_cabines} cabine${e.nb_cabines === 1 ? '' : 's'} ici`
+                      : (libres.length ? 'Places libres : ' + libres.join(', ')
+                                       : 'Aucune place libre'))}</div>
+    </div>`;
+  }).join('');
+
+  zone.querySelectorAll('[data-e]').forEach(it => it.onclick = () => {
+    const e = emps.find(x => String(x.id) === it.dataset.e);
+    ouvrirPlacesPour(cabine, e, revenir);
+  });
+}
+
+/** L'emplacement est choisi : reste à toucher la place. Jamais présélectionnée. */
+async function ouvrirPlacesPour(cabine, emplacement, revenir) {
+  const zone = $('#rgZone');
+  if (!zone) return;
+  zone.innerHTML = '<div class="empty">Lecture des places…</div>';
+  const champ = $('#rgCode');
+  if (champ) champ.value = emplacement.code;
+  const resultats = $('#rgResultats');
+  if (resultats) resultats.innerHTML = '';
+  try {
+    const d = await api(`/emplacements/${emplacement.id}/places/?pour_cabine=${cabine.id}`);
+    if (d.complet) {
+      zone.innerHTML = `<div class="banner">${esc(emplacement.code)} n’a plus de place
+        libre pour cette cabine.${d.actif === false && d.motif_inactif
+          ? ' Hors service : ' + esc(d.motif_inactif) + '.' : ''}
+        Choisissez un autre emplacement.</div>`;
+      return;
+    }
+    zone.innerHTML = `<div class="card" style="margin-top:12px">
+      <div class="r" style="font-weight:700">Emplacement ${esc(emplacement.code)}</div>
+      ${blocPlaces(d)}
+      <button class="btn orange" id="rgOk">Ranger en ${esc(emplacement.code)}</button>
+    </div>`;
+    const lirePlace = choixPlace(d, $('#rgOk'));
+    $('#rgOk').onclick = async () => {
+      const choix = lirePlace();
+      if (!sansPlaceAChoisir(d) && !choix) {
+        toast('Touchez la place où vous posez la cabine.', 'err');
+        return;
+      }
+      const bouton = $('#rgOk');
+      bouton.disabled = true;
+      try {
+        const corps = { emplacement: emplacement.id };
+        if (choix) corps.place = choix;
+        await api(`/cabines/${cabine.id}/ranger/`, { method: 'POST', body: corps });
+        toast('Rangée en ' + emplacement.code + (choix ? ' · ' + NOM_PLACE[choix] : ''), 'ok');
+        revenir();
+      } catch (err) { bouton.disabled = false; toast(err.message, 'err'); }
+    };
+  } catch (e) {
+    zone.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
 /** Création, puis les deux gestes qui suivent au poste : coller l'étiquette,
     ranger. Un seul endroit crée une cabine — les deux chemins d'entrée
     aboutissaient sinon à deux enchaînements différents. */
@@ -5198,18 +5278,12 @@ async function creerCabine(corps) {
   const c = await api('/cabines/', { method: 'POST', body: corps });
   toast('Cabine ' + c.numero + ' créée', 'ok');
   noterRecentCabine(c);
-  $('#apres').innerHTML = `<div class="card" style="margin-top:12px">
-    <div class="r">${esc(c.numero)} — ${esc(c.chantier || 'sans chantier')}</div>
-    <div class="sec" style="margin-top:12px">Ranger</div>
-    <div class="row">
-      <button class="btn ghost" id="aScan" style="margin-top:0">Scanner l'emplacement</button>
-      <button class="btn ghost" id="aFiche" style="margin-top:0">Saisir le code</button>
-    </div>
-    <button class="btn ghost" id="aPlus">Entrer une autre cabine</button>
-    <div id="aZone"></div></div>`;
-  $('#aPlus').onclick = renderEntree;
-  $('#aScan').onclick = () => { CABINE_A_RANGER = c; go('trouver'); };
-  $('#aFiche').onclick = () => ficheCabine(c, renderEntree);
+  /* Un ÉCRAN, pas un bloc ajouté sous le formulaire. Les gestes s'écrivaient
+     dans `#apres`, donc sous les quarante-trois caractéristiques de la cabine :
+     il fallait dérouler toute la page pour les trouver. Et « Saisir le code »
+     ouvrait la fiche de la cabine, où il fallait appuyer une seconde fois sur le
+     même libellé. Ici, la page suivante s'ouvre en haut, sur un champ prêt. */
+  ecranRangement(c, renderEntree);
   return c;
 }
 
