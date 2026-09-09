@@ -40,9 +40,14 @@ class NumeroDeSecoursTest(SimpleTestCase):
         self.assertEqual(champs["numero"], "26_03_47")
 
     def test_le_rattrapage_ne_casse_pas_une_fiche_complete(self):
+        """Une fiche qui porte tout ne rend QUE le numéro.
+
+        Le reste vient du fichier de production : le relire ici créerait une
+        seconde version des mêmes informations.
+        """
         texte = ("REVENDEUR MYAH\nCLIENT HAS\nN° DE CDE 251280\n"
                  "REF. CABINE 26_03_47\nCABINE QUATTRO\nTISSUS BK A2419")
         champs, manquants = analyser(texte)
         self.assertEqual(champs["numero"], "26_03_47")
-        self.assertEqual(champs["chantier"], "251280")
+        self.assertEqual(list(champs), ["numero"])
         self.assertEqual(manquants, [])

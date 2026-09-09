@@ -117,6 +117,16 @@ class Emplacement(models.Model):
     staging = models.BooleanField("zone de réception (à ranger)", default=False)
     code_barre = models.CharField(max_length=128, blank=True)
     actif = models.BooleanField(default=True)
+    #: Pourquoi cet emplacement est hors service, depuis quand et par qui. Un
+    #: booleen seul laisse la question sans reponse : devant un rack a moitie
+    #: vide, « pourquoi AC550 ne prend rien ? » n'a alors que la memoire de
+    #: quelqu'un pour reponse, et personne n'ose le remettre en service.
+    motif_inactif = models.CharField("motif d'inactivité", max_length=255,
+                                     blank=True, default="")
+    actif_le = models.DateTimeField("activé/désactivé le", null=True, blank=True)
+    actif_par = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="emplacements_actives", verbose_name="activé/désactivé par")
     zone_cabine = models.ForeignKey("Zone", null=True, blank=True, on_delete=models.SET_NULL,
                                     related_name="emplacements", verbose_name="zone de cabines")
     mode_places = models.CharField("mode de rangement", max_length=16,
@@ -692,6 +702,48 @@ class Occupation(models.Model):
         """« Emplacement 2 », ou « Emplacement 2 — plateau » si le contenu est dit."""
         base = f"Emplacement {self.numero}"
         return f"{base} — {self.libelle}" if self.libelle else base
+
+
+class PlaceCondamnee(models.Model):
+    """Une place hors service dans un emplacement par ailleurs utilisable.
+
+    Le cas qui l'a fait naître : un pilier devant la gauche de AC550. La droite
+    reçoit toujours une cabine. Désactiver l'emplacement entier aurait retiré du
+    stock une place saine, et personne n'aurait su laquelle des deux posait
+    problème.
+
+    Le motif est OBLIGATOIRE, comme pour une quarantaine et pour la même raison :
+    une place condamnée sans raison écrite reste condamnée des mois, parce que
+    plus personne ne sait s'il y avait un obstacle ou une erreur de manipulation.
+
+    Une cabine déjà posée là n'est jamais déplacée par le WMS : le service refuse
+    de condamner une place occupée et dit quelle cabine s'y trouve. Écrire une
+    position que personne n'a vérifiée devant le rack serait pire que le refus.
+    """
+
+    #: Les places condamnables sont celles qu'on peut choisir : gauche et droite.
+    #: « Tout l'emplacement » n'en est pas une — c'est ce que prend un grand
+    #: modèle, et pour le retirer du stock on désactive l'emplacement.
+    PLACES = [(Occupation.GAUCHE, "Gauche"), (Occupation.DROITE, "Droite")]
+
+    emplacement = models.ForeignKey(Emplacement, on_delete=models.CASCADE,
+                                    related_name="places_condamnees")
+    place = models.CharField(max_length=2, choices=PLACES)
+    motif = models.CharField(max_length=255)
+    cree_le = models.DateTimeField("condamnée le", auto_now_add=True)
+    cree_par = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="places_condamnees", verbose_name="condamnée par")
+
+    class Meta:
+        verbose_name = "place condamnée"
+        verbose_name_plural = "places condamnées"
+        ordering = ["emplacement__code", "place"]
+        constraints = [models.UniqueConstraint(fields=["emplacement", "place"],
+                                               name="place_condamnee_unique")]
+
+    def __str__(self):
+        return f"{self.emplacement.code}·{self.place} — {self.motif}"
 
 
 class MouvementCabine(models.Model):

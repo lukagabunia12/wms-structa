@@ -224,12 +224,18 @@ class ModificationEmplacementTest(BaseEmplacement):
                               format="json")
         self.assertEqual(r.status_code, 400)
 
-    def test_tous_les_champs_de_la_fiche_sont_modifiables(self):
-        """Aucun des trois anciens formulaires ne les proposait tous."""
+    def test_tous_les_champs_du_formulaire_sont_modifiables(self):
+        """Aucun des trois anciens formulaires ne les proposait tous.
+
+        `actif` n'en fait PAS partie, et c'est voulu : il a ses règles — motif
+        obligatoire, refus tant qu'une cabine est là — et son propre geste
+        (`/activation/`). Une case à cocher dans ce formulaire les contournait
+        toutes.
+        """
         zone = Zone.objects.create(nom="Attente départ", role=Zone.ENVOI)
         r = self.client.patch(f"/api/emplacements/{self.emp.id}/", {
             "code": "C001", "zone_cabine": zone.id, "mode_places": Emplacement.ILLIMITE,
-            "description": "rack du fond", "staging": True, "actif": False,
+            "description": "rack du fond", "staging": True,
         }, format="json")
         self.assertEqual(r.status_code, 200, getattr(r, "data", None))
         self.emp.refresh_from_db()
@@ -237,11 +243,12 @@ class ModificationEmplacementTest(BaseEmplacement):
         self.assertEqual(self.emp.mode_places, Emplacement.ILLIMITE)
         self.assertEqual(self.emp.description, "rack du fond")
         self.assertTrue(self.emp.staging)
-        self.assertFalse(self.emp.actif)
 
     def test_emplacement_inactif_refuse_les_rangements(self):
-        self.client.patch(f"/api/emplacements/{self.emp.id}/", {"actif": False},
-                          format="json")
+        """Le geste passe par `/activation/`, avec un motif — pas par le PATCH."""
+        r = self.client.post(f"/api/emplacements/{self.emp.id}/activation/",
+                             {"actif": False, "motif": "rack démonté"}, format="json")
+        self.assertEqual(r.status_code, 200, getattr(r, "data", None))
         cabine = Cabine.objects.create(numero="26_01_04", chantier="000126")
         r = self.client.post(f"/api/cabines/{cabine.id}/ranger/",
                              {"emplacement": self.emp.id, "place": "G"}, format="json")

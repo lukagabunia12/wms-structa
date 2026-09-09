@@ -86,20 +86,24 @@ def _reference_tissu(valeur, meme_ligne=False):
 
 #: Ordre d'analyse : les étiquettes longues d'abord. Sinon « CABINE » capturerait la
 #: ligne « REF. CABINE » ou « FOND CABINE » et écraserait le modèle.
+#: Ce qu'on cherche sur la fiche papier : le NUMÉRO, et rien d'autre.
+#:
+#: La liste en portait huit. Chantier, modèle, revendeur, client, tissus, fond
+#: de cabine : tous viennent du fichier de production, qui est la source. Les
+#: relire sur une photo créait une seconde version des mêmes informations, et
+#: quand les deux différaient personne ne savait laquelle croire — l'écran
+#: montrait les deux côte à côte en laissant la question ouverte.
+#:
+#: Cinq champs de moins à extraire, c'est aussi cinq occasions de moins de lire
+#: de travers un tableau photographié de biais.
 CHAMPS = [
     ("numero", ["REF. CABINE", "REF CABINE", "REFCABINE", "REF.CABINE", "REF"], _numero),
-    ("fond_cabine", ["FOND CABINE", "FOND DE CABINE", "FOND"], _texte_libre),
-    ("chantier", ["N° DE CDE", "N DE CDE", "NO DE CDE", "N* DE CDE", "DE CDE",
-                  "N° CDE", "CDE", "COMMANDE"], _chantier),
-    ("tissu_bk", ["TISSUS BK", "TISSU BK", "TISSUSBK"], _reference_tissu),
-    ("tissu_aq", ["TISSUS AQ", "TISSU AQ", "TISSUSAQ"], _reference_tissu),
-    ("revendeur", ["REVENDEUR"], _texte_libre),
-    ("client", ["CLIENT"], _texte_libre),
-    ("modele", ["CABINE"], _texte_libre),
 ]
 
-#: Champs indispensables pour créer une cabine ; les autres sont informatifs.
-ESSENTIELS = ["numero", "chantier"]
+#: Le seul champ indispensable. Le chantier vient du fichier de production, ou
+#: se saisit à la main quand le classeur n'en porte pas — ce chemin existait
+#: déjà (`CabineAttendue.chantier_a_saisir`), il devient le seul.
+ESSENTIELS = ["numero"]
 
 
 def analyser(texte):

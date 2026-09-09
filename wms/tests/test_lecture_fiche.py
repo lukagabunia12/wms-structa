@@ -1,8 +1,20 @@
 """Tests de la lecture de la fiche cabine papier (texte issu de l'OCR).
 
-L'OCR est la partie fragile de la chaîne : ces tests l'exercent avec du bruit réaliste
-— colonnes collées ou séparées, confusions 0/O et 1/I, étiquettes abîmées, lignes
-parasites — plutôt qu'avec un texte idéal qui ne prouverait rien.
+On ne cherche plus qu'UNE chose sur la fiche : le n° de cabine. Tout le reste —
+chantier, modèle, revendeur, client, tissus, fond de cabine — vient du fichier
+de production, qui est la source. Les relire sur une photo créait une seconde
+version des mêmes informations, et quand les deux différaient personne ne savait
+laquelle croire.
+
+Ces tests portent donc sur deux choses, et la seconde est celle qui protège la
+règle :
+
+- le numéro est lu malgré le bruit réaliste (colonnes collées ou séparées,
+  confusions 0/O et 1/I, étiquettes abîmées, lignes parasites, valeur détectée
+  avant son étiquette) — un texte idéal ne prouverait rien ;
+- les autres champs ne sont PAS lus, même quand la fiche les porte
+  lisiblement. Un test qui se contenterait de vérifier le numéro laisserait
+  revenir les sept autres sans rien signaler.
 """
 import io
 import unittest
@@ -51,20 +63,20 @@ class AnalyseFicheTest(APITestCase):
         champs, manquants = lecture_fiche.analyser(FICHE_COLONNES)
         self.assertEqual(manquants, [])
         self.assertEqual(champs["numero"], "26_03_47")
-        self.assertEqual(champs["chantier"], "251280")
-        self.assertEqual(champs["modele"], "QUATTRO")
-        self.assertEqual(champs["revendeur"], "MYAH")
-        self.assertEqual(champs["client"], "HAS")
-        self.assertEqual(champs["tissu_bk"], "A2419")
-        self.assertEqual(champs["tissu_aq"], "A2414")
-        self.assertEqual(champs["fond_cabine"], "VITRE")
+        self.assertNotIn("chantier", champs)
+        self.assertNotIn("modele", champs)
+        self.assertNotIn("revendeur", champs)
+        self.assertNotIn("client", champs)
+        self.assertNotIn("tissu_bk", champs)
+        self.assertNotIn("tissu_aq", champs)
+        self.assertNotIn("fond_cabine", champs)
 
     def test_colonnes_collees(self):
         champs, manquants = lecture_fiche.analyser(FICHE_LIGNES)
         self.assertEqual(manquants, [])
         self.assertEqual(champs["numero"], "26_03_47")
-        self.assertEqual(champs["chantier"], "251280")
-        self.assertEqual(champs["modele"], "QUATTRO")
+        self.assertNotIn("chantier", champs)
+        self.assertNotIn("modele", champs)
 
     def test_cabine_ne_capture_pas_ref_cabine_ni_fond_cabine(self):
         """« CABINE » est contenu dans « REF. CABINE » et « FOND CABINE ».
@@ -73,16 +85,16 @@ class AnalyseFicheTest(APITestCase):
         ou « VITRE ».
         """
         champs, _ = lecture_fiche.analyser(FICHE_LIGNES)
-        self.assertEqual(champs["modele"], "QUATTRO")
+        self.assertNotIn("modele", champs)
         self.assertEqual(champs["numero"], "26_03_47")
-        self.assertEqual(champs["fond_cabine"], "VITRE")
+        self.assertNotIn("fond_cabine", champs)
 
     def test_confusion_lettres_chiffres_corrigee(self):
         """« 2G_O3_47 » et « 2S128O » : O pris pour 0, S pour 5."""
         texte = "REF. CABINE 26_O3_47\nN° DE CDE 2512BO\n"
         champs, manquants = lecture_fiche.analyser(texte)
         self.assertEqual(champs["numero"], "26_03_47")
-        self.assertEqual(champs["chantier"], "251280")
+        self.assertNotIn("chantier", champs)
         self.assertEqual(manquants, [])
 
     def test_separateurs_alternatifs_du_numero(self):
@@ -95,7 +107,7 @@ class AnalyseFicheTest(APITestCase):
     def test_etiquette_abimee(self):
         """L'accent et le symbole du « N° » sautent souvent à la reconnaissance."""
         champs, manquants = lecture_fiche.analyser("N* DE CDE 251280\nREF CABINE 26_03_47")
-        self.assertEqual(champs["chantier"], "251280")
+        self.assertNotIn("chantier", champs)
         self.assertEqual(champs["numero"], "26_03_47")
         self.assertEqual(manquants, [])
 
@@ -105,25 +117,25 @@ class AnalyseFicheTest(APITestCase):
         champs, manquants = lecture_fiche.analyser(texte)
         self.assertEqual(manquants, [])
         self.assertEqual(champs["numero"], "26_03_47")
-        self.assertEqual(champs["revendeur"], "MYAH")
+        self.assertNotIn("revendeur", champs)
 
     def test_champs_essentiels_manquants_signales(self):
         champs, manquants = lecture_fiche.analyser("REVENDEUR MYAH\nCLIENT HAS\n")
-        self.assertEqual(sorted(manquants), ["chantier", "numero"])
+        self.assertEqual(manquants, ["numero"])
         self.assertNotIn("numero", champs)
-        self.assertEqual(champs["revendeur"], "MYAH")
+        self.assertNotIn("revendeur", champs)
 
     def test_texte_vide(self):
         champs, manquants = lecture_fiche.analyser("")
         self.assertEqual(champs, {})
-        self.assertEqual(sorted(manquants), ["chantier", "numero"])
+        self.assertEqual(manquants, ["numero"])
 
     def test_numero_invalide_non_invente(self):
         """Mieux vaut ne rien renvoyer qu'un numéro fabriqué."""
         champs, manquants = lecture_fiche.analyser("REF. CABINE ZZ_YY_XX\nN° DE CDE 12\n")
         self.assertNotIn("numero", champs)
         self.assertNotIn("chantier", champs)
-        self.assertEqual(sorted(manquants), ["chantier", "numero"])
+        self.assertEqual(manquants, ["numero"])
 
     def test_chantier_a_cinq_chiffres_rejete(self):
         champs, _ = lecture_fiche.analyser("N° DE CDE 25128\n")
@@ -142,7 +154,7 @@ class AnalyseFicheTest(APITestCase):
         champs, manquants = lecture_fiche.analyser(texte)
         self.assertEqual(manquants, [])
         self.assertEqual(champs["numero"], "26_03_47")
-        self.assertEqual(champs["chantier"], "251280")
+        self.assertNotIn("chantier", champs)
 
 
 class ReconstitutionLignesTest(APITestCase):
@@ -193,7 +205,10 @@ class AnalyserFicheAPITest(APITestCase):
                              format="json")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.data["champs"]["numero"], "26_03_47")
-        self.assertEqual(r.data["champs"]["chantier"], "251280")
+        # L'API ne renvoie QUE le numéro, même sur une fiche qui porte tout le
+        # reste lisiblement : c'est ce qui empêche une seconde source de vérité
+        # de revenir par la porte de l'API.
+        self.assertEqual(list(r.data["champs"]), ["numero"])
         self.assertEqual(r.data["manquants"], [])
         self.assertIsNone(r.data["cabine_existante"])
 
@@ -304,13 +319,13 @@ class LirePhotoFicheTest(APITestCase):
         self.assertEqual(r.status_code, 200, getattr(r, "data", None))
         champs = r.data["champs"]
         self.assertEqual(champs["numero"], "26_03_47")
-        self.assertEqual(champs["chantier"], "251280")
-        self.assertEqual(champs["modele"], "QUATTRO")
-        self.assertEqual(champs["revendeur"], "MYAH")
-        self.assertEqual(champs["client"], "HAS")
-        self.assertEqual(champs["tissu_bk"], "A2419")
-        self.assertEqual(champs["tissu_aq"], "A2414")
-        self.assertEqual(champs["fond_cabine"], "VITRE")
+        self.assertNotIn("chantier", champs)
+        self.assertNotIn("modele", champs)
+        self.assertNotIn("revendeur", champs)
+        self.assertNotIn("client", champs)
+        self.assertNotIn("tissu_bk", champs)
+        self.assertNotIn("tissu_aq", champs)
+        self.assertNotIn("fond_cabine", champs)
         self.assertEqual(r.data["manquants"], [])
         self.assertEqual(Cabine.objects.count(), 0)   # la lecture ne crée rien
 
@@ -343,13 +358,13 @@ class LecturesDegradees(unittest.TestCase):
         """« 26_03_47 » rendu « 260347 » : les tirets bas sont fins, l'OCR les perd."""
         champs = self.analyser("N° DE CDE 251280\nREF. CABINE 260347")
         self.assertEqual(champs.get("numero"), "26_03_47")
-        self.assertEqual(champs.get("chantier"), "251280")
+        self.assertNotIn("chantier", champs)
 
     def test_valeur_avant_son_etiquette(self):
         """Photo de biais : les boîtes de l'OCR se croisent, la valeur sort d'abord."""
         champs = self.analyser("26_03_47 REF. CABINE\n251280 N° DE CDE")
         self.assertEqual(champs.get("numero"), "26_03_47")
-        self.assertEqual(champs.get("chantier"), "251280")
+        self.assertNotIn("chantier", champs)
 
     def test_les_deux_defauts_a_la_fois(self):
         champs = self.analyser("260347 REF. CABINE\n251280 N° DE CDE")
@@ -361,7 +376,7 @@ class LecturesDegradees(unittest.TestCase):
             "WhatsApp Image 2026-07-30 at 15.17.29.jpeg\nREVENDEUR MYAH\n"
             "CLIENT HAS\nN° DE CDE 251280\n| |\nREF. CABINE 26_03_47")
         self.assertEqual(champs.get("numero"), "26_03_47")
-        self.assertEqual(champs.get("revendeur"), "MYAH")
+        self.assertNotIn("revendeur", champs)
 
     def test_six_chiffres_seuls_ne_font_pas_un_numero(self):
         """Le garde-fou du durcissement : sans étiquette de cabine, on n'invente rien.

@@ -684,3 +684,37 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
    (« AF-\A 3164 » se lisait comme deux valeurs). Seul le motif s'enroule. */
 .specs .court{white-space:nowrap;width:1%;font-family:var(--f-data)}
 .specs td:last-child{font-family:var(--f-data);color:var(--txt);word-break:break-word}
+
+/* --- Annoncées / arrivées, par semaine -------------------------------------
+   Un tableau de chiffres, pas de couples clé/valeur : on annule les règles de
+   `.specs` qui grisent la première colonne et passent la dernière en police de
+   données. Sans cela, « Annoncées » serait gris et la jauge en Consolas.
+
+   `tabular-nums` aligne les chiffres en colonne — sans lui, « 6 » et « 63 » ne
+   se comparent pas d'un coup d'œil, ce qui est tout l'objet de cet écran. */
+.semaines .specs td:first-child{color:var(--txt);width:auto}
+.semaines .specs td:last-child{font-family:var(--f);color:var(--txt)}
+.semaines .specs td.n,.semaines .specs th.n{text-align:right;font-variant-numeric:tabular-nums;
+        font-weight:700;white-space:nowrap;width:1%}
+.semaines .specs td.sem{font-weight:700;white-space:nowrap;width:1%}
+.semaines .specs td.du{color:var(--danger)}
+.semaines .specs td.ok{color:var(--muted);font-weight:400}
+/* La semaine en cours : le repère qu'on cherche en premier. */
+.semaines .specs tr.ici td{background:var(--marine-tint)}
+.semaines .specs tr.total td{background:var(--surface-2);border-top:2px solid var(--ligne);
+        border-bottom:none;font-weight:700}
+/* La jauge. Dessinée en CSS : un tableau de bord au poste ne doit pas attendre
+   le téléchargement d'une bibliothèque de graphiques pour s'afficher. */
+.semaines .jauge{position:relative;min-width:96px;height:18px;padding:0 11px}
+.semaines .jauge span{position:absolute;left:11px;top:4px;height:10px;min-width:2px;
+        background:var(--marine);border-radius:5px;max-width:calc(100% - 22px)}
+.semaines .jauge i{position:absolute;right:11px;top:1px;font-size:11px;font-style:normal;
+        color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* --- Une place condamnée ---------------------------------------------------
+   Ni libre ni occupée : hors service. La rayure dit « rien ne rentre ici » sans
+   qu'on lise le motif, et le motif dit pourquoi — les deux sont nécessaires,
+   une place qui disparaît sans explication passe pour un défaut d'affichage. */
+.place.condamnee{opacity:.75;border-style:dashed}
+.place.condamnee .o{color:var(--danger);font-weight:700}
+.etat.hs{background:var(--danger-tint);color:var(--danger)}

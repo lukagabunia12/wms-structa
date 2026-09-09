@@ -17,6 +17,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import (Cabine, CabineAttendue, ModeleCabine, MouvementCabine,
+                     PlaceCondamnee,
                      Occupation)
 
 
@@ -129,23 +130,40 @@ def cabines_presentes(emplacement):
             .distinct().order_by("numero"))
 
 
+def places_condamnees(emplacement):
+    """Les places hors service de cet emplacement : {'G': motif, …}.
+
+    Condamnée n'est pas occupée : l'écran doit dire « condamnée — pilier » et
+    non laisser un blanc. Une place qui disparaît sans explication fait croire à
+    un défaut d'affichage, et quelqu'un finit par y poser une cabine à la main.
+    """
+    return {p.place: p.motif
+            for p in emplacement.places_condamnees.all()}
+
+
 def places_libres(emplacement, cabine=None):
     """Places encore disponibles, dans l'ordre. Vide si capacité illimitée.
 
     `cabine` change la réponse, et c'est tout l'intérêt : un grand modèle ne se
     glisse pas à côté d'une autre cabine. Sans lui, la fonction répond pour une
     cabine ordinaire — ce que veut l'écran qui affiche simplement l'occupation.
+
+    Un emplacement inactif ne laisse rien : c'est la définition. Et une place
+    condamnée compte comme prise pour un grand modèle — il lui faut les deux.
     """
     if emplacement.illimite:
         return []
+    if not emplacement.actif:
+        return []
     prises = set(occupations_presentes(emplacement).exclude(place="")
                  .values_list("place", flat=True))
+    condamnees = set(places_condamnees(emplacement))
     # Un emplacement pris en entier ne laisse rien, quel que soit ce qui arrive.
     if Occupation.ENTIER in prises:
         return []
     if cabine is not None and cabine.prend_tout_l_emplacement:
-        return [] if prises else [Occupation.ENTIER]
-    return [p for p in PLACES if p not in prises]
+        return [] if (prises or condamnees) else [Occupation.ENTIER]
+    return [p for p in PLACES if p not in prises and p not in condamnees]
 
 
 def est_complet(emplacement, cabine=None):
@@ -176,6 +194,103 @@ def occupation(emplacement):
         # que de faire lever l'écran. La migration les a détachées ; une base
         # restaurée d'une vieille sauvegarde pourrait en porter encore.
     return etat
+
+
+def _cabines_presentes(emplacement, place=None):
+    """Les cabines physiquement là, avec leur place. Pour le DIRE dans un refus.
+
+    Un refus qui ne nomme personne (« emplacement occupé ») oblige à aller
+    chercher soi-même dans le Parc ce que le WMS savait déjà.
+    """
+    occs = occupations_presentes(emplacement).select_related("cabine")
+    if place is not None:
+        # Une cabine qui prend l'emplacement entier occupe les DEUX places : elle
+        # bloque donc la condamnation de l'une comme de l'autre.
+        occs = occs.filter(place__in=[place, Occupation.ENTIER])
+    return [o.cabine for o in occs if o.cabine_id]
+
+
+@transaction.atomic
+def changer_activation(*, emplacement, actif, motif="", utilisateur=None):
+    """Met un emplacement en service ou hors service.
+
+    Désactiver EXIGE un motif, et refuse tant qu'une cabine est là. Le refus
+    nomme la cabine : « B-02-1 porte 26_03_47 — sortez-la d'abord ». Accepter
+    silencieusement retirerait du stock une cabine bien réelle, qu'on ne
+    retrouverait plus qu'en ouvrant le rack.
+
+    Réactiver n'exige rien : constater qu'un obstacle a disparu n'a pas à
+    s'expliquer. Le motif précédent est effacé — le garder ferait croire, six
+    mois plus tard, que l'emplacement est encore condamné.
+    """
+    actif = bool(actif)
+    if emplacement.actif == actif:
+        etat = "en service" if actif else "hors service"
+        raise ErreurCabine(f"{emplacement.code} est déjà {etat}.")
+
+    if not actif:
+        if not (motif or "").strip():
+            raise ErreurCabine(
+                "Dites pourquoi cet emplacement sort du stock : sans motif écrit, "
+                "personne ne saura s'il faut le remettre en service.")
+        occupants = _cabines_presentes(emplacement)
+        if occupants:
+            noms = ", ".join(c.numero for c in occupants)
+            raise ErreurCabine(
+                f"{emplacement.code} porte encore {noms}. Sortez la cabine de son "
+                "emplacement d'abord — le WMS ne déplace pas une cabine tout seul.")
+
+    emplacement.actif = actif
+    emplacement.motif_inactif = "" if actif else motif.strip()[:255]
+    emplacement.actif_le = timezone.now()
+    emplacement.actif_par = utilisateur
+    emplacement.save(update_fields=["actif", "motif_inactif", "actif_le", "actif_par"])
+    return emplacement
+
+
+@transaction.atomic
+def condamner_place(*, emplacement, place, motif="", utilisateur=None):
+    """Retire une place du stock sans toucher à l'autre.
+
+    Le motif est obligatoire pour la même raison que celui d'une quarantaine :
+    sans lui, la place reste condamnée des mois faute de savoir pourquoi.
+    """
+    codes = [c for c, _ in PlaceCondamnee.PLACES]
+    if place not in codes:
+        raise ErreurCabine(
+            f"Place inconnue : « {place} ». On condamne une place, gauche ou "
+            "droite — pour retirer l'emplacement entier, désactivez-le.")
+    if emplacement.illimite:
+        raise ErreurCabine(
+            f"{emplacement.code} n'a pas de place nommée : c'est une aire à "
+            "capacité illimitée. Désactivez-la pour la retirer du stock.")
+    if not (motif or "").strip():
+        raise ErreurCabine(
+            "Dites pourquoi cette place ne prend plus de cabine : sans motif "
+            "écrit, personne ne saura s'il faut la rouvrir.")
+    if place in places_condamnees(emplacement):
+        raise ErreurCabine(f"La place {place} de {emplacement.code} est déjà condamnée.")
+
+    occupants = _cabines_presentes(emplacement, place)
+    if occupants:
+        noms = ", ".join(c.numero for c in occupants)
+        raise ErreurCabine(
+            f"La place {place} de {emplacement.code} porte {noms}. Sortez la "
+            "cabine d'abord — le WMS ne déplace pas une cabine tout seul.")
+
+    return PlaceCondamnee.objects.create(
+        emplacement=emplacement, place=place, motif=motif.strip()[:255],
+        cree_par=utilisateur)
+
+
+@transaction.atomic
+def rouvrir_place(*, emplacement, place, utilisateur=None):
+    """Remet une place condamnée en service. Aucun motif exigé."""
+    ligne = emplacement.places_condamnees.filter(place=place).first()
+    if not ligne:
+        raise ErreurCabine(f"La place {place} de {emplacement.code} n'est pas condamnée.")
+    ligne.delete()
+    return emplacement
 
 
 def emplacements_hors_regle():
@@ -329,9 +444,27 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
                 f"l'emplacement. {emplacement.code} porte déjà la cabine "
                 f"{voisine.cabine.numero} — libérez l'emplacement, ou "
                 "choisissez-en un autre.")
+        # Une place condamnée bloque autant qu'une cabine : un grand modèle a
+        # besoin des DEUX. `places_libres()` le disait déjà et l'écran ne
+        # proposait rien — mais sans ce contrôle-ci, un appel direct à l'API
+        # posait un QUATTRO sur un emplacement à moitié bloqué par un pilier.
+        # La garde de l'écran et celle du serveur doivent dire la même chose.
+        bloquees = places_condamnees(emplacement)
+        if bloquees:
+            detail = ", ".join(f"{p} ({motif})" for p, motif in sorted(bloquees.items()))
+            raise ErreurCabine(
+                f"{cabine.numero} est un {cabine.modele} : elle prend tout "
+                f"l'emplacement, or {emplacement.code} a une place condamnée — "
+                f"{detail}. Choisissez un autre emplacement.")
     else:
         if place not in PLACES:
             raise ErreurCabine(f"Place inconnue : « {place} ». Attendu G ou D.")
+        condamnee = places_condamnees(emplacement).get(place)
+        if condamnee:
+            raise ErreurCabine(
+                f"La place {place} de {emplacement.code} est condamnée : "
+                f"{condamnee}. Choisissez l'autre place, ou levez la "
+                "condamnation depuis l'écran de l'emplacement.")
         entier = (occupations_presentes(emplacement).exclude(pk=cible.pk)
                   .filter(place=Occupation.ENTIER).select_related("cabine").first())
         if entier:

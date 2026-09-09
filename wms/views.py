@@ -23,6 +23,7 @@ from rest_framework.response import Response
 from . import (export_inventaire, lecture_fiche, ocr_fiche, services, services_cabines,
                services_import)
 from .models import (Article, Cabine, CabineAttendue, Categorie, Occupation,
+                     PlaceCondamnee,
                      Emplacement, EtatCabine, ModeleCabine, Mouvement, MouvementCabine,
                      Reception, Stock, Utilisateur, Zone)
 from .permissions import EstAdministrateur, EstAdministrateurStrict
@@ -118,6 +119,50 @@ class EmplacementViewSet(viewsets.ModelViewSet):
                 Q(mode_places=Emplacement.GD) & Q(occupees__gte=total_places))
         return qs
 
+    @action(detail=True, methods=["post"])
+    def activation(self, request, pk=None):
+        """Met l'emplacement en service ou hors service.
+
+        Le corps porte `actif` (booléen) et, pour une désactivation, `motif`.
+        Le service refuse tant qu'une cabine est là, et le refus la nomme.
+        """
+        emplacement = self.get_object()
+        try:
+            services_cabines.changer_activation(
+                emplacement=emplacement,
+                actif=bool(request.data.get("actif")),
+                motif=str(request.data.get("motif") or ""),
+                utilisateur=request.user)
+        except services_cabines.ErreurCabine as souci:
+            raise ErreurAPI(souci.messages)
+        return Response(EmplacementSerializer(
+            emplacement, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=["post"])
+    def place(self, request, pk=None):
+        """Condamne une place, ou la rouvre.
+
+        `{place: "G", condamnee: true, motif: "…"}` la retire du stock ;
+        `{place: "G", condamnee: false}` la rouvre. Le nom de l'action est au
+        singulier là où `places` est au pluriel : l'une agit sur UNE place,
+        l'autre décrit l'état des deux.
+        """
+        emplacement = self.get_object()
+        place = str(request.data.get("place") or "").strip().upper()
+        try:
+            if request.data.get("condamnee"):
+                services_cabines.condamner_place(
+                    emplacement=emplacement, place=place,
+                    motif=str(request.data.get("motif") or ""),
+                    utilisateur=request.user)
+            else:
+                services_cabines.rouvrir_place(
+                    emplacement=emplacement, place=place, utilisateur=request.user)
+        except services_cabines.ErreurCabine as souci:
+            raise ErreurAPI(souci.messages)
+        return Response(EmplacementSerializer(
+            emplacement, context=self.get_serializer_context()).data)
+
     @action(detail=True, methods=["get"])
     def places(self, request, pk=None):
         """Occupation des places de l'emplacement scanné.
@@ -142,6 +187,10 @@ class EmplacementViewSet(viewsets.ModelViewSet):
             cabine = Cabine.objects.filter(pk=int(demande)).first()
         occupees = services_cabines.occupation(emplacement)
         presentes = services_cabines.cabines_presentes(emplacement)
+        # Condamnée n'est pas occupée, et l'écran doit faire la différence : une
+        # place qui disparaît sans explication passe pour un défaut d'affichage,
+        # et quelqu'un finit par y poser une cabine à la main.
+        condamnees = services_cabines.places_condamnees(emplacement)
         return Response({
             "emplacement": emplacement.id,
             "code": emplacement.code,
@@ -154,7 +203,8 @@ class EmplacementViewSet(viewsets.ModelViewSet):
                 {
                     "code": code,
                     "libelle": libelle,
-                    "libre": occupees[code] is None,
+                    "libre": occupees[code] is None and code not in condamnees,
+                    "condamnee": condamnees.get(code) or None,
                     "cabine": (CabineSerializer(occupees[code].cabine).data
                                if occupees[code] is not None else None),
                     # Lequel de ses emplacements, quand la cabine en occupe plusieurs.
@@ -167,6 +217,8 @@ class EmplacementViewSet(viewsets.ModelViewSet):
             "nb_cabines": presentes.count(),
             "libres": services_cabines.places_libres(emplacement, cabine),
             "complet": services_cabines.est_complet(emplacement, cabine),
+            "actif": emplacement.actif,
+            "motif_inactif": emplacement.motif_inactif,
             # Ce que l'écran doit dire de CETTE cabine, quand il en tient une.
             "pour_cabine": ({
                 "id": cabine.id,
@@ -934,6 +986,9 @@ class CabineViewSet(viewsets.ModelViewSet):
                 "comptes": Utilisateur.objects.count(),
                 "cabines_attendues": CabineAttendue.objects.count(),
                 "modeles_regles": ModeleCabine.objects.count(),
+                # Un pilier devant une place est toujours là après une remise à
+                # zéro : la condamnation décrit l'entrepôt, pas le stock.
+                "places_condamnees": PlaceCondamnee.objects.count(),
             },
         }
 
@@ -1436,6 +1491,7 @@ class CabineAttendueViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = CabineAttendue.objects.select_related("importe_par").all()
     serializer_class = CabineAttendueSerializer
     permission_classes = [EstAdministrateur]
+
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["numero", "num_unique", "chantier", "chantier_brut", "client",
                      "revendeur", "modele", "gamme"]
@@ -1444,6 +1500,65 @@ class CabineAttendueViewSet(viewsets.ReadOnlyModelViewSet):
     #: ne reconnaît pas « /cabines-attendues/26_02_49/ » et rend un 404 muet.
     lookup_field = "numero"
     lookup_value_regex = r"[0-9_]+"
+
+    @action(detail=False, methods=["get"], pagination_class=None)
+    def par_semaine(self, request):
+        """Annoncées et arrivées, semaine de production par semaine.
+
+        La question à laquelle cet écran répond : « la production annoncée en
+        S37 est-elle arrivée ? ». Donc « arrivées » compte les cabines ENTRÉES
+        UN JOUR, celles déjà parties en chantier comprises — une cabine posée
+        puis livrée est bien arrivée. Compter le stock du moment ferait baisser
+        le chiffre à mesure que la production part, et la comparaison ne voudrait
+        plus rien dire.
+
+        Le lien entre les deux tables est le NUMÉRO, et lui seul : le fichier
+        annonce des numéros, une cabine en stock en porte un. Une cabine créée
+        hors fichier n'appartient donc à aucune semaine — elle est comptée à
+        part plutôt que rattachée au hasard.
+
+        `semaine_production` est une chaîne (« S37 »), pas une date : c'est ce
+        que le classeur écrit, et le zéro de « S04 » fait que l'ordre
+        alphabétique est le bon. Les lignes sans semaine sont regroupées sous
+        une clé vide, en dernier, plutôt que masquées : 60 cabines sans semaine
+        seraient une information sur le fichier, pas un détail à cacher.
+        """
+        annoncees = (CabineAttendue.objects
+                     .values_list("semaine_production", "numero"))
+        par_semaine = {}
+        for semaine, numero in annoncees:
+            par_semaine.setdefault((semaine or "").strip(), set()).add(numero)
+
+        # Un seul aller-retour pour tous les numéros en stock : une requête par
+        # semaine ferait 42 requêtes pour un écran de lecture.
+        en_base = set(Cabine.objects.values_list("numero", flat=True))
+        presentes = set(Occupation.objects
+                        .exclude(cabine__statut=Cabine.ENVOYE)
+                        .filter(emplacement__isnull=False)
+                        .values_list("cabine__numero", flat=True))
+
+        lignes = []
+        for semaine in sorted(par_semaine, key=lambda s: (s == "", s)):
+            numeros = par_semaine[semaine]
+            arrivees = numeros & en_base
+            lignes.append({
+                "semaine": semaine,
+                "annoncees": len(numeros),
+                "arrivees": len(arrivees),
+                "reste": len(numeros) - len(arrivees),
+                # Secondaire, mais c'est la question suivante : parmi les
+                # arrivées, combien sont encore rangées quelque part.
+                "rangees": len(arrivees & presentes),
+            })
+
+        hors_fichier = len(en_base - set().union(*par_semaine.values())
+                           if par_semaine else en_base)
+        return Response({
+            "semaines": lignes,
+            "annoncees": sum(x["annoncees"] for x in lignes),
+            "arrivees": sum(x["arrivees"] for x in lignes),
+            "hors_fichier": hors_fichier,
+        })
 
     #: 10 Mo : le fichier de production en fait un demi aujourd'hui, et grossit
     #: d'une semaine à l'autre. Au-delà, ce n'est plus lui.

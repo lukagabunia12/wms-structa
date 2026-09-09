@@ -816,6 +816,14 @@ async function renderHome() {
       compter(''), compter('statut=quarantaine'), compter('sans_chantier=1'),
       compter('rangee=0'),
     ]);
+    /* Le serveur laisse tout compte LIRE le fichier de production — l'écran
+       d'entrée en a besoin pour se pré-remplir. Ce n'est donc pas une question
+       de droit mais d'utilité : un cariste range des cabines, il n'analyse pas
+       le plan de production, et ce tableau lui ferait dérouler son écran pour
+       rien. D'où le bloc réservé aux administrateurs ICI, à l'affichage. */
+    const semaines = ADMIN
+      ? await api('/cabines-attendues/par_semaine/').catch(() => null)
+      : null;
     layout(`<h2 class="title">Tableau de bord</h2>
       ${rappelEnCours()}
       <div class="kpis">
@@ -824,13 +832,98 @@ async function renderHome() {
         <div class="kpi clic" data-cab='{"sans_chantier":"1"}'><div class="l">Sans chantier</div><div class="v">${sansChantier}</div></div>
         <div class="kpi clic" data-cab='{"rangee":"0"}'><div class="l">Non rangées</div><div class="v">${nonRangees}</div></div>
       </div>
+      ${blocSemaines(semaines)}
       <div class="sec">Aller à</div>
       <div class="tiles">${vignettesAccueil()}</div>`, 'home');
     brancherRappelEnCours();
+    brancherSemaines(semaines);
     el().querySelectorAll('[data-cab]').forEach(n => n.onclick = () => {
       try { ouvrirCabines(JSON.parse(n.dataset.cab)); } catch (_) { ouvrirCabines(); }
     });
   } catch (e) { toast(e.message, 'err'); }
+}
+
+/* --- Annoncées / arrivées, semaine par semaine ------------------------------
+   « La production annoncée en S37 est-elle arrivée ? » Le fichier de production
+   couvre 42 semaines : les montrer toutes d'emblée noie le regard, n'en montrer
+   que trois cache le retard qu'on cherche.
+
+   L'écran ouvre donc sur les semaines UTILES — celles où quelque chose est
+   arrivé, plus la semaine en cours et les suivantes — et un bouton déplie le
+   reste. Le choix est mémorisé le temps de la session, pas au-delà : au poste,
+   on veut l'affichage court par défaut. */
+let SEMAINES_TOUTES = false;
+
+/** La semaine ISO d'aujourd'hui, au format du classeur (« S37 »).
+
+    Calculée, pas demandée au serveur : c'est la même date des deux côtés, et un
+    aller-retour de plus pour un repère d'affichage n'a pas de sens. L'algorithme
+    est celui de la norme ISO 8601 — le jeudi de la semaine décide de son numéro,
+    ce qui évite de se tromper d'une semaine au tournant de janvier. */
+function semaineISO(quand = new Date()) {
+  const d = new Date(Date.UTC(quand.getFullYear(), quand.getMonth(), quand.getDate()));
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const janvier = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const n = Math.ceil(((d - janvier) / 86400000 + 1) / 7);
+  return 'S' + String(n).padStart(2, '0');
+}
+
+function blocSemaines(d) {
+  if (!d || !(d.semaines || []).length) return '';
+  const ici = semaineISO();
+  /* Ce qui « bouge » : une arrivée, ou une semaine qu'on n'a pas encore passée.
+     Une semaine passée sans aucune arrivée n'est pas une information utile au
+     quotidien — mais elle le devient quand on analyse, d'où le bouton. */
+  const utile = (l) => l.arrivees > 0 || (l.semaine && l.semaine >= ici);
+  const vues = SEMAINES_TOUTES ? d.semaines : d.semaines.filter(utile);
+  const cachees = d.semaines.length - vues.length;
+
+  const ligne = (l) => {
+    const part = l.annoncees ? Math.round((l.arrivees / l.annoncees) * 100) : 0;
+    const nom = l.semaine || 'Sans semaine';
+    return `<tr class="${l.semaine === ici ? 'ici' : ''}">
+      <td class="sem">${esc(nom)}${l.semaine === ici ? ' <span class="pill">en cours</span>' : ''}</td>
+      <td class="n">${l.annoncees}</td>
+      <td class="n">${l.arrivees}</td>
+      <td class="n ${l.reste ? 'du' : 'ok'}">${l.reste || '—'}</td>
+      <td class="jauge"><span style="width:${part}%"></span><i>${part}%</i></td>
+    </tr>`;
+  };
+
+  return `<div class="sec">Annoncées / arrivées, par semaine de production</div>
+    <div class="card semaines">
+      <div class="meta" style="margin:-2px 0 10px">« Arrivées » compte les cabines
+        entrées en stock un jour, y compris celles déjà parties en chantier : la
+        question est de savoir si la production est bien arrivée.</div>
+      <div class="specs"><table><thead><tr>
+        <th>Semaine</th><th class="n">Annoncées</th><th class="n">Arrivées</th>
+        <th class="n">Reste</th><th>Arrivé</th>
+      </tr></thead><tbody>${vues.map(ligne).join('')}
+      <tr class="total"><td class="sem">Total</td><td class="n">${d.annoncees}</td>
+        <td class="n">${d.arrivees}</td>
+        <td class="n ${d.annoncees - d.arrivees ? 'du' : 'ok'}">${d.annoncees - d.arrivees || '—'}</td>
+        <td></td></tr>
+      </tbody></table></div>
+      ${cachees || SEMAINES_TOUTES ? `<button class="btn ghost" id="tbSem">${
+        SEMAINES_TOUTES ? 'Ne montrer que les semaines en cours et arrivées'
+                        : `Voir les ${cachees} autres semaines`}</button>` : ''}
+      ${d.hors_fichier ? `<div class="meta" style="margin-top:8px"><b>${d.hors_fichier}</b>
+        cabine${d.hors_fichier === 1 ? '' : 's'} en stock n'appartient à aucune semaine :
+        elle a été enregistrée hors fichier de production. Le motif est au journal.</div>` : ''}
+    </div>`;
+}
+
+function brancherSemaines(d) {
+  const b = $('#tbSem');
+  if (!b) return;
+  b.onclick = () => {
+    SEMAINES_TOUTES = !SEMAINES_TOUTES;
+    const zone = b.closest('.card');
+    /* On redessine le bloc seul, pas l'écran : recharger le tableau de bord
+       relancerait cinq requêtes pour déplier un tableau déjà en mémoire. */
+    zone.outerHTML = blocSemaines(d);
+    brancherSemaines(d);
+  };
 }
 
 // Formulaire de réception pour un article donné. Extrait de renderReception pour être
@@ -1997,11 +2090,18 @@ function placesHTML(d, choisie) {
   return `<label>Sous-emplacement</label>
     <div class="places" id="places">${(d.places || []).map(p => {
       const libre = p.libre;
-      return `<button type="button" class="place" data-place="${p.code}" ${libre ? '' : 'disabled'}
+      /* Condamnée n'est pas occupée, et le dire change le geste : devant une
+         place « occupée » on cherche la cabine, devant une place « condamnée —
+         pilier » on prend l'autre. La faire disparaître passerait pour un
+         défaut d'affichage, et quelqu'un y poserait une cabine à la main. */
+      const etat = p.condamnee ? 'condamnée' : (libre ? 'libre' : occupantCourt(p));
+      return `<button type="button" class="place${p.condamnee ? ' condamnee' : ''}"
+        data-place="${p.code}" ${libre ? '' : 'disabled'}
+        title="${esc(p.condamnee || '')}"
         aria-pressed="${String(p.code === choisie)}">
         <span class="c">${esc(p.code)}</span>
         <span class="l">${esc(libelle(p.code))}</span>
-        <span class="l">${libre ? 'libre' : esc(occupantCourt(p))}</span></button>`;
+        <span class="l${p.condamnee ? ' o' : ''}">${esc(etat)}</span></button>`;
     }).join('')}</div>`;
 }
 
@@ -2077,24 +2177,27 @@ const blocPlaces = (d) => {
   return placesHTML(d);
 };
 
-/* Les champs de la cabine elle-même, dans l'ordre où on les lit. Le libellé est
-   celui de la fiche papier quand il en a un : c'est le mot que l'atelier emploie. */
+/* Ce que le WMS gère lui-même : l'identité de la cabine et sa vie dans
+   l'entrepôt. Revendeur, client, tissus et fond de cabine n'y sont plus — ils
+   viennent du fichier de production, qui est la source, et les répéter ici
+   présentait deux fois la même information en laissant croire à deux versions. */
 const DETAIL_CABINE = [
   ['numero', 'N° de cabine'], ['chantier', 'Chantier'],
   ['type_libelle', 'Type'], ['modele', 'Modèle'],
   ['statut_libelle', 'État'], ['position', 'Emplacement'],
-  ['revendeur', 'Revendeur'], ['client', 'Client'],
-  ['tissu_bk', 'Tissu BK'], ['tissu_aq', 'Tissu AQ'],
-  ['fond_cabine', 'Fond de cabine'],
 ];
 
 /** Tout ce que le WMS sait de cette cabine, replié/déplié d'une touche.
 
-    Deux sources, dans cet ordre : la fiche de la cabine (ce que le WMS a
-    enregistré, et qui a pu être corrigé à la main), puis la ligne du fichier de
-    production telle qu'elle a été importée. Les deux sont montrées séparément
-    et jamais fondues : quand elles diffèrent, c'est une information — quelqu'un
-    a corrigé, ou le classeur a changé depuis l'entrée en stock. */
+    Deux blocs, et ils ne disent pas la même chose. « Dans l'entrepôt » : ce que
+    le WMS gère — le numéro, l'état, l'emplacement. « Fichier de production » :
+    ce que la production annonce, et qui est la SOURCE de tout le reste.
+
+    Il n'y a plus de section « Fiche de la cabine ». Elle listait revendeur,
+    client, tissus et fond de cabine relus sur la photo du tableau papier — donc
+    une seconde version d'informations que le fichier porte déjà. Quand les deux
+    différaient, l'écran les montrait côte à côte sans dire laquelle croire.
+    Aujourd'hui la fiche papier ne sert qu'à lire le numéro. */
 async function afficherToutesCaracteristiques(c) {
   const zone = $('#fTousChamps');
   const bouton = $('#fTout');
@@ -2125,7 +2228,7 @@ async function afficherToutesCaracteristiques(c) {
   const specs = attendue ? Object.entries(attendue.specifications || {}) : [];
 
   zone.innerHTML = `<div class="card" style="margin-top:10px">
-    <div class="sec" style="margin-top:0">Fiche de la cabine</div>
+    <div class="sec" style="margin-top:0">Dans l'entrepôt</div>
     <div class="specs"><table><tbody>${siennes}</tbody></table></div>
     <div class="sec">Fichier de production</div>
     ${attendue ? `<div class="specs"><table><tbody>${LIGNES_ATTENDUE
@@ -2152,8 +2255,8 @@ function etiquetteChamp(cle) {
 async function ouvrirScanFiche(emp, d, redessiner) {
   const zone = $('#eAct');
   if (!zone) return;
-  zone.innerHTML = `<div class="sec" style="margin-top:14px">Fiche de la cabine</div>
-    ${blocCameraHTML('Photographier la fiche', 'Le tableau à deux colonnes, bien à plat')}
+  zone.innerHTML = `<div class="sec" style="margin-top:14px">Lire le n° de cabine</div>
+    ${blocCameraHTML('Photographier la fiche', 'Le n° est lu sur le tableau — le reste vient du fichier de production')}
     <label class="fichier" id="fLabel">${icon('camera', 19)} <span>Prendre la photo</span>
       <input type="file" id="fPhoto" accept="image/*" capture="environment"></label>
     <div id="fEtat"></div><div id="fSuite"></div>
@@ -4508,10 +4611,9 @@ async function ficheEmplacement(emp, retour) {
       <label for="fDesc">Description</label>
       <input id="fDesc" value="${esc(e.description || '')}" placeholder="facultatif" ${gerer ? '' : 'disabled'}>
       <label class="case"><input type="checkbox" id="fStaging" ${e.staging ? 'checked' : ''} ${gerer ? '' : 'disabled'}> Zone de réception (« à ranger »)</label>
-      <label class="case"><input type="checkbox" id="fActif" ${e.actif !== false ? 'checked' : ''} ${gerer ? '' : 'disabled'}> Emplacement actif</label>
-      <div class="aide">Un emplacement inactif reste consultable et garde son historique, mais on ne peut plus y ranger de cabine. C'est l'alternative à la suppression pour un emplacement démontée.</div>
       ${gerer ? '<button class="btn orange" id="fOk">Enregistrer les modifications</button>' : ''}
     </div>
+    ${blocMiseEnService(e, gerer)}
     <div class="row actions-fiche" style="margin-top:12px">
       <button class="btn ghost" id="fEtiq">${icon('print', 17)} Imprimer l'étiquette QR</button>
       ${gerer ? `<button class="btn danger" id="fSup" style="margin-top:14px">${icon('trash', 17)} Supprimer</button>` : ''}
@@ -4521,6 +4623,7 @@ async function ficheEmplacement(emp, retour) {
 
   $('#fRetour').onclick = retour || renderEmplacements;
   $('#fEtiq').onclick = () => printLocationLabel(e.code);
+  brancherMiseEnService(e, () => ficheEmplacement({ id: e.id }, retour));
 
   // Occupation + opérations de rangement : l'écran partagé avec le scanner.
   montrerEmplacement(e, { sansReglages: true });
@@ -4538,7 +4641,8 @@ async function ficheEmplacement(emp, retour) {
         mode_places: $('#fMode').value,
         description: $('#fDesc').value.trim(),
         staging: $('#fStaging').checked,
-        actif: $('#fActif').checked,
+        // `actif` n'est PAS ici : il a ses règles et son propre geste, plus bas
+        // dans l'écran. Le serveur le refuse d'ailleurs en lecture seule.
       } });
       toast('Emplacement enregistré', 'ok');
       await rafraichirEmplacements();
@@ -4547,6 +4651,123 @@ async function ficheEmplacement(emp, retour) {
   };
 
   $('#fSup').onclick = () => supprimerEmplacement(e, retour);
+}
+
+/* --- Mise en service : l'emplacement, et chacune de ses deux places ---------
+   Trois questions se posent devant un rack à moitié vide, et l'écran doit y
+   répondre sans qu'on aille chercher : cet emplacement prend-il des cabines,
+   sinon POURQUOI, et depuis quand. Un booléen seul n'en dit qu'un tiers.
+
+   Condamner une place seule est le cas courant : un pilier devant la gauche de
+   AC550 ne retire pas la droite du stock. Désactiver l'emplacement entier pour
+   cela perdrait une place saine — et personne ne saurait laquelle des deux
+   posait problème.                                                            */
+function blocMiseEnService(e, gerer) {
+  const inactif = e.actif === false;
+  const quand = e.actif_le ? new Date(e.actif_le).toLocaleString('fr-FR') : null;
+  const condamnees = e.places_condamnees || [];
+  const parPlace = Object.fromEntries(condamnees.map(p => [p.place, p]));
+
+  /* Les places ne sont proposées que pour un emplacement à places nommées :
+     une aire à capacité illimitée n'en a pas, et le serveur le refuse. */
+  const places = e.illimite ? '' : `
+    <div class="sec">Les deux places</div>
+    <div class="meta" style="margin:-2px 0 8px">Une place condamnée ne prend plus
+      de cabine ; l'autre continue. Pour retirer l'emplacement entier, utilisez
+      « hors service » ci-dessus.</div>
+    <div class="list">${(REFS_CABINE.places || []).map(({ code, libelle }) => {
+      const c = parPlace[code];
+      return `<div class="item" style="cursor:default">
+        <div class="r">${esc(code)} — ${esc(libelle)} ${c
+          ? '<span class="etat hs">condamnée</span>'
+          : '<span class="etat ok">en service</span>'}</div>
+        ${c ? `<div class="meta">${esc(c.motif)}${c.cree_par ? ' — ' + esc(c.cree_par) : ''}${
+          c.cree_le ? ', le ' + new Date(c.cree_le).toLocaleDateString('fr-FR') : ''}</div>` : ''}
+        ${gerer ? `<button class="btn ${c ? 'ghost' : 'danger'}" data-place="${esc(code)}"
+          data-cond="${c ? '0' : '1'}" style="margin-top:8px">${c
+            ? 'Remettre cette place en service' : 'Condamner cette place'}</button>` : ''}
+      </div>`;
+    }).join('')}</div>`;
+
+  return `<div class="sec" style="margin-top:18px">Mise en service</div>
+    <div class="card">
+      <div class="r" style="font-size:16px;font-weight:700">${esc(e.code)} est
+        ${inactif ? '<span class="etat hs">hors service</span>'
+                  : '<span class="etat ok">en service</span>'}</div>
+      ${inactif
+        ? `<div class="meta" style="margin-top:5px">${e.motif_inactif
+              ? esc(e.motif_inactif) : 'Aucun motif enregistré.'}${
+            e.actif_par_nom ? ' — ' + esc(e.actif_par_nom) : ''}${quand ? ', le ' + esc(quand) : ''}</div>
+           <div class="meta" style="margin-top:5px">Il garde son historique et reste
+             consultable, mais aucune cabine ne peut plus y être rangée.</div>`
+        : `<div class="meta" style="margin-top:5px">Les cabines peuvent y être
+             rangées.${quand ? ' Remis en service le ' + esc(quand) + '.' : ''}</div>`}
+      ${gerer ? `<button class="btn ${inactif ? 'orange' : 'danger'}" id="fBascule">${
+        inactif ? 'Remettre en service' : 'Mettre hors service'}</button>` : ''}
+      ${places}
+    </div>`;
+}
+
+function brancherMiseEnService(e, redessiner) {
+  const bascule = $('#fBascule');
+  if (bascule) {
+    bascule.onclick = async () => {
+      const inactif = e.actif === false;
+      /* Remettre en service ne demande rien : constater qu'un obstacle a
+         disparu n'a pas à s'expliquer. Le retirer du stock, si — sans motif
+         écrit, personne ne saura six mois plus tard s'il faut le rouvrir. */
+      let motif = '';
+      if (!inactif) {
+        const rep = await confirmer({
+          titre: 'Mettre ' + e.code + ' hors service ?',
+          texte: 'Plus aucune cabine ne pourra y être rangée. L’historique est '
+               + 'conservé, et le geste se défait.',
+          ok: 'Mettre hors service', danger: true,
+          champ: { libelle: 'Pourquoi ?', placeholder: 'Ex. rack démonté, pilier devant',
+                   obligatoire: true,
+                   manque: 'Sans motif, personne ne saura s’il faut le rouvrir.' },
+        });
+        if (!rep || !rep.ok) return;
+        motif = rep.valeur;
+      }
+      bascule.disabled = true;
+      try {
+        await api(`/emplacements/${e.id}/activation/`, { method: 'POST',
+          body: { actif: inactif, motif } });
+        toast(`${e.code} ${inactif ? 'remis en service' : 'mis hors service'}`, 'ok');
+        await rafraichirEmplacements();
+        redessiner();
+      } catch (err) { bascule.disabled = false; toast(err.message, 'err'); }
+    };
+  }
+
+  document.querySelectorAll('[data-place][data-cond]').forEach(b => {
+    b.onclick = async () => {
+      const condamnee = b.dataset.cond === '1';
+      const place = b.dataset.place;
+      let motif = '';
+      if (condamnee) {
+        const rep = await confirmer({
+          titre: `Condamner la place ${place} de ${e.code} ?`,
+          texte: 'Cette place ne prendra plus de cabine. L’autre continue.',
+          ok: 'Condamner', danger: true,
+          champ: { libelle: 'Pourquoi ?', placeholder: 'Ex. pilier, montant tordu',
+                   obligatoire: true,
+                   manque: 'Sans motif, personne ne saura s’il faut la rouvrir.' },
+        });
+        if (!rep || !rep.ok) return;
+        motif = rep.valeur;
+      }
+      b.disabled = true;
+      try {
+        await api(`/emplacements/${e.id}/place/`, { method: 'POST',
+          body: { place, condamnee, motif } });
+        toast(`Place ${place} ${condamnee ? 'condamnée' : 'remise en service'}`, 'ok');
+        await rafraichirEmplacements();
+        redessiner();
+      } catch (err) { b.disabled = false; toast(err.message, 'err'); }
+    };
+  });
 }
 
 /* Suppression d'un emplacement. Quatre issues, toutes explicites.
@@ -6040,7 +6261,7 @@ async function renderScanner() {
     <div class="gestes">
       <label class="geste" id="sFicheLab">
         <span class="ic">${icon('camera', 26)}</span>
-        <span class="t">Photographier la fiche cabine</span>
+        <span class="t">Photographier la fiche</span>
         <span class="s">Le tableau à deux colonnes, collé sur la cabine</span>
         <input type="file" id="sFiche" accept="image/*" capture="environment">
       </label>

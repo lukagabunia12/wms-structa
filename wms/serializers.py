@@ -59,10 +59,44 @@ class EmplacementSerializer(serializers.ModelSerializer):
     # l'écran de gestion sait alors présenter « Supprimer » ou « Désactiver »
     # AVANT que l'opérateur ne clique, au lieu de le faire échouer après coup.
     suppression = serializers.SerializerMethodField()
+    actif_par_nom = serializers.SerializerMethodField()
+    places_condamnees = serializers.SerializerMethodField()
 
     class Meta:
         model = Emplacement
         fields = "__all__"
+        #: `actif` ne s'écrit PAS par le PATCH ordinaire. Il a ses règles —
+        #: motif obligatoire, refus tant qu'une cabine est là — et elles vivent
+        #: dans `services_cabines.changer_activation`, atteint par l'action
+        #: `/activation/`. Une case à cocher dans le formulaire les contournait
+        #: toutes : décocher puis « Enregistrer » retirait du stock un
+        #: emplacement occupé, sans motif et sans un mot.
+        read_only_fields = ["actif", "motif_inactif", "actif_le", "actif_par"]
+
+    def get_actif_par_nom(self, obj):
+        """Qui a mis l'emplacement en service ou hors service.
+
+        Même secours que partout ailleurs : le nom affiché, ou l'identifiant
+        quand personne n'a renseigné de nom.
+        """
+        u = obj.actif_par
+        return (u.nom or u.username) if u else ""
+
+    def get_places_condamnees(self, obj):
+        """Les places hors service : [{place, motif, cree_le, cree_par}].
+
+        Sur la fiche seulement, comme `suppression` : la liste des emplacements
+        en ferait une requête par ligne.
+        """
+        if not self._sur_la_fiche():
+            return None
+        return [{"place": p.place,
+                 "libelle": p.get_place_display(),
+                 "motif": p.motif,
+                 "cree_le": p.cree_le,
+                 "cree_par": ((p.cree_par.nom or p.cree_par.username)
+                              if p.cree_par_id else "")}
+                for p in obj.places_condamnees.select_related("cree_par")]
 
     def _sur_la_fiche(self):
         """Vrai pour la consultation d'un emplacement isolé.
@@ -72,8 +106,12 @@ class EmplacementSerializer(serializers.ModelSerializer):
         qu'au moment d'ouvrir la fiche.
         """
         vue = self.context.get("view")
+        # `activation` et `place` renvoient la fiche complète : c'est elle que
+        # l'écran redessine juste après le geste. Sans elles dans cette liste,
+        # il se redessinait sans les condamnations qu'il venait de poser.
         return getattr(vue, "action", None) in ("retrieve", "create", "update",
-                                                "partial_update")
+                                                "partial_update", "activation",
+                                                "place")
 
     def get_suppression(self, obj):
         if not obj.pk or not self._sur_la_fiche():
