@@ -1,0 +1,87 @@
+{% extends "admin/base_site.html" %}
+{# Vider le stock des cabines.
+
+   Trois phrases à recopier, et une sauvegarde écrite avant le premier
+   effacement. La page dit d'abord CE QUI PART et CE QUI RESTE, avec les
+   nombres réels : « toutes les données seront effacées » ne dit pas si le
+   fichier de production de deux mille lignes y passe, et c'est précisément la
+   question qu'on se pose le doigt au-dessus du bouton. #}
+{% block content %}
+<div id="content-main">
+
+  <p style="max-width:52em">
+    Efface <strong>toutes les cabines et leur journal</strong>. L'entrepôt, les
+    comptes et le fichier de production restent en place. Une
+    <strong>sauvegarde rechargeable</strong> est écrite avant le premier
+    effacement.
+  </p>
+
+  <div style="display:flex;gap:18px;flex-wrap:wrap;margin:18px 0">
+    <div class="module" style="flex:1 1 260px">
+      <h2 style="background:#B3261E">Ce qui part</h2>
+      <table style="width:100%">
+        <tr><th style="text-align:right;width:5em">{{ etat.cabines }}</th><td>cabine{{ etat.cabines|pluralize }}</td></tr>
+        <tr><th style="text-align:right">{{ etat.rangees }}</th><td>rangée{{ etat.rangees|pluralize }} dans un emplacement</td></tr>
+        <tr><th style="text-align:right">{{ etat.journal }}</th><td>ligne{{ etat.journal|pluralize }} de journal</td></tr>
+      </table>
+    </div>
+    <div class="module" style="flex:1 1 260px">
+      <h2>Ce qui reste</h2>
+      <table style="width:100%">
+        <tr><th style="text-align:right;width:5em">{{ etat.conserves.emplacements }}</th><td>emplacement{{ etat.conserves.emplacements|pluralize }}</td></tr>
+        <tr><th style="text-align:right">{{ etat.conserves.places_condamnees }}</th><td>place{{ etat.conserves.places_condamnees|pluralize }} condamnée{{ etat.conserves.places_condamnees|pluralize }}</td></tr>
+        <tr><th style="text-align:right">{{ etat.conserves.zones }}</th><td>zone{{ etat.conserves.zones|pluralize }}</td></tr>
+        <tr><th style="text-align:right">{{ etat.conserves.comptes }}</th><td>compte{{ etat.conserves.comptes|pluralize }}</td></tr>
+        <tr><th style="text-align:right">{{ etat.conserves.cabines_attendues }}</th><td>ligne{{ etat.conserves.cabines_attendues|pluralize }} du fichier de production</td></tr>
+        <tr><th style="text-align:right">{{ etat.conserves.modeles_regles }}</th><td>modèle{{ etat.conserves.modeles_regles|pluralize }} réglé{{ etat.conserves.modeles_regles|pluralize }}</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <form method="post" style="max-width:52em">
+    {% csrf_token %}
+    <fieldset class="module aligned">
+      <h2>Trois confirmations</h2>
+
+      <div class="form-row{% if manques.confirmation %} errors{% endif %}">
+        {% if manques.confirmation %}<ul class="errorlist"><li>{{ manques.confirmation }}</li></ul>{% endif %}
+        <label for="confirmation">1. Recopiez <code>{{ mot_confirmer }}</code> :</label>
+        <input type="text" name="confirmation" id="confirmation" autocomplete="off"
+               spellcheck="false" value="{{ saisies.confirmation }}" style="width:26em">
+      </div>
+
+      <div class="form-row{% if manques.date_du_jour %} errors{% endif %}">
+        {% if manques.date_du_jour %}<ul class="errorlist"><li>{{ manques.date_du_jour }}</li></ul>{% endif %}
+        <label for="date_du_jour">2. Tapez la date d'aujourd'hui (JJ/MM/AAAA) :</label>
+        <input type="text" name="date_du_jour" id="date_du_jour" autocomplete="off"
+               spellcheck="false" placeholder="JJ/MM/AAAA"
+               value="{{ saisies.date_du_jour }}" style="width:26em">
+        <p class="help">La date empêche un onglet laissé ouvert la veille, une
+          capture d'écran ou une requête rejouée de vider l'entrepôt.</p>
+      </div>
+
+      <div class="form-row{% if manques.engagement %} errors{% endif %}">
+        {% if manques.engagement %}<ul class="errorlist"><li>{{ manques.engagement }}</li></ul>{% endif %}
+        <label for="engagement">3. Recopiez la phrase :</label>
+        <input type="text" name="engagement" id="engagement" autocomplete="off"
+               spellcheck="false" value="{{ saisies.engagement }}" style="width:40em">
+        <p class="help"><code>{{ phrase_engagement }}</code></p>
+      </div>
+    </fieldset>
+
+    <div class="submit-row">
+      <input type="submit" value="Vider le stock des cabines" class="default"
+             style="background:#B3261E;float:left">
+      <a href="{% url 'admin:wms_cabine_changelist' %}" class="button cancel-link"
+         style="float:left;margin-left:12px">Annuler</a>
+    </div>
+  </form>
+
+  <p class="help" style="max-width:52em;margin-top:22px">
+    La sauvegarde est écrite dans le dossier <code>sauvegardes/</code> du projet.
+    Elle se recharge avec
+    <code>python manage.py loaddata sauvegardes/remise-a-zero_&hellip;.json</code>
+    — cabines, positions et journal compris.
+  </p>
+</div>
+{% endblock %}

@@ -72,7 +72,7 @@ class CorrectionFicheTest(BaseCorrection):
     def test_une_cabine_envoyee_reste_corrigeable(self):
         """Une faute de frappe reste une faute de frappe une fois la cabine partie."""
         c = self.cabine()
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         r = self.client.patch(f"/api/cabines/{c.id}/", {"modele": "ARTIC 120"}, format="json")
         self.assertEqual(r.status_code, 200, getattr(r, "data", None))
         c.refresh_from_db()
@@ -144,7 +144,7 @@ class SuppressionCabineTest(BaseCorrection):
 
     def test_cabine_envoyee_demande_confirmation(self):
         c = self.cabine()
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         refus = self.client.delete(f"/api/cabines/{c.id}/")
         self.assertEqual(refus.status_code, 400)
         self.assertIn("archivée", " ".join(refus.data["erreur"]))
@@ -176,7 +176,6 @@ class DiagnosticExposeTest(BaseCorrection):
         c = self.cabine()
         d = self.client.get(f"/api/cabines/{c.id}/").data["suppression"]
         self.assertTrue(d["possible"])
-        self.assertIsNone(d["motif"])
 
     def test_fiche_annonce_la_place_qui_sera_liberee(self):
         c = self.cabine()
@@ -187,8 +186,6 @@ class DiagnosticExposeTest(BaseCorrection):
                                 utilisateur=self.user)
         d = self.client.get(f"/api/cabines/{c.id}/").data["suppression"]
         self.assertFalse(d["possible"])
-        self.assertEqual(d["motif"], services_cabines.BLOCAGE_RANGEE)
-        self.assertTrue(d["forcable"])
         self.assertIn("C001·D", d["message"])
 
     def test_la_liste_ne_paie_pas_le_diagnostic(self):

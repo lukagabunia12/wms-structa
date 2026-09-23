@@ -24,6 +24,12 @@ class AdministrationDesComptesTest(TestCase):
         for attendu in ("nom", "role", "droit_cab", "droit_ref"):
             self.assertIn(attendu, champs)
 
+    def test_la_fiche_ne_montre_que_les_droits_qui_commandent_quelque_chose(self):
+        """Cinq cases (mouvements, inventaire, appro…) ne commandaient plus rien
+        depuis le retrait du volet articles : on les cochait sans effet."""
+        champs = [c for _, section in self.admin_vue.fieldsets for c in section["fields"]]
+        self.assertEqual([c for c in champs if c.startswith("droit_")], ["droit_cab", "droit_ref"])
+
     def test_profil_affiche_ce_que_la_personne_verra(self):
         cas = [
             (dict(username="c1", role=Utilisateur.OPERATEUR, droit_cab=True), "Cariste"),
@@ -62,7 +68,4 @@ class AdministrationDesComptesTest(TestCase):
         """Ce que « Cariste » veut dire, noir sur blanc."""
         u = Utilisateur.objects.create_user(username="c7", password="motdepasse123",
                                             **PROFIL_CARISTE)
-        droits = u.droits_effectifs()
-        self.assertTrue(droits["cab"])
-        for interdit in ("ref", "data", "mvt", "mvt_corr", "inv", "appro"):
-            self.assertFalse(droits[interdit], interdit)
+        self.assertEqual(u.droits_effectifs(), {"cab": True, "ref": False})

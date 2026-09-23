@@ -4,18 +4,15 @@
    cabine ; sans la raison au journal, personne ne sait quoi réparer pour la
    lever, et la cabine reste en travers du rack pendant des semaines.
 
-2. On ne sort pas une cabine de son emplacement sans motif. Le geste libère une
-   place et laisse la cabine nulle part : le lendemain, la question « où est la
-   00_00_01 ? » n'a plus de réponse.
+2. On ne sort pas une cabine sans motif. Sortir, c'est envoyer : le geste libère
+   sa place, et sans motif la question « où est la 00_00_01 ? » n'a plus de
+   réponse le lendemain.
 
-3. On peut repartir de zéro depuis l'application. Pendant les essais, la remise
-   à zéro sert plusieurs fois de suite — et le terminal est sur le serveur, pas
-   dans la poche de la personne qui teste.
+Ce qui est vérifié ici n'est pas seulement le refus : c'est aussi le MESSAGE.
+Un refus qui ne dit pas à quoi sert le motif se contourne en tapant « ok ».
 
-Ce qui est vérifié ici n'est pas seulement le refus : c'est aussi ce qui SURVIT.
-Une remise à zéro qui emporterait le fichier de production désarmerait la règle
-« une cabine non annoncée ne s'enregistre pas », et il faudrait réimporter
-2 000 lignes avant de pouvoir entrer la première cabine.
+(La remise à zéro, troisième règle de cette série, a quitté l'application pour
+l'administration Django : voir `test_remise_a_zero_admin.py`.)
 """
 from rest_framework.test import APITestCase
 
@@ -94,16 +91,41 @@ class QuarantaineSansMotifTest(BaseMotifs):
         self.cab.refresh_from_db()
         self.assertEqual(self.cab.statut, Cabine.LIBRE)
 
-    def test_la_garde_ne_deborde_pas_sur_l_envoi(self):
-        """L'envoi passe par `envoyer()`, qui a ses propres règles.
+    def test_l_envoi_exige_aussi_son_motif(self):
+        """Sortir une cabine, c'est l'envoyer — et une sortie se motive.
 
-        Il n'y a que trois statuts : Conforme, En quarantaine, Envoyée. Écrire
-        la garde « quarantaine » un cran trop haut la ferait s'appliquer à
-        l'envoi, et plus une cabine ne partirait sans qu'on tape une phrase —
-        alors que le n° de chantier, lui déjà obligatoire, dit où elle va.
+        Cet essai soutenait l'inverse : que l'envoi n'ait pas à être motivé, le
+        n° de chantier disant déjà où la cabine va. C'était tenable tant que le
+        retrait d'emplacement existait à côté, lui motivé. Les deux gestes n'en
+        font plus qu'un : la règle « pas de sortie sans motif » doit donc tenir
+        sur celui qui reste, sinon elle disparaît avec l'autre.
         """
-        services_cabines.changer_statut(
-            cabine=self.cab, statut=Cabine.ENVOYE, utilisateur=self.user)
+        with self.assertRaises(services_cabines.ErreurCabine) as bilan:
+            services_cabines.changer_statut(
+                cabine=self.cab, statut=Cabine.ENVOYE, utilisateur=self.user)
+        self.assertIn("pourquoi", str(bilan.exception).lower())
+        self.cab.refresh_from_db()
+        self.assertEqual(self.cab.statut, Cabine.LIBRE)
+
+        services_cabines.changer_statut(cabine=self.cab, statut=Cabine.ENVOYE,
+                                        utilisateur=self.user, motif="chargée camion 12")
+        self.cab.refresh_from_db()
+        self.assertEqual(self.cab.statut, Cabine.ENVOYE)
+        # Le motif ne se perd pas en route : c'est le journal qui répondra à
+        # « où est passée cette cabine ? ».
+        mouvement = self.cab.historique.filter(type=MouvementCabine.ENVOI).first()
+        self.assertEqual(mouvement.note, "chargée camion 12")
+
+    def test_l_api_refuse_l_envoi_sans_motif(self):
+        """La même règle, par le chemin que prennent les écrans."""
+        r = self.client.post(f"/api/cabines/{self.cab.id}/envoyer/", {}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.cab.refresh_from_db()
+        self.assertEqual(self.cab.statut, Cabine.LIBRE)
+
+        r = self.client.post(f"/api/cabines/{self.cab.id}/envoyer/",
+                             {"note": "départ en pose"}, format="json")
+        self.assertEqual(r.status_code, 200)
         self.cab.refresh_from_db()
         self.assertEqual(self.cab.statut, Cabine.ENVOYE)
 
@@ -116,15 +138,16 @@ class QuarantaineSansMotifTest(BaseMotifs):
 
 
 class SortieSansMotifTest(BaseMotifs):
+    """La sortie d'un emplacement est l'envoi : c'est sur lui que la règle tient."""
+
     def setUp(self):
         super().setUp()
         services_cabines.ranger(cabine=self.cab, emplacement=self.emp,
                                 place=Occupation.GAUCHE, utilisateur=self.user)
 
-    def test_sortir_de_l_emplacement_sans_motif_est_refuse(self):
+    def test_sortir_sans_motif_est_refuse(self):
         with self.assertRaises(services_cabines.ErreurCabine) as bilan:
-            services_cabines.sortir_de_l_emplacement(
-                cabine=self.cab, utilisateur=self.user)
+            services_cabines.envoyer(cabine=self.cab, utilisateur=self.user)
         self.assertIn("où elle est passée", " ".join(bilan.exception.messages))
         # Et la place n'a PAS été libérée : un refus qui libère quand même
         # serait pire que pas de règle du tout.
@@ -132,133 +155,24 @@ class SortieSansMotifTest(BaseMotifs):
 
     def test_un_motif_d_espaces_ne_compte_pas(self):
         with self.assertRaises(services_cabines.ErreurCabine):
-            services_cabines.sortir_de_l_emplacement(
-                cabine=self.cab, utilisateur=self.user, note=" \t ")
+            services_cabines.envoyer(cabine=self.cab, utilisateur=self.user, note=" \t ")
         self.assertEqual(self.places_prises(), 1)
 
     def test_avec_motif_la_place_est_liberee_et_le_journal_le_dit(self):
-        services_cabines.sortir_de_l_emplacement(
-            cabine=self.cab, utilisateur=self.user, note="remontée à l'atelier")
+        services_cabines.envoyer(cabine=self.cab, utilisateur=self.user,
+                                 note="départ en pose")
         self.assertEqual(self.places_prises(), 0)
         mvt = (MouvementCabine.objects.filter(cabine=self.cab,
-                                              type=MouvementCabine.RETRAIT).latest("id"))
-        self.assertIn("atelier", mvt.note)
+                                              type=MouvementCabine.ENVOI).latest("id"))
+        self.assertIn("pose", mvt.note)
         # Le journal dit AUSSI d'où elle sort : sans cela, le motif est une
         # phrase en l'air.
         self.assertIn("C001", mvt.depuis)
 
-    def test_l_api_refuse_aussi(self):
-        r = self.client.post(f"/api/cabines/{self.cab.id}/sortir/", {}, format="json")
-        self.assertEqual(r.status_code, 400)
-        self.assertEqual(self.places_prises(), 1)
-
-    def test_l_api_accepte_avec_note(self):
+    def test_il_n_y_a_plus_de_sortie_a_moitie(self):
+        """L'ancien retrait d'emplacement laissait la cabine « en stock, nulle
+        part ». Ce chemin n'existe plus."""
         r = self.client.post(f"/api/cabines/{self.cab.id}/sortir/",
                              {"note": "déplacée à la main"}, format="json")
-        self.assertEqual(r.status_code, 200, r.data)
-        self.assertEqual(self.places_prises(), 0)
-
-
-class RemiseAZeroTest(BaseMotifs):
-    """`POST /api/cabines/vider_le_stock/` — la remise à zéro des essais."""
-
-    URL = "/api/cabines/vider_le_stock/"
-
-    def setUp(self):
-        super().setUp()
-        services_cabines.ranger(cabine=self.cab, emplacement=self.emp,
-                                place=Occupation.GAUCHE, utilisateur=self.user)
-        CabineAttendue.objects.create(numero="00_00_02", modele="DUO", chantier="000124")
-        self.operateur = Utilisateur.objects.create_user(
-            username="operateur", password="secret123", role=Utilisateur.OPERATEUR)
-
-    def test_le_get_annonce_ce_qui_partira_sans_rien_effacer(self):
-        r = self.client.get(self.URL)
-        self.assertEqual(r.status_code, 200, r.data)
-        self.assertFalse(r.data["efface"])
-        self.assertEqual(r.data["cabines"], 1)
-        self.assertEqual(r.data["rangees"], 1)
-        self.assertGreaterEqual(r.data["journal"], 2)   # création + rangement
-        self.assertEqual(Cabine.objects.count(), 1)     # rien n'a bougé
-
-    def test_le_get_annonce_le_mot_a_retaper(self):
-        """L'écran ne doit pas écrire le mot en dur : deux orthographes et il
-        devient inutilisable sans que rien ne le signale."""
-        r = self.client.get(self.URL)
-        self.assertEqual(r.data["mot"], "EFFACER")
-
-    def test_sans_confirmation_rien_n_est_efface(self):
-        r = self.client.post(self.URL, {}, format="json")
-        self.assertEqual(r.status_code, 400)
-        self.assertEqual(Cabine.objects.count(), 1)
-
-    def test_avec_une_mauvaise_confirmation_rien_n_est_efface(self):
-        r = self.client.post(self.URL, {"confirmation": "effacer"}, format="json")
-        self.assertEqual(r.status_code, 400)
-        # Le refus DOIT rappeler le mot exact : sinon on retape trois fois
-        # « effacer » sans comprendre que c'est la casse qui bloque.
-        self.assertIn("EFFACER", str(r.data))
-        self.assertEqual(Cabine.objects.count(), 1)
-
-    def test_avec_la_confirmation_les_cabines_et_le_journal_partent(self):
-        r = self.client.post(self.URL, {"confirmation": "EFFACER"}, format="json")
-        self.assertEqual(r.status_code, 200, r.data)
-        self.assertTrue(r.data["efface"])
-        self.assertEqual(r.data["cabines"], 1)
-        self.assertEqual(Cabine.objects.count(), 0)
-        self.assertEqual(MouvementCabine.objects.count(), 0)
-        # Les occupations partent avec les cabines (CASCADE) : sans cela, la
-        # place resterait réservée par une cabine qui n'existe plus.
-        self.assertEqual(Occupation.objects.count(), 0)
-
-    def test_ce_qui_survit_a_la_remise_a_zero(self):
-        """Le point de la règle. Effacer le fichier de production obligerait à
-        réimporter 2 000 lignes avant la première cabine."""
-        avant_attendues = CabineAttendue.objects.count()
-        avant_modeles = ModeleCabine.objects.count()
-        r = self.client.post(self.URL, {"confirmation": "EFFACER"}, format="json")
-        self.assertEqual(r.status_code, 200, r.data)
-        self.assertEqual(CabineAttendue.objects.count(), avant_attendues)
-        self.assertEqual(ModeleCabine.objects.count(), avant_modeles)
-        self.assertEqual(Emplacement.objects.count(), 1)
-        self.assertEqual(Zone.objects.count(), 1)
-        self.assertEqual(Utilisateur.objects.count(), 2)
-        # Et l'écran l'annonce, avec les mêmes nombres.
-        self.assertEqual(r.data["conserves"]["cabines_attendues"], avant_attendues)
-        self.assertEqual(r.data["conserves"]["emplacements"], 1)
-
-    def test_l_emplacement_est_libre_apres(self):
-        """La preuve utile : on doit pouvoir ranger tout de suite au même endroit."""
-        self.client.post(self.URL, {"confirmation": "EFFACER"}, format="json")
-        neuve = services_cabines.creer_cabine(
-            numero="00_00_02", chantier="000124", modele="DUO", utilisateur=self.user)
-        services_cabines.ranger(cabine=neuve, emplacement=self.emp,
-                                place=Occupation.GAUCHE, utilisateur=self.user)
-        self.assertEqual(self.places_prises(neuve), 1)
-
-    def test_un_operateur_ne_peut_pas_vider_le_stock(self):
-        self.client.force_authenticate(user=self.operateur)
-        r = self.client.post(self.URL, {"confirmation": "EFFACER"}, format="json")
-        self.assertEqual(r.status_code, 403)
-        self.assertEqual(Cabine.objects.count(), 1)
-
-    def test_un_operateur_ne_peut_meme_pas_regarder(self):
-        """Le GET est en lecture seule, mais il annonce la portée d'un geste
-        d'administration : le proposer à qui ne peut pas le faire n'apprend rien
-        d'utile et suggère un bouton qui répondra 403."""
-        self.client.force_authenticate(user=self.operateur)
-        self.assertEqual(self.client.get(self.URL).status_code, 403)
-
-    def test_sans_compte_c_est_refuse(self):
-        self.client.force_authenticate(user=None)
-        r = self.client.post(self.URL, {"confirmation": "EFFACER"}, format="json")
-        self.assertIn(r.status_code, (401, 403))
-        self.assertEqual(Cabine.objects.count(), 1)
-
-    def test_vider_une_base_deja_vide_ne_casse_rien(self):
-        """L'écran reste utilisable pour la remise à zéro suivante."""
-        self.client.post(self.URL, {"confirmation": "EFFACER"}, format="json")
-        r = self.client.post(self.URL, {"confirmation": "EFFACER"}, format="json")
-        self.assertEqual(r.status_code, 200, r.data)
-        self.assertEqual(r.data["cabines"], 0)
-        self.assertEqual(r.data["journal"], 0)
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(self.places_prises(), 1)

@@ -4,26 +4,17 @@
 > Ce guide décrit les opérations métier qu'elle propose.
 
 Selon votre compte, certaines opérations peuvent être refusées : la consultation est ouverte à tous,
-mais les écritures dépendent des droits accordés (mouvements, inventaire, cabines, référentiel).
+mais les écritures dépendent des droits accordés (**cabines**, **référentiel**).
 Un compte « lecture seule » ne peut rien modifier.
 
-## Opérations de stock
-- **Réception** : enregistrer l'arrivée d'un article (crée une entrée + une réception numérotée).
-  Option « à ranger » : l'article arrive en zone de réception avant rangement.
-- **Rangement** : déplacer depuis la zone « à ranger » vers un emplacement définitif.
-- **Entrée / Sortie** : ajouter ou retirer une quantité sur un emplacement.
-  Une sortie supérieure au stock disponible est refusée.
-- **Transfert** : déplacer une quantité d'un emplacement à un autre.
-- **Inventaire** : saisir la quantité comptée ; l'écart génère un ajustement.
-- **Correction** : annuler un mouvement (crée un mouvement inverse ; l'historique est conservé).
-
 ## Cabines
-Suivi des cabines par numéro (`xx_xx_xx`) et chantier (6 chiffres), avec un statut métier
-(ex. « Quarantaine ») et une sortie définitive.
+Suivi des cabines par numéro (`xx_xx_xx`) et chantier (6 chiffres, éventuellement suivis du
+lot : `251213-1`), avec un statut — « Conforme » ou « En quarantaine » — et une sortie
+définitive.
 
 ## Recherche et traçabilité
-Recherche d'articles, d'emplacements et de cabines ; historique complet des mouvements,
-et reconstitution du stock à une date donnée.
+Recherche d'emplacements et de cabines ; le **Journal** retrace tout ce qui est arrivé à
+chaque cabine, avec l'auteur et la date.
 
 ## Emplacements — tout se passe au même endroit
 
@@ -33,9 +24,9 @@ Il remplace les anciens écrans « Emplacements » et « Gestion des emplacement
 qui proposaient chacun des champs différents.
 
 **Ajouter** — le bouton orange **« + Nouvel emplacement »** est en haut à droite du
-titre, toujours visible. Une fenêtre s'ouvre : code, zone, mode de rangement,
-description, et la case « zone de réception ». Le code est ce qui sera imprimé sur
-l'étiquette QR collée sur la travée.
+titre, toujours visible. Une fenêtre s'ouvre : code, mode de rangement (deux places, ou
+capacité illimitée), description, et la case « zone de réception ». Le code est ce qui
+sera imprimé sur l'étiquette QR collée sur l'emplacement.
 
 **Créer un rack entier** — bouton **« Créer un rack »**, à côté du précédent.
 Voir la section « Créer un rack » plus bas.
@@ -43,10 +34,10 @@ Voir la section « Créer un rack » plus bas.
 **Modifier ou supprimer** — cliquer sur une ligne de la liste ouvre la fiche de
 l'emplacement. On y trouve, dans l'ordre :
 
-1. l'occupation (les trois places G/M/D, ou les cabines en capacité illimitée) et les
-   boutons « Ranger ici » / « Sortir d'ici » ;
-2. les **réglages** : code, zone, mode de rangement, description, zone de réception,
-   emplacement actif ;
+1. l'occupation (les deux places gauche et droite, ou les cabines en capacité
+   illimitée) et les boutons « Saisir le n° à la main » / « Sortir une cabine » ;
+2. les **réglages** : code, mode de rangement, description, zone de réception — puis la
+   mise en service de l'emplacement et de chacune de ses deux places ;
 3. l'**impression de l'étiquette QR** et la **suppression**.
 
 Un emplacement scanné donne accès à la même fiche : bouton « Régler / supprimer cet
@@ -56,44 +47,18 @@ emplacement ».
 
 | Situation | Ce qui se passe |
 |---|---|
-| Des cabines y sont rangées | Refus. Sortez-les ou transférez-les d'abord — sinon elles se retrouveraient « non rangées » sans aucune trace. |
-| Il porte encore du stock | Refus pour un opérateur — le message dit quels articles bloquent et invite à s'adresser à un administrateur. **Un administrateur**, lui, peut le supprimer avec son stock : voir ci-dessous. |
-| Il apparaît dans l'historique | Le WMS propose de le **désactiver** plutôt que de le supprimer. La suppression reste possible en confirmant une seconde fois, mais le journal affichera alors « ? » à la place du code. |
-| Rien de tout cela | Suppression après une simple confirmation. |
+| Des cabines y sont rangées | Refus. Déplacez-les ou envoyez-les d'abord — sinon elles se retrouveraient « non rangées » sans aucune trace. Personne ne peut passer outre, pas même un administrateur. |
+| Aucune cabine | Suppression après une simple confirmation. Le journal des cabines garde le code de l'emplacement : l'historique reste lisible. |
 
-**Désactiver** est souvent le bon geste pour une travée démontée : l'emplacement
-disparaît des écrans de rangement, plus personne ne peut y ranger de cabine, et
-l'historique reste lisible.
-
-#### Supprimer un emplacement qui porte du stock — administrateurs seulement
-
-Les écrans qui vident un emplacement (Sortie, Transfert) appartiennent au volet
-articles, aujourd'hui retiré des menus : sans cette porte, un emplacement portant du
-stock serait définitivement impossible à supprimer.
-
-Un **administrateur** voit alors une fenêtre qui liste, article par article, ce qui
-va être sorti, et demande un **motif obligatoire**. À la validation, le WMS enregistre
-une **sortie de stock par article**, à son nom et avec son motif. Ce n'est pas un
-transfert : les quantités quittent les totaux du stock, et le journal des mouvements
-en garde la trace.
-
-Un opérateur, même avec le droit « référentiel », ne peut pas forcer : le message lui
-indique quels articles bloquent et à qui s'adresser.
-
-> Les cabines rangées, elles, ne se forcent jamais — même pour un administrateur.
-> Il suffit d'un clic sur « Sortir d'ici » depuis l'emplacement, alors que forcer
-> rendrait tout le parc « non rangé » sans aucune trace.
+**Désactiver** reste le bon geste pour un emplacement provisoirement hors d'usage :
+il disparaît des écrans de rangement, plus personne ne peut y ranger de cabine, et
+il se remet en service d'un geste.
 
 ### Zones
 
-Même principe : **+ Nouvelle zone** en haut, clic sur une zone pour tout modifier (nom,
-rôle, description, ordre d'affichage, active) ou la supprimer. Une zone encore rattachée
-à des emplacements ne peut pas être supprimée — c'est son *rôle* qui permet au suivi du
-processus d'annoncer « en attente de départ » plutôt qu'un simple code d'emplacement.
-
-> Un emplacement **sans zone** est signalé sur sa fiche : le suivi du processus ne sait
-> alors pas distinguer une cabine qui attend son départ d'une cabine qui sort de
-> production. Rattachez chaque emplacement à une zone.
+Les zones se règlent dans l'administration (`/admin/`). Une zone encore rattachée à des
+emplacements ne peut pas être supprimée : l'administration nomme les emplacements à
+rattacher ailleurs d'abord.
 
 ## Corriger ou supprimer une cabine mal saisie
 
@@ -159,7 +124,7 @@ C'est ce qui rend l'opération rejouable — pour ajouter un 4ᵉ niveau à un r
 existant, on relance la même génération avec « Niveaux = 4 », et seul le nouveau
 niveau est créé.
 
-La zone, le mode de rangement et la description saisis s'appliquent à tout le rack.
+Le mode de rangement et la description saisis s'appliquent à tout le rack.
 
 > Le WMS refuse une génération où les niveaux déborderaient sur la colonne
 > suivante (par exemple 3 niveaux avec un pas de 2 : la colonne 550 irait
@@ -167,7 +132,7 @@ La zone, le mode de rangement et la description saisis s'appliquent à tout le r
 
 ## Imprimer les étiquettes QR
 
-Écran **Étiquettes**, onglet **Emplacements**. Trois portées :
+Écran **Étiquettes**. Trois portées :
 
 - **Une cellule** — une seule étiquette (aussi disponible depuis la fiche d'un emplacement) ;
 - **Une colonne** — la bande d'un montant : AC550, AC551, AC552 ;

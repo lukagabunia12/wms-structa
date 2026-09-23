@@ -40,10 +40,8 @@ function verifier(nom, obtenu, attendu) {
 /* --- Le masque des numéros de cabine ---------------------------------------
    Un n° de cabine s'écrit XX_XX_XX. Sur un téléphone, taper un tiret bas
    demande de changer de clavier trois fois : le masque les pose tout seuls et
-   le champ n'accepte que des chiffres. Le même champ sert parfois à chercher
-   un n° de chantier, qui n'a pas de tirets : le masque se débranche alors. */
-const { masquerNumero, masqueNumeroActif } =
-  extraire('function formaterNumero', 'const debounce =', 'masquerNumero, masqueNumeroActif');
+   le champ n'accepte que des chiffres. */
+const { masquerNumero } = extraire('function formaterNumero', 'const debounce =', 'masquerNumero');
 
 class ChampFactice {
   constructor() { this.value = ''; this.dataset = {}; this.attrs = {}; this.ecouteurs = []; this.selectionStart = 0; }
@@ -75,19 +73,6 @@ const cas = [
 for (const [nom, saisi, attendu] of cas) {
   verifier(nom, masquerNumero(new ChampFactice()).taper(saisi), attendu);
 }
-
-champ = masquerNumero(new ChampFactice());
-champ.taper('260347');
-masqueNumeroActif(champ, false);
-verifier('bascule chantier : les tirets partent', champ.value, '260347');
-champ.value = '';
-verifier('chantier : six chiffres intacts', champ.taper('251280'), '251280');
-masqueNumeroActif(champ, true);
-verifier('retour cabine : reformaté', champ.value, '25_12_80');
-
-verifier('clavier complet en mode chantier', champ.attrs.inputmode, 'numeric');
-masqueNumeroActif(champ, false);
-verifier('mode chantier : le tiret devient atteignable', champ.attrs.inputmode, 'text');
 
 /* --- Le chantier et son lot -------------------------------------------------
    Un chantier s'écrit « 251213 », et se décline en lots : « 251213-1 ». Il se

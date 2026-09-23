@@ -18,6 +18,8 @@ Ce qui est vérifié ici n'est pas seulement le refus, mais aussi :
   en chantier est bien arrivée. Compter le stock du moment ferait baisser le
   chiffre à mesure que la production part.
 """
+import tempfile
+
 from rest_framework.test import APITestCase
 
 from wms import services_cabines
@@ -326,11 +328,11 @@ class CondamnerUnePlaceTest(BaseActivation):
             emplacement=self.e1, place=Occupation.GAUCHE, motif="pilier",
             utilisateur=self.user)
         self.cabine()
-        r = self.client.post("/api/cabines/vider_le_stock/",
-                             {"confirmation": "EFFACER"}, format="json")
-        self.assertEqual(r.status_code, 200, r.data)
+        with tempfile.TemporaryDirectory() as dossier:
+            services_cabines.vider_le_stock(utilisateur=self.user, dossier=dossier)
         self.assertEqual(PlaceCondamnee.objects.count(), 1)
-        self.assertEqual(r.data["conserves"]["places_condamnees"], 1)
+        self.assertEqual(
+            services_cabines.etat_du_stock()["conserves"]["places_condamnees"], 1)
 
     def test_supprimer_l_emplacement_emporte_ses_condamnations(self):
         """CASCADE : une condamnation sans emplacement ne veut rien dire."""
@@ -385,7 +387,7 @@ class ComparateurParSemaineTest(BaseActivation):
         """
         c = services_cabines.creer_cabine(numero="00_00_11", chantier="000200",
                                           modele="DUO", utilisateur=self.user)
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         _, par = self.lignes()
         self.assertEqual(par["S37"]["arrivees"], 1)
         # « Rangées » est la question suivante, et elle répond autrement.

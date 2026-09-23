@@ -87,11 +87,11 @@ Ce qui s'ouvre, ce sont ses outils :
 
 Dans pgAdmin, les tables du WMS sont sous
 `Servers → PostgreSQL → Databases → wms_essai → Schemas → public → Tables`,
-nommées `wms_emplacement`, `wms_cabine`, `wms_mouvement`…
+nommées `wms_emplacement`, `wms_cabine`, `wms_mouvementcabine`…
 
 > pgAdmin sert à **regarder**. Ne modifiez pas les données par là : le WMS tient
-> un journal de mouvements, et une ligne changée à la main dans la table laisse
-> des totaux qui ne s'expliquent plus par l'historique.
+> le journal des cabines, et une position changée à la main dans la table n'y
+> laisse aucune trace — plus personne ne saura l'expliquer.
 
 Ensuite, `Demarrer-WMS.bat` comme d'habitude : l'application tourne sur
 PostgreSQL, avec vos données. Éprouvez-la pour de bon — connexion, scan d'un

@@ -168,17 +168,12 @@ class EmplacementEntierTest(BaseModeles):
     def test_l_emplacement_libere_reprend_ses_deux_places(self):
         c = self.cabine(modele="QUATTRO")
         services_cabines.ranger(cabine=c, emplacement=self.e1, utilisateur=self.user)
-        services_cabines.sortir_de_l_emplacement(cabine=c, utilisateur=self.user, note="remontée à l’atelier")
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         self.assertEqual(services_cabines.places_libres(self.e1), ["G", "D"])
 
 
 class PlacesSelonLaCabineTest(BaseModeles):
-    """`/places/?pour_cabine=` : ce que l'écran apprend AVANT le geste.
-
-    Le paramètre ne peut pas s'appeler `cabine` : ce nom est déjà le filtre de la
-    LISTE des emplacements, lu par le même `get_queryset()`, et il filtrait
-    l'emplacement lui-même — la fiche répondait 404 au lieu de ses places.
-    """
+    """`/places/?pour_cabine=` : ce que l'écran apprend AVANT le geste."""
 
     def test_sans_cabine_la_reponse_est_celle_d_une_cabine_ordinaire(self):
         r = self.client.get(f"/api/emplacements/{self.e1.id}/places/")
@@ -416,8 +411,8 @@ class PlusieursEmplacementsTest(BaseModeles):
         self.assertEqual(entieres[0]["occupation"]["id"],
                          entieres[1]["occupation"]["id"])   # …sur la MÊME occupation
 
-    def test_sortir_libere_les_trois_emplacements(self):
-        services_cabines.sortir_de_l_emplacement(cabine=self.cab, utilisateur=self.user, note="remontée à l’atelier")
+    def test_l_envoi_libere_les_trois_emplacements(self):
+        services_cabines.envoyer(cabine=self.cab, utilisateur=self.user, note="départ chantier")
         for emp in [self.e1, self.e2, self.e3]:
             with self.subTest(emplacement=emp.code):
                 self.assertEqual(services_cabines.places_libres(emp), ["G", "D"])
@@ -428,19 +423,6 @@ class ReferentielTest(BaseModeles):
         r = self.client.get("/api/referentiels-cabine/")
         self.assertEqual([p["code"] for p in r.data["places"]], ["G", "D"])
 
-    def test_le_referentiel_annonce_les_grands_modeles(self):
-        """L'écran peut le dire avant le scan : « celle-ci prendra tout l'emplacement ».
-
-        La liste contient les six modèles semés à la migration ; on vérifie
-        qu'elle porte bien un grand modèle et pas un petit, sans figer un
-        contenu que l'écran des modèles est là pour changer.
-        """
-        r = self.client.get("/api/referentiels-cabine/")
-        grands = r.data["grands_modeles"]
-        self.assertIn("QUATTRO", grands)
-        self.assertNotIn("DUO", grands)
-        self.assertEqual(grands, sorted(grands))
-
     def test_le_mode_par_defaut_est_deux_places(self):
         e = Emplacement.objects.create(code="C009")
         self.assertEqual(e.mode_places, Emplacement.GD)
@@ -450,6 +432,6 @@ class ReferentielTest(BaseModeles):
     def test_une_cabine_envoyee_rend_l_emplacement(self):
         c = self.cabine(modele="QUATTRO")
         services_cabines.ranger(cabine=c, emplacement=self.e1, utilisateur=self.user)
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         self.assertEqual(services_cabines.places_libres(self.e1), ["G", "D"])
         self.assertEqual(Cabine.objects.get(pk=c.pk).statut, Cabine.ENVOYE)

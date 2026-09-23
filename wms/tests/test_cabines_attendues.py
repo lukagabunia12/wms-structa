@@ -269,7 +269,7 @@ class DroitsImportTest(APITestCase):
         # dépendre d'une case, sinon elle finirait cochée « pour débloquer ».
         self.operateur = Utilisateur.objects.create_user(
             username="cariste", password="motdepasse123", role=Utilisateur.OPERATEUR,
-            droit_cab=True, droit_ref=True, droit_data=True, droit_mvt=True)
+            droit_cab=True, droit_ref=True)
         CabineAttendue.objects.create(numero="26_02_49", chantier="251314",
                                       modele="MODELE M")
 

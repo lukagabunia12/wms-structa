@@ -1,0 +1,13 @@
+{% extends "admin/change_list.html" %}
+{# Le bouton « Repartir de zéro », au-dessus de la liste des cabines.
+
+   Sans lui, la page existe mais ne se trouve qu'en tapant son adresse — et une
+   fonction introuvable finit remplacée par un DELETE à la main dans la base,
+   ce qui est exactement ce qu'on cherche à éviter. #}
+{% block object-tools-items %}
+  <li>
+    <a href="{% url 'admin:wms_cabine_remise_a_zero' %}"
+       style="background:#B3261E">Repartir de zéro</a>
+  </li>
+  {{ block.super }}
+{% endblock %}

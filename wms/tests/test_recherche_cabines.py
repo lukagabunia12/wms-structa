@@ -42,7 +42,7 @@ class RechercheCabinesTest(TestCase):
                                         utilisateur=cls.u, motif="choc")
         cls.salon = Cabine.objects.create(numero="01_01_04", type_cabine=Cabine.SALON)
         cls.envoyee = Cabine.objects.create(numero="01_01_05", chantier="100003")
-        services_cabines.envoyer(cabine=cls.envoyee, utilisateur=cls.u)
+        services_cabines.envoyer(cabine=cls.envoyee, utilisateur=cls.u, note="départ chantier")
 
     def setUp(self):
         self.c = APIClient()
@@ -212,7 +212,7 @@ class RelectureParIdentifiantsTest(TestCase):
         cls.a = Cabine.objects.create(numero="04_00_01", chantier="100001")
         cls.b = Cabine.objects.create(numero="04_00_02", chantier="100002")
         cls.partie = Cabine.objects.create(numero="04_00_03", chantier="100003")
-        services_cabines.envoyer(cabine=cls.partie, utilisateur=cls.u)
+        services_cabines.envoyer(cabine=cls.partie, utilisateur=cls.u, note="départ chantier")
 
     def setUp(self):
         self.c = APIClient()
@@ -249,47 +249,6 @@ class RelectureParIdentifiantsTest(TestCase):
         """Le filtre rapide « Envoyées » : toutes=1 + statut=envoye."""
         r = self.c.get("/api/cabines/?toutes=1&statut=envoye")
         self.assertEqual([x["numero"] for x in r.data["results"]], ["04_00_03"])
-
-
-class MotifDeQuarantaineTest(TestCase):
-    """Le motif du dernier changement de statut remonte sur la fiche.
-
-    Il sert au moment de confirmer la sortie d'une cabine bloquée : « rayure sur
-    la paroi » est ce qu'il faut avoir sous les yeux pour trancher.
-    """
-
-    def setUp(self):
-        self.u = Utilisateur.objects.create_user(
-            username="q", password="x", role=Utilisateur.ADMIN)
-        self.c = APIClient()
-        self.c.force_authenticate(self.u)
-        self.cab = Cabine.objects.create(numero="05_00_01", chantier="100001")
-
-    def test_motif_sur_la_fiche(self):
-        services_cabines.changer_statut(cabine=self.cab, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.u, motif="rayure sur la paroi")
-        r = self.c.get(f"/api/cabines/{self.cab.pk}/")
-        self.assertEqual(r.data["statut_motif"], "rayure sur la paroi")
-
-    def test_pas_de_motif_sans_changement(self):
-        r = self.c.get(f"/api/cabines/{self.cab.pk}/")
-        self.assertEqual(r.data["statut_motif"], "")
-
-    def test_la_liste_ne_paye_pas_le_calcul(self):
-        """Une requête d'historique par ligne sur 50 lignes : jamais."""
-        services_cabines.changer_statut(cabine=self.cab, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.u, motif="choc")
-        r = self.c.get("/api/cabines/")
-        self.assertIsNone(r.data["results"][0]["statut_motif"])
-
-    def test_le_motif_suit_le_statut_courant(self):
-        """Quarantaine levée : le motif affiché est celui du retour, pas l'ancien."""
-        services_cabines.changer_statut(cabine=self.cab, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.u, motif="choc")
-        services_cabines.changer_statut(cabine=self.cab, statut=Cabine.LIBRE,
-                                        utilisateur=self.u, motif="reparee")
-        r = self.c.get(f"/api/cabines/{self.cab.pk}/")
-        self.assertEqual(r.data["statut_motif"], "reparee")
 
 
 class RechercheLibreTest(TestCase):
@@ -346,7 +305,7 @@ class RechercheLibreTest(TestCase):
 
     def test_les_archives_cherchent_pareil(self):
         """L'écran des cabines envoyées passe par le même filtre."""
-        services_cabines.envoyer(cabine=self.autre, utilisateur=self.u)
-        r = self.c.get("/api/cabines/archives/?search=251280")
+        services_cabines.envoyer(cabine=self.autre, utilisateur=self.u, note="départ chantier")
+        r = self.c.get("/api/cabines/?toutes=1&statut=envoye&search=251280")
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual([x["numero"] for x in r.data["results"]], ["25_12_80"])

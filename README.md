@@ -44,14 +44,9 @@ python manage.py runserver        # développement
 - Administration : http://127.0.0.1:8000/admin/
 - API : http://127.0.0.1:8000/api/
 
-## Importer les données de la maquette
-```bash
-python manage.py importer_maquette /chemin/vers/wms.json --purge
-```
-
 ## Tests et style
 ```bash
-python manage.py test           # 469 tests côté serveur
+python manage.py test           # 534 tests côté serveur
 ruff check .                    # style et erreurs de code (pip install ruff)
 node outils/verifier_interface.js   # les écrans de l'interface existent et sont joignables
 node outils/tester_interface.js     # le comportement de l'interface, sans navigateur
@@ -71,12 +66,14 @@ derrière le proxy TLS), syntaxe et écrans de l'interface, puis les tests.
 wms-structa/
 ├── config/            Configuration Django (settings, urls)
 ├── wms/               Application métier
-│   ├── models.py      Les 8 tables du modèle
-│   ├── services.py    Moteur de mouvements (cœur métier)
+│   ├── models.py      Cabines, emplacements, journal, fichier de production
+│   ├── services_cabines.py       Toute écriture sur une cabine (cœur métier)
+│   ├── services_emplacements.py  Racks, suppression d'emplacements
+│   ├── services_import.py        Import du fichier de production
 │   ├── serializers.py / views.py / urls.py   API REST
 │   ├── export_inventaire.py  Inventaire des cabines en CSV lisible par Excel
-│   ├── management/commands/importer_maquette.py
-│   └── tests/         Tests (dont logique métier des mouvements)
+│   ├── management/commands/  reprise_sql (bascule de base), telecharger_libs
+│   └── tests/         Tests
 ├── docs/              Guides utilisateur / admin / développeur / serveur
 ├── deploiement/       PostgreSQL, installation et sauvegarde Windows
 ├── outils/            installation, certificats HTTPS, proxy TLS, diagnostics
@@ -88,13 +85,14 @@ wms-structa/
 ```
 
 ## Modèle de données
-8 tables : `categorie`, `emplacement`, `article`, `utilisateur`, `stock`, `mouvement`,
-`reception`, `cabine` (+ `etatcabine`). Détail et invariants : `docs/guide-developpeur.md`
-et `docs/inventaire-maquette-wms.md`.
+`cabine`, `occupation` (où se trouve chaque cabine), `mouvementcabine` (le journal),
+`emplacement`, `placecondamnee`, `zone`, `modelecabine`, `cabineattendue` (le fichier de
+production) et `utilisateur`. Détail et invariants : `docs/guide-developpeur.md`.
 
 ## Périmètre
-v1 = WMS (articles, emplacements, stock, mouvements, réceptions, cabines).
-Appro / MRP = module ultérieur (l'article prévoit déjà des champs réservés).
+Le suivi des cabines de douche : entrée, rangement, statut, envoi, et le référentiel des
+emplacements. Le volet « articles » de la maquette (stock d'articles, mouvements,
+réceptions) a été retiré en septembre 2026 : aucun écran ne s'en servait.
 
 ## Interface opérateur
 Une fois le serveur démarré (`runserver`), l'interface est à **http://127.0.0.1:8000/**

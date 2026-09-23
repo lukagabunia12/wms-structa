@@ -80,15 +80,19 @@ plus besoin d'internet. À rejouer avec `--forcer` pour changer de version.
 ## Comptes et droits
 
 - Rôles : administrateur, opérateur, lecture seule.
-- 7 droits fins ajustables par compte : mouvements, correction, inventaire, cabines,
-  référentiel, données (import/reset), appro. L'administrateur a tous les droits.
-- Le droit **référentiel** commande la création, la modification et la suppression des
-  emplacements ; le droit **cabines**, celles des zones ainsi que la correction et la
-  suppression d'une cabine.
-- Une opération est réservée au **rôle administrateur**, au-delà des sept droits :
-  supprimer un emplacement qui porte encore du stock. Le WMS enregistre alors une
-  sortie par article, au nom de l'administrateur et avec son motif. C'est une décision
-  d'exploitation — la marchandise quitte les totaux — pas un geste de poste.
+- 2 droits fins ajustables par compte : **cabines** (ranger, changer un statut, envoyer,
+  corriger ou supprimer une cabine) et **référentiel** (créer, modifier, supprimer des
+  emplacements et des racks, régler la taille des modèles). L'administrateur a tous les
+  droits.
+- Deux opérations sont réservées au **rôle administrateur**, au-delà des droits fins :
+  importer le fichier de production, et vider le stock des cabines (« Repartir de
+  zéro », dans l'administration, derrière trois phrases à recopier et avec une
+  sauvegarde écrite avant tout effacement).
+- Un emplacement ne se supprime pas tant qu'une cabine y est rangée : il faut d'abord la
+  déplacer ou l'envoyer. Chaque suppression est notée dans `logs/wms.log`, avec son
+  auteur et son motif.
+- Les zones se règlent dans l'administration ; une zone à laquelle des emplacements sont
+  rattachés ne se supprime pas.
 - Gestion via l'administration : `/admin/`.
 
 ## Mise en serveur et base PostgreSQL
@@ -140,12 +144,7 @@ service.
 Pour voir la base telle qu'elle est, écrire ses propres requêtes ou sortir des
 listes vers Excel : **[`docs/guide-sql.md`](guide-sql.md)** — quel outil selon
 la base (DB Browser for SQLite aujourd'hui, pgAdmin après la bascule), et
-**`docs/requetes-sql.sql`**, 17 requêtes déjà écrites sur le schéma du WMS.
-
-L'une d'elles mérite d'être connue : la **2.2** recalcule le stock depuis le
-journal des mouvements et le compare à la table `wms_stock`. Un résultat vide
-signifie que la base est cohérente ; une ligne signale une quantité écrite sans
-mouvement correspondant — invisible depuis l'interface.
+**`docs/requetes-sql.sql`**, des requêtes déjà écrites sur le schéma du WMS.
 
 ## Supervision
 
@@ -165,8 +164,3 @@ et sans rien divulguer (ni version, ni chemin, ni hôte de base).
 Les erreurs sont écrites dans `logs/wms.log` (rotation automatique, 5 fichiers de 2 Mo).
 C'est le premier endroit à regarder quand un opérateur signale un problème de la veille.
 
-## Import initial
-
-```bash
-python manage.py importer_maquette \chemin\vers\wms.json --purge
-```

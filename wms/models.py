@@ -1,9 +1,11 @@
-"""Modèle de données WMS Structa.
+"""Modèle de données WMS Structa : les cabines, leurs emplacements, leur journal.
 
-Invariants métier (voir docs/inventaire-maquette-wms.md) :
-- La vérité du stock est le journal des `Mouvement` ; `Stock` n'est qu'un cache reconstructible.
-- Types de mouvement : ENTREE / SORTIE / AJUSTEMENT (valeur absolue). Le transfert = SORTIE + ENTREE.
-- Les références orphelines sont assumées : les FK historiques sont en SET_NULL, jamais en CASCADE.
+Invariants métier :
+- une cabine est une ligne de `Cabine` ; où elle se trouve, c'est `Occupation` ;
+- ce qui lui arrive s'écrit dans `MouvementCabine`, par `services_cabines` ;
+- les références historiques sont en SET_NULL, jamais en CASCADE, et le journal
+  recopie les libellés (numéro, position, auteur) : il reste lisible quand ce
+  qu'il cite a disparu.
 """
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
@@ -19,15 +21,12 @@ class Utilisateur(AbstractUser):
     nom = models.CharField("nom affiché", max_length=150, blank=True)
     role = models.CharField(max_length=16, choices=ROLES, default=OPERATEUR)
     pin = models.CharField(max_length=32, blank=True)
-    droit_mvt = models.BooleanField("mouvements", default=False)
-    droit_mvt_corr = models.BooleanField("correction de mouvement", default=False)
-    droit_inv = models.BooleanField("inventaire", default=False)
     droit_cab = models.BooleanField("cabines", default=False)
     droit_ref = models.BooleanField("référentiel", default=False)
-    droit_data = models.BooleanField("données (import/reset)", default=False)
-    droit_appro = models.BooleanField("appro", default=False)
 
-    DROITS = ["mvt", "mvt_corr", "inv", "cab", "ref", "data", "appro"]
+    #: Les deux seuls droits qui commandent quelque chose : manipuler les cabines,
+    #: et gérer le référentiel (emplacements, racks, modèles, étiquettes).
+    DROITS = ["cab", "ref"]
 
     def droits_effectifs(self):
         """Droits réellement applicables. Appliqué par wms.permissions.DroitWMS.
@@ -44,12 +43,12 @@ class Utilisateur(AbstractUser):
 
     @property
     def est_administrateur(self):
-        """Compte administrateur — au-delà des 7 droits fins.
+        """Compte administrateur — au-delà des droits fins.
 
         Certaines opérations exceptionnelles ne se règlent pas par une case à cocher :
-        supprimer un emplacement qui porte encore du stock fait disparaître de la
-        marchandise des totaux. C'est une décision d'exploitation, pas un geste de
-        poste, et elle est réservée à ce niveau.
+        importer le fichier de production réécrit des milliers de cabines, vider le
+        stock efface tout le parc. Ce sont des décisions d'exploitation, pas des
+        gestes de poste, et elles sont réservées à ce niveau.
         """
         return bool(self.is_superuser or self.role == self.ADMIN)
 
@@ -57,26 +56,11 @@ class Utilisateur(AbstractUser):
         return self.nom or self.username
 
 
-class Categorie(models.Model):
-    nom = models.CharField(max_length=120, unique=True)
-    zone = models.CharField(max_length=120, blank=True)
-
-    class Meta:
-        verbose_name = "catégorie"
-        ordering = ["nom"]
-
-    def __str__(self):
-        return self.nom
-
-
 class Zone(models.Model):
     """Regroupement d'emplacements de cabines : « À ranger », « Sortie prod », etc.
 
-    Librement créée par l'exploitation. L'ancien champ texte `Emplacement.zone`
-    servait au volet articles ; il est conservé mais n'a pas de rôle ici.
-
-    Le `role` situe la zone dans le processus : c'est lui qui permet de dire
-    « en attente de départ » plutôt que « en C001·G ».
+    Se règle dans l'administration. Le `role` situe la zone dans le processus :
+    c'est lui qui permet de dire « en attente de départ » plutôt que « en C001·G ».
     """
     PRODUCTION, RANGEMENT, ENVOI = "production", "rangement", "envoi"
     ROLES = [(PRODUCTION, "Sortie de production"), (RANGEMENT, "Zone de rangement"),
@@ -112,10 +96,11 @@ class Emplacement(models.Model):
                     (ILLIMITE, "Capacité illimitée")]
 
     code = models.CharField(max_length=64, unique=True)
+    #: Libellé libre, d'avant les zones : les écrans ne l'affichent qu'à défaut
+    #: de `zone_cabine`.
     zone = models.CharField(max_length=120, blank=True)
     description = models.CharField(max_length=255, blank=True)
     staging = models.BooleanField("zone de réception (à ranger)", default=False)
-    code_barre = models.CharField(max_length=128, blank=True)
     actif = models.BooleanField(default=True)
     #: Pourquoi cet emplacement est hors service, depuis quand et par qui. Un
     #: booleen seul laisse la question sans reponse : devant un rack a moitie
@@ -127,7 +112,11 @@ class Emplacement(models.Model):
     actif_par = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="emplacements_actives", verbose_name="activé/désactivé par")
-    zone_cabine = models.ForeignKey("Zone", null=True, blank=True, on_delete=models.SET_NULL,
+    #: PROTECT : supprimer une zone en SET_NULL « débranchait » ses emplacements
+    #: en silence, et l'étape « attente de départ » se vidait sans que personne
+    #: comprenne pourquoi. L'administration refuse désormais, et nomme les
+    #: emplacements à rattacher ailleurs d'abord.
+    zone_cabine = models.ForeignKey("Zone", null=True, blank=True, on_delete=models.PROTECT,
                                     related_name="emplacements", verbose_name="zone de cabines")
     mode_places = models.CharField("mode de rangement", max_length=16,
                                    choices=MODES_PLACES, default=GD)
@@ -160,128 +149,6 @@ class Emplacement(models.Model):
         return self.code
 
 
-class Article(models.Model):
-    ACTIF, DORMANT = "actif", "dormant"
-    STATUTS = [(ACTIF, "Actif"), (DORMANT, "Dormant")]
-
-    ref = models.CharField("référence", max_length=64, unique=True)
-    ean = models.CharField(max_length=64, blank=True, default="")
-    designation = models.CharField(max_length=255)
-    categorie = models.ForeignKey(Categorie, null=True, blank=True, on_delete=models.SET_NULL, related_name="articles")
-    emplacement_defaut = models.ForeignKey(
-        Emplacement, null=True, blank=True, on_delete=models.SET_NULL,
-        related_name="articles_par_defaut")
-    unite = models.CharField(max_length=32, default="pièce")
-    stock_min = models.DecimalField(max_digits=12, decimal_places=3, default=0)
-    statut = models.CharField(max_length=16, choices=STATUTS, default=ACTIF)
-    statut_ts = models.DateTimeField(null=True, blank=True)
-    # Optionnels (non prioritaires)
-    poids = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
-    longueur = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    largeur = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    hauteur = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    # Réservés au futur module MRP/appro
-    fournisseur = models.CharField(max_length=255, blank=True)
-    prix = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
-    delai_cde_jours = models.PositiveIntegerField(null=True, blank=True)
-    mini_cde = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
-
-    class Meta:
-        verbose_name = "article"
-        ordering = ["ref"]
-        constraints = [
-            models.UniqueConstraint(fields=["ean"], condition=~models.Q(ean=""), name="ean_unique_si_present"),
-        ]
-
-    def save(self, *args, **kwargs):
-        self.ref = (self.ref or "").strip().upper()
-        # Normalisé comme `ref` : sans cela « 123 », « 123 » et « abc »/« ABC »
-        # coexistent et contournent la contrainte d'unicité de l'EAN.
-        self.ean = (self.ean or "").strip().upper()
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.ref} — {self.designation}"
-
-
-class Stock(models.Model):
-    """Cache du stock par (article, emplacement). Reconstructible via services.recalculer_stock()."""
-    article = models.ForeignKey(Article, on_delete=models.CASCADE, related_name="lignes_stock")
-    emplacement = models.ForeignKey(Emplacement, on_delete=models.PROTECT, related_name="lignes_stock")
-    qte = models.DecimalField(max_digits=14, decimal_places=3, default=0)
-
-    class Meta:
-        verbose_name = "ligne de stock"
-        # Sans ordre déterministe, la pagination DRF ne garantit pas la composition des
-        # pages : une même ligne peut apparaître deux fois ou être omise.
-        ordering = ["article__ref", "emplacement__code"]
-        constraints = [models.UniqueConstraint(
-            fields=["article", "emplacement"], name="stock_unique_article_emplacement")]
-
-    def __str__(self):
-        return f"{self.article.ref} @ {self.emplacement.code} = {self.qte}"
-
-
-class Mouvement(models.Model):
-    ENTREE, SORTIE, AJUSTEMENT = "IN", "OUT", "AJUST"
-    TYPES = [(ENTREE, "Entrée"), (SORTIE, "Sortie"), (AJUSTEMENT, "Ajustement")]
-
-    date = models.DateTimeField(auto_now_add=True)
-    type = models.CharField(max_length=8, choices=TYPES)
-    article = models.ForeignKey(Article, null=True, on_delete=models.SET_NULL, related_name="mouvements")
-    emplacement = models.ForeignKey(Emplacement, null=True, on_delete=models.SET_NULL, related_name="mouvements")
-    qte = models.DecimalField(max_digits=14, decimal_places=3)
-    utilisateur = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
-        related_name="mouvements")
-    note = models.CharField(max_length=255, blank=True)
-    commande = models.CharField(max_length=64, blank=True)
-    annule = models.BooleanField(default=False)
-    annulation = models.BooleanField(default=False)
-    mouvement_source = models.ForeignKey(
-        "self", null=True, blank=True, on_delete=models.SET_NULL,
-        related_name="contre_passations")
-
-    class Meta:
-        verbose_name = "mouvement"
-        ordering = ["-date", "-id"]
-
-    def __str__(self):
-        return f"{self.get_type_display()} {self.qte} — {self.date:%d/%m/%Y %H:%M}"
-
-
-class Reception(models.Model):
-    numero = models.CharField(max_length=32, unique=True)
-    date = models.DateTimeField(auto_now_add=True)
-    article = models.ForeignKey(Article, null=True, on_delete=models.SET_NULL, related_name="receptions")
-    emplacement = models.ForeignKey(Emplacement, null=True, on_delete=models.SET_NULL, related_name="receptions")
-    qte = models.DecimalField(max_digits=14, decimal_places=3)
-    commande = models.CharField(max_length=64, blank=True)
-    commentaire = models.CharField(max_length=255, blank=True)
-    staging = models.BooleanField(default=False)
-    utilisateur = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
-        related_name="receptions")
-
-    class Meta:
-        verbose_name = "réception"
-        ordering = ["-date", "-id"]
-
-    def __str__(self):
-        return self.numero
-
-
-class EtatCabine(models.Model):
-    nom = models.CharField(max_length=64, unique=True)
-
-    class Meta:
-        verbose_name = "état de cabine"
-        ordering = ["nom"]
-
-    def __str__(self):
-        return self.nom
-
-
 class Cabine(models.Model):
     NORMALE, EXPRESS, SALON, OCCASION = "normale", "express", "salon", "occasion"
     TYPES = [(NORMALE, "Normale"), (EXPRESS, "Express"),
@@ -290,9 +157,9 @@ class Cabine(models.Model):
     #: Types qui circulent sans n° de chantier. Une cabine de salon ou d'occasion
     #: n'a pas de client tant qu'elle n'est pas vendue : exiger un chantier dès la
     #: création interdirait de la faire entrer en stock.
-    #: L'exemption s'arrête là : sortir ou envoyer exige un chantier pour TOUS les
-    #: types (voir services_cabines.sortir_emplacement) — c'est ce qui garantit
-    #: qu'aucune cabine ne quitte l'entrepôt sans être rattachée à une commande.
+    #: L'exemption s'arrête là : l'envoi exige un chantier pour TOUS les types
+    #: (voir services_cabines.envoyer) — c'est ce qui garantit qu'aucune cabine
+    #: ne quitte l'entrepôt sans être rattachée à une commande.
     SANS_CHANTIER = {EXPRESS, SALON, OCCASION}
 
     #: Le statut dit l'ÉTAT de la cabine, jamais où elle est. « Rangé » et
@@ -560,11 +427,6 @@ class ModeleCabine(models.Model):
     quel ferait de « XL (2MODULES) » un second modèle, réglé séparément.
     """
 
-    #: Les grands modèles connus le jour où la règle a été posée. Semés à la
-    #: première migration, puis la base fait foi : cette liste ne sert plus.
-    GRANDS_AU_DEPART = ["MODELE L", "MODELE XL", "QUATTRO", "COLLAB",
-                        "XL (2modules)", "XL (3modules)"]
-
     nom = models.CharField("modèle", max_length=120)
     cle = models.CharField("clé de comparaison", max_length=120, unique=True)
     grand = models.BooleanField("prend tout l'emplacement", default=False)
@@ -653,7 +515,7 @@ class Occupation(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["cabine", "numero"],
                                     name="occupation_numerotee_une_fois_par_cabine"),
-            # Une place (emplacement, G/M/D) ne porte qu'une cabine à la fois.
+            # Une place (emplacement, gauche/droite) ne porte qu'une cabine à la fois.
             # Reprise de l'ancienne contrainte de `Cabine`, au bon niveau. La
             # condition sur le statut n'est plus exprimable ici : `envoyer()`
             # libère les emplacements, ils ne réservent donc plus rien.
@@ -672,7 +534,7 @@ class Occupation(models.Model):
         if self.place and self.emplacement_id and self.emplacement.illimite:
             raise ValidationError({"place": (
                 f"L'emplacement {self.emplacement.code} est à capacité illimitée : "
-                "il n'a pas de place G/M/D.")})
+                "il n'a pas de place gauche ou droite.")})
 
     def __str__(self):
         return f"{self.cabine.numero} @ {self.position or 'nulle part'}"

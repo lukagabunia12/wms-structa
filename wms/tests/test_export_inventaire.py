@@ -100,7 +100,7 @@ class ExportInventaireTest(TestCase):
         self.assertEqual(numeros, {"26_03_47"})
 
     def test_les_envoyees_sont_hors_inventaire_par_defaut(self):
-        services_cabines.envoyer(cabine=self.orpheline, utilisateur=self.u)
+        services_cabines.envoyer(cabine=self.orpheline, utilisateur=self.u, note="départ chantier")
         numeros = {ligne["N° cabine"] for ligne in self.lignes()}
         self.assertNotIn("26_03_49", numeros)
         self.assertIn("26_03_49", {ligne["N° cabine"] for ligne in self.lignes("?toutes=1")})

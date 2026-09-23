@@ -1,16 +1,13 @@
 import logging
 import re
+import time
 from datetime import timedelta
 from pathlib import Path
 
-from django.core.exceptions import ValidationError
-from django.db.models import (Count, IntegerField, Max, OuterRef, Prefetch, Q,
-                              Subquery, Sum)
-from django.db.models.functions import Coalesce
-from django.db import transaction
-from django.db.models.deletion import ProtectedError
-import time
 from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.db.models import Count, Max, OuterRef, Prefetch, Q, Subquery
+from django.db.models.functions import Coalesce
 from django.shortcuts import render
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -20,19 +17,14 @@ from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from . import (export_inventaire, lecture_fiche, ocr_fiche, services, services_cabines,
-               services_import)
-from .models import (Article, Cabine, CabineAttendue, Categorie, Occupation,
-                     PlaceCondamnee,
-                     Emplacement, EtatCabine, ModeleCabine, Mouvement, MouvementCabine,
-                     Reception, Stock, Utilisateur, Zone)
-from .permissions import EstAdministrateur, EstAdministrateurStrict
-from .serializers import (ArticleSerializer, CabineAttendueSerializer, CabineSerializer,
-                          OccupationSerializer, CategorieSerializer,
-                          EmplacementSerializer, EtatCabineSerializer,
+from . import (export_inventaire, lecture_fiche, ocr_fiche, services_cabines,
+               services_emplacements, services_import)
+from .models import (Cabine, CabineAttendue, Emplacement, ModeleCabine, MouvementCabine,
+                     Occupation)
+from .permissions import EstAdministrateur
+from .serializers import (CabineAttendueSerializer, CabineSerializer, EmplacementSerializer,
                           ModeleCabineSerializer, MouvementCabineSerializer,
-                          MouvementSerializer, ReceptionSerializer, StockSerializer,
-                          ZoneSerializer)
+                          OccupationSerializer)
 
 logger = logging.getLogger(__name__)
 
@@ -40,18 +32,12 @@ logger = logging.getLogger(__name__)
 SEUIL_IMMOBILE_JOURS = 7
 
 
-class CategorieViewSet(viewsets.ModelViewSet):
-    queryset = Categorie.objects.all()
-    serializer_class = CategorieSerializer
-    droit_ecriture = "ref"
-
-
 class EmplacementViewSet(viewsets.ModelViewSet):
     queryset = Emplacement.objects.all()
     serializer_class = EmplacementSerializer
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["code", "zone", "description"]
-    ordering_fields = ["code", "zone_cabine__nom", "occupees", "rack"]
+    ordering_fields = ["code", "rack"]
     ordering = ["code"]
     #: Un seul droit pour toutes les écritures de la vue, actions comprises :
     #: `supprimer-rack` est un POST, il est donc couvert. L'écrire ici évite
@@ -59,64 +45,25 @@ class EmplacementViewSet(viewsets.ModelViewSet):
     droit_ecriture = "ref"
 
     def get_queryset(self):
-        """Emplacements avec leurs cabines, filtrables par cabine, chantier ou statut.
+        """Emplacements avec leurs cabines, filtrables par rack et par colonne.
 
-        Les cabines sont préchargées : l'écran « Emplacements » afficherait sinon une
-        requête par ligne. Le compte de places occupées passe par une sous-requête et
-        non par un Count sur la jointure, sinon les filtres portant sur `cabines__*`
-        restreindraient aussi le comptage.
+        Les cabines sont préchargées : l'écran « Emplacements » afficherait sinon
+        une requête par ligne. « Présentes » et non « avec une place » : en
+        capacité illimitée les cabines n'ont pas de place, elles occupent tout de
+        même l'emplacement.
         """
         p = self.request.query_params
-        # « Présentes » et non « avec une place » : en capacité illimitée les
-        # cabines n'ont pas de place, elles occupent tout de même l'emplacement.
         actifs = (Occupation.objects.exclude(cabine__statut=Cabine.ENVOYE)
                   .select_related("cabine"))
-        occupees = (actifs.filter(emplacement=OuterRef("pk"))
-                    .order_by().values("emplacement")
-                    .annotate(n=Count("pk")).values("n"))
         qs = (Emplacement.objects
-              .select_related("zone_cabine")
+              .select_related("zone_cabine", "actif_par")
               .prefetch_related(Prefetch("occupations", queryset=actifs.order_by("place"),
-                                         to_attr="occupations_actives"))
-              .annotate(occupees=Coalesce(Subquery(occupees, output_field=IntegerField()), 0)))
-
-        zone = _filtre_id(p, "zone")
-        if zone is not None:
-            qs = qs.filter(zone_cabine_id=zone)
-        if _actif(p, "sans_zone"):
-            qs = qs.filter(zone_cabine__isnull=True)
-
-        # Réunis dans un SEUL filter() : trois .filter() enchaînés créeraient trois
-        # jointures indépendantes et retiendraient un emplacement dont une cabine porte
-        # le bon chantier et une autre le bon statut, sans qu'aucune n'ait les deux.
-        surCabine = Q()
-        for param, lookup in (("cabine", "occupations__cabine__numero__icontains"),
-                              ("chantier", "occupations__cabine__chantier__icontains"),
-                              ("statut", "occupations__cabine__statut"),
-                              ("type", "occupations__cabine__type_cabine")):
-            if p.get(param):
-                surCabine &= Q(**{lookup: p[param]})
-        if surCabine:
-            qs = qs.filter(surCabine & ~Q(occupations__cabine__statut=Cabine.ENVOYE)).distinct()
-
-        if p.get("mode"):
-            qs = qs.filter(mode_places=p["mode"])
+                                         to_attr="occupations_actives")))
         if p.get("rack"):
             qs = qs.filter(rack__iexact=p["rack"].strip())
         colonne = _filtre_id(p, "colonne")
         if colonne is not None:
             qs = qs.filter(colonne=colonne)
-
-        occupation = p.get("occupation")
-        total_places = len(Cabine.PLACES)
-        if occupation == "libre":
-            qs = qs.filter(occupees=0)
-        elif occupation == "complet":
-            # Un emplacement illimité n'est jamais complet.
-            qs = qs.filter(mode_places=Emplacement.GD, occupees__gte=total_places)
-        elif occupation == "partiel":
-            qs = qs.filter(occupees__gt=0).exclude(
-                Q(mode_places=Emplacement.GD) & Q(occupees__gte=total_places))
         return qs
 
     @action(detail=True, methods=["post"])
@@ -174,11 +121,6 @@ class EmplacementViewSet(viewsets.ModelViewSet):
         modèle ne se glisse pas à côté d'une autre cabine. Sans cela l'écran
         proposerait « Gauche » à une cabine qui prend l'emplacement entier, et le
         serveur refuserait au dernier moment — après que le cariste l'a posée.
-
-        Le paramètre ne s'appelle pas `cabine` : ce nom est déjà celui du filtre
-        de la LISTE des emplacements (« ceux qui portent telle cabine »), lu par
-        le même `get_queryset()`. Un `?cabine=12` sur cette action-ci filtrait
-        donc l'emplacement lui-même, et la fiche répondait 404.
         """
         emplacement = self.get_object()
         cabine = None
@@ -228,6 +170,57 @@ class EmplacementViewSet(viewsets.ModelViewSet):
             } if cabine is not None else None),
         })
 
+    @action(detail=False, methods=["get"])
+    def pour_cabine(self, request):
+        """Où peut-on ranger CETTE cabine ? Et sinon, pourquoi pas.
+
+        L'écran de rangement listait les emplacements sans savoir quelle cabine
+        il rangeait : il annonçait « Places libres : G » à un grand modèle, qui
+        prend l'emplacement entier. On touchait la place, et le serveur refusait
+        au dernier moment — devant le rack, la cabine déjà descendue.
+
+        Ici, chaque emplacement répond POUR cette cabine : ses places encore
+        libres, s'il peut la prendre, et sinon la raison. `proposition` désigne
+        le meilleur — voir `services_cabines.emplacements_pour` pour l'ordre,
+        qui n'est pas alphabétique mais celui de l'entrepôt.
+        """
+        demande = (request.query_params.get("cabine") or "").strip()
+        cabine = (Cabine.objects.filter(pk=int(demande)).first()
+                  if demande.isdigit() else None)
+        if cabine is None:
+            raise ErreurAPI("Indiquez la cabine à ranger : ?cabine=<id>.")
+        texte = (request.query_params.get("q")
+                 or request.query_params.get("search") or "")
+        lignes = services_cabines.emplacements_pour(cabine, texte)
+        possibles = [ligne for ligne in lignes if ligne["possible"]]
+        return Response({
+            "cabine": {
+                "id": cabine.id,
+                "numero": cabine.numero,
+                "modele": cabine.modele,
+                "tout_l_emplacement": cabine.prend_tout_l_emplacement,
+            },
+            # Le meilleur candidat, celui que propose le bouton. `null` quand
+            # l'entrepôt est plein pour cette cabine — et l'écran doit alors le
+            # dire, pas rester muet.
+            "proposition": possibles[0]["emplacement"].id if possibles else None,
+            "possibles": len(possibles),
+            "emplacements": [{
+                "id": ligne["emplacement"].id,
+                "code": ligne["emplacement"].code,
+                "zone": (ligne["emplacement"].zone_cabine.nom
+                         if ligne["emplacement"].zone_cabine_id else ""),
+                "mode_libelle": ligne["emplacement"].get_mode_places_display(),
+                "illimite": ligne["emplacement"].illimite,
+                "staging": ligne["emplacement"].staging,
+                "actif": ligne["emplacement"].actif,
+                "libres": ligne["libres"],
+                "possible": ligne["possible"],
+                "pourquoi": ligne["pourquoi"],
+                "cabines": ligne["cabines"],
+            } for ligne in lignes],
+        })
+
     @action(detail=False, methods=["post"])
     def generer(self, request):
         """Crée un rack entier — ou en donne l'aperçu, sans rien écrire.
@@ -246,23 +239,13 @@ class EmplacementViewSet(viewsets.ModelViewSet):
         }
         try:
             if d.get("apercu"):
-                return Response(services.apercu_rack(**parametres))
-            zone = None
-            if d.get("zone_cabine"):
-                zone = self._zone_requise(d.get("zone_cabine"))
-            resultat = services.generer_rack(
-                zone_cabine=zone, mode_places=d.get("mode_places"),
+                return Response(services_emplacements.apercu_rack(**parametres))
+            resultat = services_emplacements.generer_rack(
+                mode_places=d.get("mode_places"),
                 description=(d.get("description") or "")[:255], **parametres)
         except ValidationError as e:
             return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
         return Response(resultat, status=status.HTTP_201_CREATED)
-
-    @staticmethod
-    def _zone_requise(brut):
-        try:
-            return Zone.objects.get(pk=brut)
-        except (Zone.DoesNotExist, ValueError, TypeError):
-            raise ErreurAPI({"erreur": [f"Zone introuvable : « {brut} »."]})
 
     @action(detail=False, methods=["get"])
     def racks(self, request):
@@ -293,8 +276,8 @@ class EmplacementViewSet(viewsets.ModelViewSet):
         avant de proposer le bouton.
         """
         try:
-            return Response(services.diagnostic_rack(request.query_params.get("rack"),
-                                                     request.user))
+            return Response(services_emplacements.diagnostic_rack(
+                request.query_params.get("rack")))
         except ValidationError as e:
             return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -308,7 +291,7 @@ class EmplacementViewSet(viewsets.ModelViewSet):
         """
         brut = request.query_params.get("ids") or ""
         try:
-            return Response(services.diagnostic_lot(brut.split(","), request.user))
+            return Response(services_emplacements.diagnostic_lot(brut.split(",")))
         except ValidationError as e:
             return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -320,89 +303,34 @@ class EmplacementViewSet(viewsets.ModelViewSet):
         if isinstance(ids, str):
             ids = ids.split(",")
         try:
-            resultat = services.supprimer_lot(
-                ids,
-                force=bool(d.get("force")),
-                utilisateur=request.user,
-                motif=(d.get("motif") or "")[:180])
+            return Response(services_emplacements.supprimer_lot(
+                ids, utilisateur=request.user, motif=(d.get("motif") or "")[:180]))
         except ValidationError as e:
             return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
-        except ProtectedError:
-            return Response({"erreur": ["Un emplacement de la sélection est encore référencé."]},
-                            status=status.HTTP_400_BAD_REQUEST)
-        return Response(resultat)
 
     @action(detail=False, methods=["post"], url_path="supprimer-rack")
     def supprimer_rack(self, request):
         """Supprime tout un rack, ou rien. Exige le droit « référentiel »."""
         d = request.data
         try:
-            resultat = services.supprimer_rack(
-                d.get("rack"),
-                force=bool(d.get("force")),
-                utilisateur=request.user,
-                motif=(d.get("motif") or "")[:180])
+            return Response(services_emplacements.supprimer_rack(
+                d.get("rack"), utilisateur=request.user,
+                motif=(d.get("motif") or "")[:180]))
         except ValidationError as e:
             return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
-        except ProtectedError:
-            return Response({"erreur": ["Un emplacement du rack est encore référencé."]},
-                            status=status.HTTP_400_BAD_REQUEST)
-        return Response(resultat)
 
     def perform_destroy(self, instance):
-        """Suppression sécurisée — règles dans `services.diagnostic_suppression`.
+        """Suppression refusée tant que des cabines y sont rangées.
 
-        Trois garde-fous : cabines rangées (SET_NULL les aurait détachées en
-        silence), stock non nul, présence dans l'historique. `?force=1` lève
-        ceux que `services.suppression_forcable` autorise pour ce compte : la
-        suppression avec stock est réservée aux administrateurs, celle des
-        cabines rangées n'est ouverte à personne.
+        Règle et raison dans `services_emplacements` : la base, elle, les
+        détacherait en silence.
         """
-        force = _actif(self.request.query_params, "force")
-        motif = (self.request.query_params.get("motif") or "")[:180]
         try:
-            services.supprimer_emplacement(instance, force=force,
-                                           utilisateur=self.request.user, motif=motif)
+            services_emplacements.supprimer_emplacement(
+                instance, utilisateur=self.request.user,
+                motif=(self.request.query_params.get("motif") or "")[:180])
         except ValidationError as e:
             raise ErreurAPI({"erreur": e.messages})
-        except ProtectedError:
-            raise ErreurAPI({"erreur": [
-                "Impossible de supprimer cet emplacement : il est encore référencé."
-            ]})
-
-
-class ArticleViewSet(viewsets.ModelViewSet):
-    queryset = Article.objects.select_related("categorie", "emplacement_defaut").all()
-    serializer_class = ArticleSerializer
-    filter_backends = [SearchFilter, OrderingFilter]
-    search_fields = ["ref", "ean", "designation"]
-    ordering_fields = ["ref", "designation", "total_stock"]
-    # Sans ordre explicite, l'annotation `Sum` pose un GROUP BY : Django écarte alors
-    # l'ordre par défaut du modèle et la pagination ne garantit plus la composition
-    # des pages (un article pouvait apparaître deux fois, un autre jamais).
-    ordering = ["ref"]
-    droit_ecriture = "ref"
-
-    def get_queryset(self):
-        """Le total de stock est agrégé en base plutôt que reconstitué par le client.
-
-        L'écran « Stock » a besoin de la quantité totale par article : sans cette
-        annotation, il faudrait télécharger toutes les lignes de stock et les
-        additionner côté navigateur.
-        """
-        return (Article.objects
-                .select_related("categorie", "emplacement_defaut")
-                .annotate(
-                    total_stock=Sum("lignes_stock__qte"),
-                    nb_emplacements=Count("lignes_stock",
-                                          filter=Q(lignes_stock__qte__gt=0), distinct=True),
-                ))
-
-    def perform_create(self, serializer):
-        if not serializer.validated_data.get("ref"):
-            serializer.save(ref=services.generer_ref(serializer.validated_data.get("categorie")))
-        else:
-            serializer.save()
 
 
 #: Les écritures qu'un lien, un signet ou un script peuvent porter pour « oui ».
@@ -419,7 +347,7 @@ def _actif(params, nom):
 def _filtre_id(params, nom):
     """Lit un filtre d'identifiant, en 400 explicite si la valeur n'est pas numérique.
 
-    Sans ce contrôle, `?article=abc` remontait en ValueError (500).
+    Sans ce contrôle, `?colonne=abc` remontait en ValueError (500).
     """
     brut = params.get(nom)
     if brut is None or brut == "":
@@ -430,71 +358,9 @@ def _filtre_id(params, nom):
         raise ErreurAPI({"erreur": [f"Le filtre « {nom} » doit être un identifiant numérique."]})
 
 
-class StockViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = StockSerializer
-
-    def get_queryset(self):
-        qs = Stock.objects.select_related("article", "emplacement").all()
-        a = _filtre_id(self.request.query_params, "article")
-        e = _filtre_id(self.request.query_params, "emplacement")
-        if a is not None:
-            qs = qs.filter(article_id=a)
-        if e is not None:
-            qs = qs.filter(emplacement_id=e)
-        return qs
-
-
-class MouvementViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = MouvementSerializer
-
-    def get_queryset(self):
-        qs = Mouvement.objects.select_related("article", "emplacement").all()
-        a = _filtre_id(self.request.query_params, "article")
-        if a is not None:
-            qs = qs.filter(article_id=a)
-        return qs
-
-
-class ReceptionViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Reception.objects.select_related("article", "emplacement").all()
-    serializer_class = ReceptionSerializer
-
-
-class EtatCabineViewSet(viewsets.ModelViewSet):
-    queryset = EtatCabine.objects.all()
-    serializer_class = EtatCabineSerializer
-    droit_ecriture = "cab"
-
-
-class ZoneViewSet(viewsets.ModelViewSet):
-    """Zones de cabines : « À ranger », « Sortie prod », « Attente départ »…"""
-    queryset = Zone.objects.all()
-    serializer_class = ZoneSerializer
-    filter_backends = [SearchFilter, OrderingFilter]
-    search_fields = ["nom", "description"]
-    ordering_fields = ["ordre", "nom"]
-    droit_ecriture = "cab"
-
-    def perform_destroy(self, instance):
-        """Refuse de supprimer une zone encore rattachée à des emplacements.
-
-        `Emplacement.zone_cabine` est en SET_NULL : la suppression ne remontait
-        aucune erreur, elle « débranchait » les emplacements en silence. Le suivi
-        du processus les reclassait alors tous en simple rangement, sans que
-        personne ne comprenne pourquoi l'étape « attente de départ » s'était vidée.
-        """
-        rattaches = instance.emplacements.count()
-        if rattaches:
-            raise ErreurAPI({"erreur": [
-                f"{rattaches} emplacement(s) sont rattachés à la zone « {instance.nom} ». "
-                "Rattachez-les à une autre zone avant de la supprimer — ou désactivez "
-                "simplement celle-ci."
-            ]})
-        instance.delete()
-
-
 class CabineViewSet(viewsets.ModelViewSet):
-    """Cabines actives par défaut ; les cabines envoyées sont dans /archives/."""
+    """Le parc. Les cabines envoyées n'apparaissent dans les listes qu'avec
+    `?toutes=1` ; leur fiche, elle, reste toujours consultable."""
     queryset = Cabine.objects.prefetch_related(
         "occupations__emplacement__zone_cabine").all()
     serializer_class = CabineSerializer
@@ -505,7 +371,7 @@ class CabineViewSet(viewsets.ModelViewSet):
                        "type_cabine", "derniere_activite_date"]
     droits_par_action = {
         "create": "cab", "update": "cab", "partial_update": "cab", "destroy": "cab",
-        "ranger": "cab", "sortir": "cab", "statut": "cab", "envoyer": "cab",
+        "ranger": "cab", "statut": "cab", "envoyer": "cab",
         "chantier": "cab", "reprendre": "cab",
     }
 
@@ -521,7 +387,7 @@ class CabineViewSet(viewsets.ModelViewSet):
         p = self.request.query_params
         for etape_de_filtrage in (self._filtrer_archives, self._filtrer_recherche,
                                   self._filtrer_egalites, self._filtrer_position,
-                                  self._filtrer_anciennete, self._filtrer_etape_processus):
+                                  self._filtrer_anciennete):
             qs = etape_de_filtrage(qs, p)
         return qs
 
@@ -534,21 +400,30 @@ class CabineViewSet(viewsets.ModelViewSet):
         """
         dernier = (MouvementCabine.objects.filter(cabine=OuterRef("pk"))
                    .order_by("-date").values("date")[:1])
+        # Le motif de la dernière mise en quarantaine, annoté pour TOUTE la
+        # liste d'un coup. Sans lui, « En quarantaine : 3 » donne trois numéros
+        # et il faut ouvrir trois fiches pour savoir ce qui bloque — ce que
+        # personne ne fait devant un rack. Une sous-requête corrélée pour la
+        # liste entière, et non une requête par ligne.
+        quarantaine = (MouvementCabine.objects
+                       .filter(cabine=OuterRef("pk"), type=MouvementCabine.STATUT,
+                               statut_apres=Cabine.QUARANTAINE)
+                       .order_by("-date").values("note")[:1])
         return (Cabine.objects
                 .prefetch_related("occupations__emplacement__zone_cabine")
-                .annotate(derniere_activite_date=Coalesce(Subquery(dernier), "date")))
+                .annotate(derniere_activite_date=Coalesce(Subquery(dernier), "date"),
+                          quarantaine_motif=Subquery(quarantaine)))
 
     def _filtrer_archives(self, qs, p):
         """Les cabines envoyées sont archivées : elles n'encombrent pas les listes.
 
         Le filtre ne s'applique QU'aux listes : une cabine envoyée doit rester
         consultable en détail, sinon son historique — la raison d'être des
-        archives — renverrait 404.
+        archives — renverrait 404. Les archives elles-mêmes, c'est la liste
+        avec `?toutes=1&statut=envoye` : un seul chemin pour un seul besoin.
+        L'export suit la liste : un inventaire du stock ne compte pas ce qui
+        est déjà parti.
         """
-        if self.action == "archives" or _actif(p, "archivees"):
-            return qs.filter(statut=Cabine.ENVOYE)
-        # L'export suit la liste : un inventaire du stock ne compte pas ce qui
-        # est déjà parti. Le détail d'une cabine, lui, reste toujours lisible.
         if self.action in ("list", "export") and not _actif(p, "toutes"):
             return qs.exclude(statut=Cabine.ENVOYE)
         return qs
@@ -577,10 +452,8 @@ class CabineViewSet(viewsets.ModelViewSet):
     def _filtrer_egalites(qs, p):
         """Les filtres qui portent sur un champ de la cabine elle-même."""
         for param, champ in [("numero", "numero__icontains"),
-                             ("chantier", "chantier__icontains"),
                              ("statut", "statut"),
                              ("type", "type_cabine"),
-                             ("modele", "modele__icontains"),
                              # Valeur choisie dans une liste déroulante : elle est
                              # complète, donc exacte. « contient » y répondrait à
                              # côté — le modèle « Duo 120 » ramènerait aussi les
@@ -606,17 +479,11 @@ class CabineViewSet(viewsets.ModelViewSet):
 
     @staticmethod
     def _filtrer_position(qs, p):
-        """Où la cabine se trouve : zone, emplacement, rack, rangée ou non.
+        """Où la cabine se trouve : rangée ou non, et dans quel rack.
 
-        Tous traversent `occupations`, d'où le `distinct()` : une cabine posée à
-        deux endroits du même rack ressortirait deux fois.
+        Les deux traversent `occupations`, d'où le `distinct()` : une cabine
+        posée à deux endroits du même rack ressortirait deux fois.
         """
-        zone = _filtre_id(p, "zone")
-        if zone is not None:
-            qs = qs.filter(occupations__emplacement__zone_cabine_id=zone).distinct()
-        emplacement = _filtre_id(p, "emplacement")
-        if emplacement is not None:
-            qs = qs.filter(occupations__emplacement_id=emplacement).distinct()
         # « Rangée » = elle occupe au moins un emplacement. Rien n'est déclaré à
         # l'avance : une cabine qui tient à deux endroits n'est pas « incomplète »,
         # elle est rangée à deux endroits.
@@ -647,14 +514,6 @@ class CabineViewSet(viewsets.ModelViewSet):
                 "Le filtre « immobile » se donne en nombre de jours."]})
         return qs.filter(derniere_activite_date__lt=timezone.now() - timedelta(days=seuil))
 
-    def _filtrer_etape_processus(self, qs, p):
-        etape = p.get("etape")
-        if not etape:
-            return qs
-        # Le filtre traverse les occupations : une cabine rangée deux fois dans
-        # la même zone ressortirait deux fois sans `distinct()`.
-        return qs.filter(self._filtre_etape(etape)).distinct()
-
     @action(detail=False, methods=["get"], url_path="export")
     def export(self, request):
         """L'inventaire des cabines, tel que l'écran l'affiche, en fichier Excel.
@@ -666,33 +525,8 @@ class CabineViewSet(viewsets.ModelViewSet):
         cabines = self.filter_queryset(self.get_queryset())
         return export_inventaire.reponse(cabines)
 
-    @staticmethod
-    def _filtre_etape(etape):
-        """Traduit une étape de processus en conditions sur statut et rôle de zone.
-
-        L'étape est calculée (jamais stockée) : le filtre reproduit donc la même
-        logique de priorité que `Cabine.etape`, le statut d'abord.
-        """
-        conforme = Q(statut__in=[Cabine.LIBRE])
-        if etape == "envoyee":
-            return Q(statut=Cabine.ENVOYE)
-        if etape == "quarantaine":
-            return Q(statut=Cabine.QUARANTAINE)
-        if etape == "envoi":
-            return conforme & Q(occupations__emplacement__zone_cabine__role=Zone.ENVOI)
-        if etape == "production":
-            return conforme & (Q(occupations__emplacement__isnull=True)
-                               | Q(occupations__emplacement__zone_cabine__role=Zone.PRODUCTION))
-        if etape == "rangement":
-            # Un emplacement sans zone compte comme du rangement : `role` valant NULL,
-            # un simple ~Q(role__in=…) l'exclurait (NOT NULL vaut NULL en SQL).
-            return (conforme & Q(occupations__emplacement__isnull=False)
-                    & (Q(occupations__emplacement__zone_cabine__isnull=True)
-                       | ~Q(occupations__emplacement__zone_cabine__role__in=[Zone.ENVOI, Zone.PRODUCTION])))
-        return Q()
-
     def _run(self, fn):
-        """Même contrat d'erreur que les opérations de stock : 400 {"erreur": [...]}."""
+        """Contrat d'erreur de toute l'API : 400 {"erreur": [...]}."""
         try:
             return Response(CabineSerializer(fn()).data)
         except ValidationError as e:
@@ -778,20 +612,6 @@ class CabineViewSet(viewsets.ModelViewSet):
                 "tableau et bien éclairée."]}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self._depuis_texte(texte))
 
-    @action(detail=False, methods=["post"], url_path="analyser-fiche")
-    def analyser_fiche(self, request):
-        """Extrait les champs d'une fiche cabine depuis le texte reconnu par l'OCR.
-
-        Ne crée rien : l'écran pré-remplit le formulaire avec ce qui a été lu, et
-        l'opérateur confirme. L'OCR confond notamment 0/O et 1/I — sur un n° de
-        commande ou une référence de cabine, aucune écriture ne se fait à l'aveugle.
-        """
-        texte = request.data.get("texte") or ""
-        if not isinstance(texte, str) or not texte.strip():
-            return Response({"erreur": ["Aucun texte à analyser."]},
-                            status=status.HTTP_400_BAD_REQUEST)
-        return Response(self._depuis_texte(texte))
-
     @staticmethod
     def _depuis_texte(texte):
         """Analyse le texte et signale une cabine déjà connue, pour éviter un doublon."""
@@ -849,12 +669,6 @@ class CabineViewSet(viewsets.ModelViewSet):
             },
         })
 
-    @action(detail=False, methods=["get"])
-    def archives(self, request):
-        """Cabines envoyées — le « fichier à part » demandé."""
-        page = self.paginate_queryset(self.filter_queryset(self.get_queryset()))
-        return self.get_paginated_response(CabineSerializer(page, many=True).data)
-
     @action(detail=True, methods=["get"])
     def historique(self, request, pk=None):
         mouvements = services_cabines.historique(self.get_object())
@@ -887,15 +701,6 @@ class CabineViewSet(viewsets.ModelViewSet):
         return self._run(go)
 
     @action(detail=True, methods=["post"])
-    def sortir(self, request, pk=None):
-        cabine = self.get_object()
-        return self._run(lambda: services_cabines.sortir_de_l_emplacement(
-            cabine=cabine, utilisateur=request.user,
-            occupation=self._occupation_optionnelle(
-                cabine, request.data.get("occupation")),
-            note=(request.data.get("note") or "")[:255]))
-
-    @action(detail=True, methods=["post"])
     def statut(self, request, pk=None):
         return self._run(lambda: services_cabines.changer_statut(
             cabine=self.get_object(), statut=(request.data.get("statut") or "").strip(),
@@ -918,79 +723,6 @@ class CabineViewSet(viewsets.ModelViewSet):
         return self._run(lambda: services_cabines.reprendre(
             cabine=self.get_object(), utilisateur=request.user,
             motif=(request.data.get("motif") or "")[:255]))
-
-    #: Le mot à retaper pour vider le stock. Un POST accidentel — un bouton
-    #: touché deux fois, une requête rejouée par le navigateur — ne doit pas
-    #: vider un entrepôt.
-    MOT_POUR_VIDER = "EFFACER"
-
-    @action(detail=False, methods=["get", "post"],
-            permission_classes=[EstAdministrateurStrict])
-    def vider_le_stock(self, request):
-        """Efface TOUTES les cabines et leur journal. Rien d'autre.
-
-        Pourquoi une action dans l'application alors que `manage.py
-        reinitialiser` existe : la remise à zéro sert PENDANT les essais,
-        plusieurs fois de suite, et le terminal est sur le serveur — pas dans la
-        poche de la personne qui teste. La commande reste le geste de la mise en
-        service ; celle-ci est le geste courant, et elle est volontairement plus
-        étroite.
-
-        Ce qu'elle ne touche pas, et c'est le point : les emplacements, les
-        zones, les comptes, le fichier de production et les réglages de taille de
-        modèle. Effacer le fichier de production désarmerait au passage la règle
-        « une cabine non annoncée ne s'enregistre pas », et il faudrait réimporter
-        2 000 lignes pour pouvoir entrer la première cabine.
-
-        Le journal part avec les cabines : il ne survit pas à ce qu'il raconte.
-        `MouvementCabine.cabine` est en SET_NULL, donc l'effacer d'abord évite
-        de laisser des lignes orphelines qui parleraient de cabines disparues.
-        """
-        # GET : ce que le POST effacerait. L'ecran a besoin de ces nombres pour
-        # annoncer la portee du geste ; les afficher au conditionnel serait pire
-        # que ne rien afficher.
-        if request.method == "GET":
-            return Response(self._etat_du_stock())
-
-        mot = str(request.data.get("confirmation") or "").strip()
-        if mot != self.MOT_POUR_VIDER:
-            raise ErreurAPI(
-                f"Pour vider le stock, retapez « {self.MOT_POUR_VIDER} ». "
-                "L'opération est irréversible et n'est pas journalisée : c'est le "
-                "journal lui-même qui part.")
-
-        with transaction.atomic():
-            journal = MouvementCabine.objects.count()
-            cabines = Cabine.objects.count()
-            MouvementCabine.objects.all().delete()
-            Cabine.objects.all().delete()
-
-        logger.warning("Stock des cabines vidé par %s : %s cabines, %s lignes de journal",
-                       getattr(request.user, "username", "?"), cabines, journal)
-        etat = self._etat_du_stock()
-        etat.update({"cabines": cabines, "journal": journal, "efface": True})
-        return Response(etat)
-
-    def _etat_du_stock(self):
-        """Ce que vider effacerait, et ce qui resterait. Une seule definition :
-        l'ecran annonce exactement ce que le POST renvoie ensuite."""
-        return {
-            "efface": False,
-            "mot": self.MOT_POUR_VIDER,
-            "cabines": Cabine.objects.count(),
-            "rangees": Occupation.objects.values("cabine").distinct().count(),
-            "journal": MouvementCabine.objects.count(),
-            "conserves": {
-                "emplacements": Emplacement.objects.count(),
-                "zones": Zone.objects.count(),
-                "comptes": Utilisateur.objects.count(),
-                "cabines_attendues": CabineAttendue.objects.count(),
-                "modeles_regles": ModeleCabine.objects.count(),
-                # Un pilier devant une place est toujours là après une remise à
-                # zéro : la condamnation décrit l'entrepôt, pas le stock.
-                "places_condamnees": PlaceCondamnee.objects.count(),
-            },
-        }
 
     @action(detail=True, methods=["post"])
     def chantier(self, request, pk=None):
@@ -1016,17 +748,10 @@ class MouvementCabineViewSet(viewsets.ReadOnlyModelViewSet):
     ordering_fields = ["date", "cabine_numero"]
 
     def get_queryset(self):
+        """Le journal, filtrable par type d'événement ; `?search=` fait le reste."""
         qs = MouvementCabine.objects.select_related("cabine").all()
-        p = self.request.query_params
-        cabine = _filtre_id(p, "cabine")
-        if cabine is not None:
-            qs = qs.filter(cabine_id=cabine)
-        if p.get("numero"):
-            qs = qs.filter(cabine_numero__icontains=p["numero"])
-        if p.get("chantier"):
-            qs = qs.filter(chantier__icontains=p["chantier"])
-        if p.get("type"):
-            qs = qs.filter(type=p["type"])
+        if self.request.query_params.get("type"):
+            qs = qs.filter(type=self.request.query_params["type"])
         return qs
 
 
@@ -1039,9 +764,6 @@ def referentiels_cabine(request):
         "types": [{"code": code, "libelle": libelle} for code, libelle in Cabine.TYPES],
         "places": [{"code": code, "libelle": libelle} for code, libelle in Cabine.PLACES],
         "types_mouvement": [{"code": code, "libelle": libelle} for code, libelle in MouvementCabine.TYPES],
-        "etapes": [{"code": code, "libelle": libelle} for code, libelle in Cabine.ETAPES],
-        "roles_zone": [{"code": code, "libelle": libelle} for code, libelle in Zone.ROLES],
-        "modes_places": [{"code": code, "libelle": libelle} for code, libelle in Emplacement.MODES_PLACES],
         # Un fichier de production a-t-il été importé ? C'est lui qui arme la
         # règle « une cabine non annoncée ne s'enregistre pas ». Sans cette
         # information, l'écran d'entrée refuserait une saisie que le serveur
@@ -1051,10 +773,6 @@ def referentiels_cabine(request):
         # modèle. Quatre écrans annonçaient « 6 chiffres » en dur ; le jour où le
         # lot a été accepté, aucun ne l'a su et tous continuaient à refuser
         # « 251213-1 » au clavier avant même que le serveur soit consulté.
-        # Les grands modèles, pour que l'écran puisse le dire AVANT le scan de
-        # l'emplacement : « cette cabine prendra tout l'emplacement ».
-        "grands_modeles": sorted(ModeleCabine.objects.filter(grand=True)
-                                 .values_list("nom", flat=True)),
         "aide_chantier": Cabine.AIDE_CHANTIER,
         "taille_chantier": Cabine.TAILLE_CHANTIER,
         # Le motif lui-même : l'écran refuse alors une forme fautive sans
@@ -1065,7 +783,7 @@ def referentiels_cabine(request):
     })
 
 
-class ModeleCabineViewSet(viewsets.ModelViewSet):
+class ModeleCabineViewSet(viewsets.GenericViewSet):
     """Les modèles de cabine et leur taille — l'écran « Modèles ».
 
     La liste n'est pas seulement ce qui a été enregistré : elle est complétée par
@@ -1073,13 +791,15 @@ class ModeleCabineViewSet(viewsets.ModelViewSet):
     modèle qui apparaît au prochain import se règle donc sans que personne ait à
     le créer, et sans qu'on découvre son existence le jour où une cabine ne
     rentre pas dans son emplacement.
+
+    Deux gestes, et deux seulement : lire la liste, régler un modèle. Pas de
+    fiche par modèle — l'écran n'en a pas l'usage.
     """
 
     queryset = ModeleCabine.objects.all()
     serializer_class = ModeleCabineSerializer
     droit_ecriture = "ref"
     pagination_class = None
-    lookup_field = "pk"
 
     def list(self, request, *args, **kwargs):
         """Les modèles enregistrés, plus ceux que les données montrent."""
@@ -1161,174 +881,11 @@ def _modeles_vus():
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def suivi_processus(request):
-    """Avancement du parc dans le processus : combien de cabines à chaque étape.
-
-    Répond au besoin de suivre le flux de bout en bout — production, quarantaine,
-    rangement, attente de départ, envoi — et de repérer ce qui stagne.
-    """
-    dernier = (MouvementCabine.objects.filter(cabine=OuterRef("pk"))
-               .order_by("-date").values("date")[:1])
-    base = (Cabine.objects
-            .prefetch_related("occupations__emplacement__zone_cabine")
-            .annotate(derniere_activite_date=Coalesce(Subquery(dernier), "date")))
-    limite = timezone.now() - timedelta(days=SEUIL_IMMOBILE_JOURS)
-
-    etapes = []
-    for code, libelle in Cabine.ETAPES:
-        lot = base.filter(CabineViewSet._filtre_etape(code))
-        etapes.append({
-            "code": code,
-            "libelle": libelle,
-            "total": lot.count(),
-            # Les cabines envoyées sont sorties : leur ancienneté n'a plus de sens.
-            "immobiles": (0 if code == "envoyee"
-                          else lot.filter(derniere_activite_date__lt=limite).count()),
-        })
-
-    stagnantes = [c for c in base.exclude(statut=Cabine.ENVOYE)
-                  .filter(derniere_activite_date__lt=limite)
-                  .order_by("derniere_activite_date")[:20]]
-    return Response({
-        "seuil_jours": SEUIL_IMMOBILE_JOURS,
-        "etapes": etapes,
-        "en_stock": base.exclude(statut=Cabine.ENVOYE).count(),
-        "stagnantes": CabineSerializer(stagnantes, many=True).data,
-    })
-
-
-class OperationsViewSet(viewsets.ViewSet):
-    """Opérations métier de stock (voir wms/services.py)."""
-
-    droits_par_action = {
-        "entree": "mvt",
-        "sortie": "mvt",
-        "reception": "mvt",
-        "transfert": "mvt",
-        "ajustement": "inv",
-        "contre_passer": "mvt_corr",
-    }
-
-    def _objet(self, modele, data, champ, libelle):
-        """Résout une clé étrangère du corps de la requête en erreurs 400 explicites.
-
-        `get_object_or_404(pk=…)` renvoyait un 404 au message technique anglais quand le
-        champ était absent, et remontait en ValueError (500) sur un identifiant non
-        numérique.
-        """
-        brut = data.get(champ)
-        if brut is None or brut == "":
-            raise ErreurAPI({"erreur": [f"Le champ « {libelle} » est obligatoire."]})
-        try:
-            return modele.objects.get(pk=brut)
-        except (modele.DoesNotExist, ValueError, TypeError, ValidationError):
-            raise ErreurAPI({"erreur": [f"{libelle.capitalize()} introuvable : « {brut} »."]})
-
-    def _article(self, data):
-        return self._objet(Article, data, "article", "article")
-
-    def _emplacement(self, data, champ="emplacement", libelle="emplacement"):
-        return self._objet(Emplacement, data, champ, libelle)
-
-    def _texte(self, data, champ, longueur_max=255):
-        """Les CharField ne sont pas contrôlés par SQLite : on borne ici."""
-        valeur = data.get(champ) or ""
-        if not isinstance(valeur, str):
-            valeur = str(valeur)
-        valeur = valeur.strip()
-        if len(valeur) > longueur_max:
-            raise ErreurAPI({"erreur": [
-                f"Le champ « {champ} » dépasse {longueur_max} caractères."
-            ]})
-        return valeur
-
-    def _run(self, fn):
-        try:
-            return Response(fn(), status=status.HTTP_201_CREATED)
-        except ValidationError as e:
-            return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
-
-    @action(detail=False, methods=["post"])
-    def entree(self, request):
-        d = request.data
-        return self._run(lambda: MouvementSerializer(services.entree(
-            article=self._article(d), emplacement=self._emplacement(d),
-            qte=d.get("qte"), utilisateur=request.user,
-            note=self._texte(d, "note"), commande=self._texte(d, "commande", 64))).data)
-
-    @action(detail=False, methods=["post"])
-    def sortie(self, request):
-        d = request.data
-        return self._run(lambda: MouvementSerializer(services.sortie(
-            article=self._article(d), emplacement=self._emplacement(d),
-            qte=d.get("qte"), utilisateur=request.user,
-            note=self._texte(d, "note"), commande=self._texte(d, "commande", 64))).data)
-
-    @action(detail=False, methods=["post"])
-    def ajustement(self, request):
-        d = request.data
-        return self._run(lambda: MouvementSerializer(services.ajustement(
-            article=self._article(d), emplacement=self._emplacement(d),
-            qte=d.get("qte"), utilisateur=request.user,
-            note=self._texte(d, "note"))).data)
-
-    @action(detail=False, methods=["post"])
-    def transfert(self, request):
-        d = request.data
-
-        def go():
-            mv_out, mv_in = services.transfert(
-                article=self._article(d),
-                source=self._emplacement(d, "source", "emplacement source"),
-                destination=self._emplacement(d, "destination", "emplacement de destination"),
-                qte=d.get("qte"), utilisateur=request.user,
-                commande=self._texte(d, "commande", 64))
-            return {"sortie": MouvementSerializer(mv_out).data,
-                    "entree": MouvementSerializer(mv_in).data}
-        return self._run(go)
-
-    @action(detail=False, methods=["post"])
-    def reception(self, request):
-        d = request.data
-
-        def go():
-            emplacement = self._emplacement(d)
-            mv, rec = services.receptionner(
-                article=self._article(d), emplacement=emplacement,
-                qte=d.get("qte"), utilisateur=request.user,
-                commande=self._texte(d, "commande", 64),
-                commentaire=self._texte(d, "commentaire"),
-                # Déduit de l'emplacement, jamais du client : le drapeau envoyé par le
-                # front pouvait marquer « à ranger » une réception déposée dans un
-                # emplacement normal (et la chaîne "false" valait True).
-                staging=emplacement.staging)
-            return {"mouvement": MouvementSerializer(mv).data,
-                    "reception": ReceptionSerializer(rec).data}
-        return self._run(go)
-
-    @action(detail=False, methods=["post"], url_path="contre-passer")
-    def contre_passer(self, request):
-        d = request.data
-
-        def go():
-            mouvement = self._objet(Mouvement, d, "mouvement", "mouvement")
-            if mouvement.article_id is None or mouvement.emplacement_id is None:
-                raise ErreurAPI({"erreur": [
-                    "Impossible de contre-passer ce mouvement : l'article ou "
-                    "l'emplacement d'origine a été supprimé."
-                ]})
-            return MouvementSerializer(
-                services.contre_passer(mouvement, utilisateur=request.user)).data
-        return self._run(go)
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
 def moi(request):
     """Identité et droits du compte connecté.
 
     Permet au front de ne pas proposer une commande que le serveur refusera : sans
-    cela l'interface affiche « Créer une référence » à un opérateur sans `droit_ref`,
+    cela l'interface affiche « Créer un rack » à un opérateur sans `droit_ref`,
     qui ne découvre le refus qu'après avoir rempli le formulaire. Le `pin` n'est
     volontairement pas exposé.
     """
@@ -1338,7 +895,7 @@ def moi(request):
         "nom": u.nom or u.username,
         "role": u.role,
         "is_superuser": u.is_superuser,
-        # Au-delà des 7 droits fins : l'import du fichier de production n'est pas
+        # Au-delà des droits fins : l'import du fichier de production n'est pas
         # une case à cocher. Le front en a besoin pour ne pas proposer un écran
         # que le serveur refusera.
         "administrateur": u.est_administrateur,
@@ -1412,35 +969,6 @@ def sante(request):
             code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return Response(etat, status=code)
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def tableau_de_bord(request):
-    # Toutes les zones de staging, pas seulement la première trouvée.
-    a_ranger = Stock.objects.filter(emplacement__staging=True).aggregate(t=Sum("qte"))["t"] or 0
-    # Note : le total d'alerte inclut volontairement le stock en zone « à ranger ».
-    # C'est le comportement de référence de la maquette (`totalStock` sommait toutes les
-    # lignes de stock de l'article, staging compris) — la marchandise est physiquement là.
-    totals = {r["article"]: (r["t"] or 0) for r in Stock.objects.values("article").annotate(t=Sum("qte"))}
-    bas = []
-    for art in Article.objects.filter(statut=Article.ACTIF):
-        tot = totals.get(art.id, 0)
-        if art.stock_min and tot < art.stock_min:
-            bas.append({"ref": art.ref, "designation": art.designation,
-                        "stock": float(tot), "min": float(art.stock_min)})
-    bas = sorted(bas, key=lambda x: x["stock"])[:50]
-    derniers = [{
-        "date": m.date.isoformat(), "type": m.get_type_display(),
-        "article": m.article.ref if m.article else "?",
-        "emplacement": m.emplacement.code if m.emplacement else "?",
-        "qte": float(m.qte), "note": m.note,
-    } for m in Mouvement.objects.select_related("article", "emplacement")[:12]]
-    return Response({
-        "references": Article.objects.count(), "emplacements": Emplacement.objects.count(),
-        "mouvements": Mouvement.objects.count(), "receptions": Reception.objects.count(),
-        "a_ranger": float(a_ranger), "stock_bas": bas, "derniers_mouvements": derniers,
-    })
 
 
 #: Les deux bibliothèques front (lecture de QR à la caméra, génération des

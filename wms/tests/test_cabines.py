@@ -1,4 +1,4 @@
-"""Tests des cabines : zones, places G/M/D, statuts, express, archives, historique."""
+"""Tests des cabines : places gauche/droite, statuts, express, archives, historique."""
 from django.core.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
@@ -22,46 +22,9 @@ class BaseCabines(APITestCase):
 
 
 class ZonesTest(BaseCabines):
-    def test_creation_de_plusieurs_zones(self):
-        r = self.client.post("/api/zones/", {"nom": "Attente départ", "ordre": 3}, format="json")
-        self.assertEqual(r.status_code, 201)
-        self.assertEqual([z["nom"] for z in self.client.get("/api/zones/").data["results"]],
-                         ["À ranger cabines", "Sortie prod", "Attente départ"])
-
-    def test_nom_de_zone_unique(self):
-        r = self.client.post("/api/zones/", {"nom": "Sortie prod"}, format="json")
-        self.assertEqual(r.status_code, 400)
-
     def test_emplacement_expose_sa_zone(self):
         r = self.client.get(f"/api/emplacements/{self.e1.id}/")
         self.assertEqual(r.data["zone_cabine_nom"], "À ranger cabines")
-
-    def test_zone_encore_utilisee_ne_se_supprime_pas(self):
-        """SET_NULL rendait la suppression silencieuse : les emplacements se
-        retrouvaient débranchés sans message, et le suivi du processus reclassait
-        tout le parc en simple rangement sans que personne comprenne pourquoi."""
-        r = self.client.delete(f"/api/zones/{self.zone_ranger.id}/")
-        self.assertEqual(r.status_code, 400)
-        self.assertIn("emplacement", " ".join(r.data["erreur"]).lower())
-        self.e1.refresh_from_db()
-        self.assertEqual(self.e1.zone_cabine_id, self.zone_ranger.id)
-
-    def test_zone_supprimee_laisse_l_emplacement(self):
-        """SET_NULL : perdre une zone ne doit pas emporter les emplacements.
-
-        Le garde-fou de l'API n'est qu'un filet de sécurité pour l'opérateur ;
-        l'invariant de base reste vrai quelle que soit la porte utilisée
-        (administration Django, script de reprise…).
-        """
-        self.zone_ranger.delete()
-        self.e1.refresh_from_db()
-        self.assertIsNone(self.e1.zone_cabine)
-        self.assertTrue(Emplacement.objects.filter(pk=self.e1.pk).exists())
-
-    def test_zone_libre_se_supprime_par_l_api(self):
-        zone = Zone.objects.create(nom="Provisoire")
-        self.assertEqual(self.client.delete(f"/api/zones/{zone.id}/").status_code, 204)
-        self.assertFalse(Zone.objects.filter(pk=zone.pk).exists())
 
 
 class PlacesTest(BaseCabines):
@@ -96,9 +59,10 @@ class PlacesTest(BaseCabines):
         self.assertIn("occupée", " ".join(rep.data["erreur"]))
 
     def test_place_liberee_redevient_disponible(self):
+        """Déplacer la cabine rend sa place : c'est le geste « La déplacer »."""
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=self.e1, place="D", utilisateur=self.user)
-        services_cabines.sortir_de_l_emplacement(cabine=c, utilisateur=self.user, note="remontée à l’atelier")
+        services_cabines.ranger(cabine=c, emplacement=self.e2, place="G", utilisateur=self.user)
         r = self.client.get(f"/api/emplacements/{self.e1.id}/places/")
         self.assertEqual(r.data["libres"], ["G", "D"])
 
@@ -111,7 +75,7 @@ class PlacesTest(BaseCabines):
     def test_cabine_envoyee_ne_reserve_plus_sa_place(self):
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=self.e1, place="G", utilisateur=self.user)
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         autre = self.cabine(numero="00_00_02", chantier="000002")
         services_cabines.ranger(cabine=autre, emplacement=self.e1, place="G",
                                 utilisateur=self.user)
@@ -144,11 +108,6 @@ class RangementTest(BaseCabines):
         with self.assertRaises(services_cabines.ErreurCabine):
             services_cabines.ranger(cabine=c, emplacement=self.e1, place="G",
                                     utilisateur=self.user)
-
-    def test_sortir_une_cabine_non_rangee_refuse(self):
-        c = self.cabine()
-        with self.assertRaises(services_cabines.ErreurCabine):
-            services_cabines.sortir_de_l_emplacement(cabine=c, utilisateur=self.user, note="remontée à l’atelier")
 
     def test_emplacement_inactif_refuse(self):
         self.e1.actif = False
@@ -206,38 +165,30 @@ class ExpressTest(BaseCabines):
         c.refresh_from_db()
         self.assertEqual(c.place, "G")
 
-    def test_express_ne_sort_pas_sans_chantier(self):
-        c = services_cabines.creer_cabine(numero="00_00_08", chantier="",
-                                          type_cabine=Cabine.EXPRESS, utilisateur=self.user)
-        services_cabines.ranger(cabine=c, emplacement=self.e1, place="G", utilisateur=self.user)
-        # Avec un motif : sinon c'est la garde du motif qui répond, et ce
-        # test ne dirait plus rien du n° de chantier.
-        r = self.client.post(f"/api/cabines/{c.id}/sortir/",
-                             {"note": "départ chantier"}, format="json")
-        self.assertEqual(r.status_code, 400)
-        self.assertIn("chantier", " ".join(r.data["erreur"]).lower())
-        c.refresh_from_db()
-        self.assertEqual(c.place, "G")  # toujours en place
-
-    def test_express_sort_apres_affectation_du_chantier(self):
+    def test_express_part_apres_affectation_du_chantier(self):
         c = services_cabines.creer_cabine(numero="00_00_08", chantier="",
                                           type_cabine=Cabine.EXPRESS, utilisateur=self.user)
         services_cabines.ranger(cabine=c, emplacement=self.e1, place="G", utilisateur=self.user)
         r = self.client.post(f"/api/cabines/{c.id}/chantier/", {"chantier": "123456"},
                              format="json")
         self.assertEqual(r.status_code, 200)
-        r = self.client.post(f"/api/cabines/{c.id}/sortir/",
+        r = self.client.post(f"/api/cabines/{c.id}/envoyer/",
                              {"note": "départ chantier"}, format="json")
         self.assertEqual(r.status_code, 200)
         c.refresh_from_db()
         self.assertEqual(c.place, "")
+        self.assertEqual(c.statut, Cabine.ENVOYE)
         self.assertEqual(c.chantier, "123456")
 
     def test_express_ne_s_envoie_pas_sans_chantier(self):
         c = services_cabines.creer_cabine(numero="00_00_08", chantier="",
                                           type_cabine=Cabine.EXPRESS, utilisateur=self.user)
-        r = self.client.post(f"/api/cabines/{c.id}/envoyer/", {}, format="json")
+        # Avec son motif : sans lui, le refus viendrait du motif manquant et cet
+        # essai ne prouverait plus rien sur le chantier.
+        r = self.client.post(f"/api/cabines/{c.id}/envoyer/",
+                             {"note": "départ chantier"}, format="json")
         self.assertEqual(r.status_code, 400)
+        self.assertIn("chantier", str(r.data).lower())
         c.refresh_from_db()
         self.assertNotEqual(c.statut, Cabine.ENVOYE)
 
@@ -294,9 +245,17 @@ class StatutsTest(BaseCabines):
         self.assertEqual(r.status_code, 400)
 
     def test_statut_envoye_passe_par_l_envoi(self):
-        """Demander le statut « envoyé » doit appliquer les règles de l'envoi."""
+        """Demander le statut « envoyé » doit appliquer les règles de l'envoi.
+
+        Dont le motif, désormais : la sortie et l'envoi sont un seul geste, et
+        ce chemin-ci ne doit pas être une porte de service qui l'évite.
+        """
         c = self.cabine()
         r = self.client.post(f"/api/cabines/{c.id}/statut/", {"statut": Cabine.ENVOYE},
+                             format="json")
+        self.assertEqual(r.status_code, 400, "sans motif, l'envoi doit être refusé")
+        r = self.client.post(f"/api/cabines/{c.id}/statut/",
+                             {"statut": Cabine.ENVOYE, "motif": "camion 12"},
                              format="json")
         self.assertEqual(r.status_code, 200)
         c.refresh_from_db()
@@ -322,14 +281,14 @@ class EnvoiEtArchivesTest(BaseCabines):
 
     def test_cabine_envoyee_absente_de_la_liste_active(self):
         c = self.cabine()
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         self.assertEqual(self.client.get("/api/cabines/").data["count"], 0)
 
     def test_fichier_a_part_des_cabines_envoyees(self):
         active = self.cabine(numero="00_00_01", chantier="000111")
         envoyee = self.cabine(numero="00_00_02", chantier="000222")
-        services_cabines.envoyer(cabine=envoyee, utilisateur=self.user)
-        r = self.client.get("/api/cabines/archives/")
+        services_cabines.envoyer(cabine=envoyee, utilisateur=self.user, note="départ chantier")
+        r = self.client.get(f"/api/cabines/?toutes=1&statut={Cabine.ENVOYE}")
         self.assertEqual([c["numero"] for c in r.data["results"]], ["00_00_02"])
         self.assertEqual(self.client.get("/api/cabines/").data["count"], 1)
         self.assertEqual(self.client.get("/api/cabines/").data["results"][0]["numero"],
@@ -339,7 +298,7 @@ class EnvoiEtArchivesTest(BaseCabines):
         """Une cabine partie ne doit plus afficher « rangée en … »."""
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=self.e1, place="G", utilisateur=self.user)
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         c.refresh_from_db()
         self.assertEqual(c.position, "")
         fiche = self.client.get(f"/api/cabines/{c.id}/").data
@@ -352,18 +311,17 @@ class EnvoiEtArchivesTest(BaseCabines):
 
     def test_envoi_irreversible(self):
         c = self.cabine()
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         for chemin, corps in [("envoyer", {}),
                               ("statut", {"statut": Cabine.LIBRE}),
-                              ("ranger", {"emplacement": self.e1.id, "place": "G"}),
-                              ("sortir", {})]:
+                              ("ranger", {"emplacement": self.e1.id, "place": "G"})]:
             with self.subTest(operation=chemin):
                 r = self.client.post(f"/api/cabines/{c.id}/{chemin}/", corps, format="json")
                 self.assertEqual(r.status_code, 400)
 
     def test_envoi_non_annulable_par_modification(self):
         c = self.cabine()
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         self.client.patch(f"/api/cabines/{c.id}/", {"statut": Cabine.LIBRE}, format="json")
         c.refresh_from_db()
         self.assertEqual(c.statut, Cabine.ENVOYE)
@@ -374,7 +332,7 @@ class EnvoiEtArchivesTest(BaseCabines):
         services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE,
                                         utilisateur=self.user, motif="paroi à reprendre")
         services_cabines.ranger(cabine=c, emplacement=self.e2, place="D", utilisateur=self.user)
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         r = self.client.get(f"/api/cabines/{c.id}/historique/")
         types = [m["type"] for m in r.data]
         self.assertEqual(types, [MouvementCabine.ENVOI, MouvementCabine.TRANSFERT,
@@ -410,7 +368,7 @@ class RechercheCabinesTest(BaseCabines):
         self.assertEqual(self.client.get("/api/cabines/?numero=00_00").data["count"], 2)
 
     def test_toutes_les_cabines_d_un_chantier(self):
-        r = self.client.get("/api/cabines/?chantier=000123")
+        r = self.client.get("/api/cabines/?chantier_exact=000123")
         self.assertEqual(r.data["count"], 2)
         self.assertEqual(sorted(c["numero"] for c in r.data["results"]),
                          ["00_00_01", "00_00_02"])
@@ -428,14 +386,6 @@ class RechercheCabinesTest(BaseCabines):
     def test_filtre_sans_chantier(self):
         r = self.client.get("/api/cabines/?sans_chantier=1")
         self.assertEqual([c["numero"] for c in r.data["results"]], ["55_55_55"])
-
-    def test_filtre_par_zone(self):
-        services_cabines.ranger(cabine=self.c1, emplacement=self.e1, place="G",
-                                utilisateur=self.user)
-        services_cabines.ranger(cabine=self.c3, emplacement=self.e2, place="G",
-                                utilisateur=self.user)
-        r = self.client.get(f"/api/cabines/?zone={self.zone_prod.id}")
-        self.assertEqual([c["numero"] for c in r.data["results"]], ["99_88_77"])
 
     def test_filtre_non_rangees(self):
         services_cabines.ranger(cabine=self.c1, emplacement=self.e1, place="G",
@@ -459,7 +409,7 @@ class RechercheCabinesTest(BaseCabines):
     def test_journal_filtrable_par_chantier(self):
         services_cabines.changer_statut(cabine=self.c1, statut=Cabine.QUARANTAINE,
                                         utilisateur=self.user, motif="paroi à reprendre")
-        r = self.client.get("/api/mouvements-cabine/?chantier=000123")
+        r = self.client.get("/api/mouvements-cabine/?search=000123")
         self.assertTrue(r.data["count"] >= 1)
         self.assertTrue(all(m["chantier"] == "000123" for m in r.data["results"]))
 
@@ -495,64 +445,21 @@ class ListeEmplacementsTest(BaseCabines):
         # devant le rack, et non l'ordre des numéros.
         self.assertEqual(sorted(c["numero"] for c in e["cabines"]),
                          ["00_00_01", "00_00_02"])
-        self.assertEqual(e["places_occupees"], ["D", "G"])
         # Les deux places sont prises : l'emplacement est plein.
         self.assertEqual(e["places_libres"], [])
         self.assertEqual(e["zone_cabine_nom"], "À ranger cabines")
 
     def test_cabine_envoyee_absente_de_l_emplacement(self):
-        services_cabines.envoyer(cabine=self.c1, utilisateur=self.user)
+        services_cabines.envoyer(cabine=self.c1, utilisateur=self.user, note="départ chantier")
         e = [x for x in self.client.get("/api/emplacements/").data["results"]
              if x["code"] == "C001"][0]
         self.assertEqual([c["numero"] for c in e["cabines"]], ["00_00_02"])
         # Une seule place rendue : l'autre porte toujours sa cabine.
         self.assertEqual(e["places_libres"], ["G"])
 
-    def test_filtre_par_numero_de_cabine(self):
-        self.assertEqual(self.codes("/api/emplacements/?cabine=99_88"), ["C002"])
-
-    def test_filtre_par_chantier(self):
-        """Le chantier 000111 occupe C001 (cabine 00_00_01) et C002 (99_88_77)."""
-        self.assertEqual(sorted(self.codes("/api/emplacements/?chantier=000111")),
-                         ["C001", "C002"])
-
-    def test_filtre_par_statut_de_cabine(self):
-        services_cabines.changer_statut(cabine=self.c3, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user, motif="paroi à reprendre")
-        self.assertEqual(self.codes(f"/api/emplacements/?statut={Cabine.QUARANTAINE}"), ["C002"])
-
-    def test_filtres_cumules_visent_la_meme_cabine(self):
-        """Chantier 000222 + statut chargé : aucune cabine ne réunit les deux.
-
-        Avec des filtres appliqués séparément, C001 ressortirait à tort — sa place G
-        porte le chantier 000111 et sa place D pourrait porter le statut cherché.
-        """
-        services_cabines.changer_statut(cabine=self.c1, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user, motif="paroi à reprendre")
-        self.assertEqual(
-            self.codes(f"/api/emplacements/?chantier=000222&statut={Cabine.QUARANTAINE}"), [])
-        self.assertEqual(
-            self.codes(f"/api/emplacements/?chantier=000111&statut={Cabine.QUARANTAINE}"), ["C001"])
-
-    def test_filtre_par_zone(self):
-        self.assertEqual(sorted(self.codes(f"/api/emplacements/?zone={self.zone_prod.id}")),
-                         ["C002", "C003"])
-
-    def test_filtre_par_occupation(self):
-        """C001 porte deux cabines : sur deux places, elle est COMPLÈTE.
-
-        Avec trois places elle était « partielle ». La règle a changé, pas le
-        filtre : c'est exactement ce que ce test doit constater.
-        """
-        self.assertEqual(self.codes("/api/emplacements/?occupation=libre"), ["C003"])
-        self.assertEqual(self.codes("/api/emplacements/?occupation=partiel"), ["C002"])
-        self.assertEqual(self.codes("/api/emplacements/?occupation=complet"), ["C001"])
-
     def test_emplacement_complet_detecte(self):
         """Une troisième cabine n'entre plus : l'emplacement n'a que deux places."""
-        self.assertEqual(self.codes("/api/emplacements/?occupation=complet"), ["C001"])
-        self.assertNotIn("C001", self.codes("/api/emplacements/?occupation=partiel"))
-
+        self.assertTrue(self.client.get(f"/api/emplacements/{self.e1.id}/places/").data["complet"])
         c4 = self.cabine(numero="44_44_44", chantier="000444")
         with self.assertRaises(services_cabines.ErreurCabine):
             services_cabines.ranger(cabine=c4, emplacement=self.e1, place="D",
@@ -563,23 +470,12 @@ class ListeEmplacementsTest(BaseCabines):
                          ["C001", "C002", "C003"])
         self.assertEqual(self.codes("/api/emplacements/?ordering=-code")[0], "C003")
 
-    def test_tri_par_occupation(self):
-        codes = self.codes("/api/emplacements/?ordering=-occupees")
-        self.assertEqual(codes[0], "C001")          # 2 places occupées
-        self.assertEqual(codes[-1], "C003")         # aucune
-
-    def test_comptage_non_faussé_par_un_filtre(self):
-        """Le filtre sur une cabine ne doit pas réduire le nombre de places occupées."""
-        e = [x for x in self.client.get("/api/emplacements/?cabine=00_00_01").data["results"]][0]
-        self.assertEqual(e["code"], "C001")
-        self.assertEqual(e["places_occupees"], ["D", "G"])
-
     def test_recherche_libre_sur_le_code(self):
         self.assertEqual(self.codes("/api/emplacements/?search=C003"), ["C003"])
 
 
 class ModeDeRangementTest(BaseCabines):
-    """Chaque emplacement choisit son mode : 3 places G/M/D ou capacité illimitée."""
+    """Chaque emplacement choisit son mode : deux places ou capacité illimitée."""
 
     def setUp(self):
         super().setUp()
@@ -612,7 +508,7 @@ class ModeDeRangementTest(BaseCabines):
         self.assertEqual(r.status_code, 400)
         self.assertIn("illimitée", " ".join(r.data["erreur"]))
 
-    def test_gmd_exige_une_place(self):
+    def test_deux_places_exige_une_place(self):
         c = self.cabine()
         r = self.client.post(f"/api/cabines/{c.id}/ranger/",
                              {"emplacement": self.e1.id}, format="json")
@@ -632,8 +528,8 @@ class ModeDeRangementTest(BaseCabines):
     def test_sortie_depuis_un_illimite(self):
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=self.tampon, utilisateur=self.user)
-        r = self.client.post(f"/api/cabines/{c.id}/sortir/",
-                             {"note": "reprise en atelier"}, format="json")
+        r = self.client.post(f"/api/cabines/{c.id}/envoyer/",
+                             {"note": "départ chantier"}, format="json")
         self.assertEqual(r.status_code, 200)
         c.refresh_from_db()
         self.assertIsNone(c.emplacement)
@@ -683,23 +579,6 @@ class ModeDeRangementTest(BaseCabines):
         self.assertTrue(e["illimite"])
         self.assertEqual(e["nb_cabines"], 4)
         self.assertEqual(e["places_libres"], [])
-        self.assertEqual(e["places_occupees"], [])
-
-    def test_filtre_par_mode(self):
-        codes = [e["code"] for e in
-                 self.client.get(f"/api/emplacements/?mode={Emplacement.ILLIMITE}").data["results"]]
-        self.assertEqual(codes, ["ARANGER"])
-
-    def test_illimite_jamais_complet_dans_les_filtres(self):
-        for i in range(1, 5):
-            c = self.cabine(numero=f"00_00_0{i}", chantier=f"00000{i}")
-            services_cabines.ranger(cabine=c, emplacement=self.tampon, utilisateur=self.user)
-        complets = [e["code"] for e in
-                    self.client.get("/api/emplacements/?occupation=complet").data["results"]]
-        self.assertNotIn("ARANGER", complets)
-        partiels = [e["code"] for e in
-                    self.client.get("/api/emplacements/?occupation=partiel").data["results"]]
-        self.assertIn("ARANGER", partiels)
 
     def test_creation_directe_avec_place_sur_illimite_refusee(self):
         cabine = Cabine.objects.create(numero="00_00_09", chantier="000009")
@@ -763,7 +642,7 @@ class EtapesProcessusTest(BaseCabines):
         services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE,
                                         utilisateur=self.user, motif="paroi à reprendre")
         self.assertEqual(self.etape(c), "quarantaine")
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
+        services_cabines.envoyer(cabine=c, utilisateur=self.user, note="départ chantier")
         self.assertEqual(self.etape(c), "envoyee")
 
     def test_emplacement_sans_zone_compte_comme_rangement(self):
@@ -771,9 +650,6 @@ class EtapesProcessusTest(BaseCabines):
         c = self.cabine()
         services_cabines.ranger(cabine=c, emplacement=libre, place="G", utilisateur=self.user)
         self.assertEqual(self.etape(c), "rangement")
-        codes = [x["numero"] for x in
-                 self.client.get("/api/cabines/?etape=rangement").data["results"]]
-        self.assertIn(c.numero, codes)
 
     def test_etape_exposee_par_l_api(self):
         c = self.cabine()
@@ -782,34 +658,8 @@ class EtapesProcessusTest(BaseCabines):
         fiche = self.client.get(f"/api/cabines/{c.id}/").data
         self.assertEqual(fiche["etape"], "envoi")
         self.assertEqual(fiche["etape_libelle"], "En attente de départ")
-        self.assertEqual(fiche["zone_role"], Zone.ENVOI)
         self.assertEqual(fiche["jours_immobile"], 0)
         self.assertIsNotNone(fiche["derniere_activite"])
-
-    def test_filtre_par_etape_coherent_avec_le_calcul(self):
-        """Le filtre SQL et la propriété Python doivent classer à l'identique."""
-        cabines = []
-        c1 = self.cabine(numero="00_00_01", chantier="000001")
-        cabines.append(c1)
-        c2 = self.cabine(numero="00_00_02", chantier="000002")
-        services_cabines.ranger(cabine=c2, emplacement=self.e1, place="G",
-                                utilisateur=self.user)
-        cabines.append(c2)
-        c3 = self.cabine(numero="00_00_03", chantier="000003")
-        services_cabines.ranger(cabine=c3, emplacement=self.quai, place="G",
-                                utilisateur=self.user)
-        cabines.append(c3)
-        c4 = self.cabine(numero="00_00_04", chantier="000004")
-        services_cabines.changer_statut(cabine=c4, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user, motif="paroi à reprendre")
-        cabines.append(c4)
-
-        for code, _ in Cabine.ETAPES:
-            attendus = sorted(c.numero for c in cabines
-                              if Cabine.objects.get(pk=c.pk).etape == code)
-            obtenus = sorted(x["numero"] for x in
-                             self.client.get(f"/api/cabines/?toutes=1&etape={code}").data["results"])
-            self.assertEqual(obtenus, attendus, f"étape « {code} »")
 
 
 class MotifTest(BaseCabines):
@@ -901,8 +751,8 @@ class TypesEtStatutsTest(BaseCabines):
                 services_cabines.ranger(cabine=c, emplacement=self.e1,
                                         place=Cabine.PLACES[i][0], utilisateur=self.user)
                 with self.assertRaises(services_cabines.ErreurCabine):
-                    services_cabines.sortir_de_l_emplacement(
-                        cabine=c, utilisateur=self.user, note="remontée à l’atelier")
+                    services_cabines.envoyer(cabine=c, utilisateur=self.user,
+                                             note="départ chantier")
 
     def test_le_statut_levee_n_existe_plus(self):
         c = self.cabine(numero="00_12_00", chantier="000012")
@@ -926,102 +776,9 @@ class TypesEtStatutsTest(BaseCabines):
         self.assertEqual(notes, ["Rayure", "Retouchée"])
 
 
-class SuiviProcessusTest(BaseCabines):
-    def setUp(self):
-        super().setUp()
-        self.zone_envoi = Zone.objects.create(nom="Attente départ", role=Zone.ENVOI, ordre=3)
-        self.quai = Emplacement.objects.create(code="QUAI1", zone_cabine=self.zone_envoi)
-
-    def test_comptage_par_etape(self):
-        self.cabine(numero="00_00_01", chantier="000001")               # production
-        b = self.cabine(numero="00_00_02", chantier="000002")
-        services_cabines.ranger(cabine=b, emplacement=self.e1, place="G",
-                                utilisateur=self.user)                   # rangement
-        c = self.cabine(numero="00_00_03", chantier="000003")
-        services_cabines.ranger(cabine=c, emplacement=self.quai, place="G",
-                                utilisateur=self.user)                   # envoi
-        d = self.cabine(numero="00_00_04", chantier="000004")
-        services_cabines.changer_statut(cabine=d, statut=Cabine.QUARANTAINE,
-                                        utilisateur=self.user, motif="paroi à reprendre")           # quarantaine
-        e = self.cabine(numero="00_00_05", chantier="000005")
-        services_cabines.envoyer(cabine=e, utilisateur=self.user)        # envoyée
-
-        r = self.client.get("/api/suivi-processus/")
-        self.assertEqual(r.status_code, 200)
-        totaux = {x["code"]: x["total"] for x in r.data["etapes"]}
-        self.assertEqual(totaux["production"], 1)
-        self.assertEqual(totaux["rangement"], 1)
-        self.assertEqual(totaux["envoi"], 1)
-        self.assertEqual(totaux["quarantaine"], 1)
-        self.assertEqual(totaux["envoyee"], 1)
-        self.assertEqual(r.data["en_stock"], 4)   # tout sauf l'envoyée
-
-    def test_chaque_cabine_est_dans_exactement_une_etape(self):
-        """Les étapes doivent partitionner le parc : ni trou, ni double comptage."""
-        for i in range(1, 4):
-            c = self.cabine(numero=f"00_00_0{i}", chantier=f"00000{i}")
-            if i == 2:
-                services_cabines.ranger(cabine=c, emplacement=self.quai, place="G",
-                                        utilisateur=self.user)
-            if i == 3:
-                services_cabines.changer_statut(cabine=c, statut=Cabine.QUARANTAINE,
-                                                utilisateur=self.user, motif="paroi à reprendre")
-        r = self.client.get("/api/suivi-processus/")
-        self.assertEqual(sum(x["total"] for x in r.data["etapes"]), Cabine.objects.count())
-
-    def test_cabines_stagnantes_signalees(self):
-        from datetime import timedelta
-        from django.utils import timezone as tz
-        c = self.cabine()
-        vieux = tz.now() - timedelta(days=30)
-        MouvementCabine.objects.filter(cabine=c).update(date=vieux)
-        Cabine.objects.filter(pk=c.pk).update(date=vieux)
-        r = self.client.get("/api/suivi-processus/")
-        self.assertEqual([x["numero"] for x in r.data["stagnantes"]], [c.numero])
-        self.assertGreaterEqual(r.data["stagnantes"][0]["jours_immobile"], 29)
-        immobiles = {x["code"]: x["immobiles"] for x in r.data["etapes"]}
-        self.assertEqual(immobiles["production"], 1)
-
-    def test_une_cabine_envoyee_n_est_jamais_stagnante(self):
-        from datetime import timedelta
-        from django.utils import timezone as tz
-        c = self.cabine()
-        services_cabines.envoyer(cabine=c, utilisateur=self.user)
-        MouvementCabine.objects.filter(cabine=c).update(date=tz.now() - timedelta(days=90))
-        r = self.client.get("/api/suivi-processus/")
-        self.assertEqual(r.data["stagnantes"], [])
-        immobiles = {x["code"]: x["immobiles"] for x in r.data["etapes"]}
-        self.assertEqual(immobiles["envoyee"], 0)
-
-
 class RolesDeZoneTest(BaseCabines):
     def test_role_par_defaut_rangement(self):
         self.assertEqual(self.zone_ranger.role, Zone.RANGEMENT)
-
-    def test_creation_avec_role(self):
-        r = self.client.post("/api/zones/", {"nom": "Quai départ", "role": Zone.ENVOI},
-                             format="json")
-        self.assertEqual(r.status_code, 201)
-        self.assertEqual(r.data["role"], Zone.ENVOI)
-
-    def test_modification_du_role(self):
-        r = self.client.patch(f"/api/zones/{self.zone_prod.id}/", {"role": Zone.PRODUCTION},
-                             format="json")
-        self.assertEqual(r.status_code, 200)
-        self.zone_prod.refresh_from_db()
-        self.assertEqual(self.zone_prod.role, Zone.PRODUCTION)
-
-    def test_role_inconnu_refuse(self):
-        r = self.client.post("/api/zones/", {"nom": "Bizarre", "role": "nawak"}, format="json")
-        self.assertEqual(r.status_code, 400)
-
-    def test_referentiels_exposent_etapes_et_roles(self):
-        r = self.client.get("/api/referentiels-cabine/")
-        self.assertEqual([e["code"] for e in r.data["etapes"]],
-                         ["production", "quarantaine", "rangement", "envoi",
-                          "envoyee"])
-        self.assertEqual([x["code"] for x in r.data["roles_zone"]],
-                         ["production", "rangement", "envoi"])
 
 
 class ReferentielsTest(BaseCabines):
@@ -1051,7 +808,7 @@ class DroitsCabinesTest(BaseCabines):
     def test_operateur_sans_droit_cab_refuse(self):
         c = self.cabine()
         op = Utilisateur.objects.create_user(username="op2", password="secret123",
-                                             role=Utilisateur.OPERATEUR, droit_mvt=True)
+                                             role=Utilisateur.OPERATEUR, droit_ref=True)
         self.client.force_authenticate(user=op)
         r = self.client.post(f"/api/cabines/{c.id}/statut/", {"statut": Cabine.QUARANTAINE},
                              format="json")

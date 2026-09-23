@@ -196,26 +196,9 @@ class SortieEtEnvoiTest(BaseMulti):
                                 ajouter=True, utilisateur=self.u)
         return cabine
 
-    def test_sortir_libere_tout(self):
-        cabine = self.cabine_a_deux_endroits()
-        services_cabines.sortir_de_l_emplacement(cabine=cabine, utilisateur=self.u, note="remontée à l’atelier")
-        cabine.refresh_from_db()
-        self.assertEqual(cabine.emplacements_occupes, [])
-        self.assertIn("G", services_cabines.places_libres(self.e1))
-        self.assertIn("D", services_cabines.places_libres(self.e2))
-
-    def test_sortir_un_seul_emplacement(self):
-        cabine = self.cabine_a_deux_endroits()
-        premier = cabine.occupations.order_by("numero").first()
-        services_cabines.sortir_de_l_emplacement(cabine=cabine, occupation=premier,
-                                                 utilisateur=self.u, note="remontée à l’atelier")
-        cabine.refresh_from_db()
-        self.assertEqual(len(cabine.emplacements_occupes), 1)
-        self.assertEqual(cabine.position, "AC-110-1·D")
-
     def test_envoyer_libere_tout(self):
         cabine = self.cabine_a_deux_endroits()
-        services_cabines.envoyer(cabine=cabine, utilisateur=self.u)
+        services_cabines.envoyer(cabine=cabine, utilisateur=self.u, note="départ chantier")
         cabine.refresh_from_db()
         self.assertEqual(cabine.position, "")
         self.assertIn("G", services_cabines.places_libres(self.e1))
@@ -223,7 +206,7 @@ class SortieEtEnvoiTest(BaseMulti):
 
     def test_l_envoi_note_les_deux_positions(self):
         cabine = self.cabine_a_deux_endroits()
-        services_cabines.envoyer(cabine=cabine, utilisateur=self.u)
+        services_cabines.envoyer(cabine=cabine, utilisateur=self.u, note="départ chantier")
         envoi = cabine.historique.filter(type="envoi").first()
         self.assertIn("AC-100-1·G", envoi.depuis)
         self.assertIn("AC-110-1·D", envoi.depuis)
@@ -262,7 +245,5 @@ class SuppressionEmplacementTest(BaseMulti):
         cabine = self.cabine()
         services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
                                 utilisateur=self.u)
-        from wms.services import diagnostic_suppression
-        motif, message = diagnostic_suppression(self.e1, self.u)
-        self.assertIsNotNone(motif)
-        self.assertIn("1 cabine", message)
+        from wms.services_emplacements import diagnostic_suppression
+        self.assertIn("1 cabine", diagnostic_suppression(self.e1))

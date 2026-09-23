@@ -19,6 +19,13 @@ cloudflared.exe
 /wms/static/app/vendor/
 # Sauvegarde produite avant une mise à jour.
 /_sauvegarde-avant-maj-claude/
+# Sauvegardes écrites avant chaque remise à zéro du stock : elles contiennent
+# TOUTES les cabines, leurs positions et leur journal. Elles restent sur la
+# machine, elles ne vont pas dans le dépôt.
+/sauvegardes/
+# Rangement produit par Ranger-Le-Dossier.bat : rien que du déjà-versionné ou
+# du déjà-périmé, et parfois des données.
+/_archive_*/
 # Export de reprise vers un serveur SQL : contient toutes les données.
 /reprise/
 deploiement/docker/.env

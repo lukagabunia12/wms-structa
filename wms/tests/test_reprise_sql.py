@@ -125,9 +125,9 @@ class RecalageDesSequences(TestCase):
 
     def test_les_tables_metier_sont_couvertes(self):
         tables = {m._meta.db_table for m in modeles_a_recaler()}
-        for attendue in ("wms_emplacement", "wms_article", "wms_mouvement",
-                         "wms_cabine", "wms_mouvementcabine", "wms_stock",
-                         "wms_utilisateur", "wms_zone"):
+        for attendue in ("wms_emplacement", "wms_occupation", "wms_placecondamnee",
+                         "wms_cabine", "wms_mouvementcabine", "wms_cabineattendue",
+                         "wms_modelecabine", "wms_utilisateur", "wms_zone"):
             self.assertIn(attendue, tables)
 
     def test_les_tables_gerees_par_migrate_sont_exclues(self):

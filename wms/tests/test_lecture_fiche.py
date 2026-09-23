@@ -194,16 +194,31 @@ class ReconstitutionLignesTest(APITestCase):
         self.assertEqual(ocr_fiche.reconstituer_lignes([]), "")
 
 
-class AnalyserFicheAPITest(APITestCase):
+class LectureFicheAPITest(APITestCase):
+    """Le contrat de `/lire-fiche/`, avec un moteur de reconnaissance simulé.
+
+    Le texte « reconnu » est celui de la fiche : ce qui est vérifié ici, c'est
+    ce que l'API en fait. La chaîne complète, moteur compris, est éprouvée plus
+    bas quand `requirements-ocr.txt` est installé.
+    """
+
     def setUp(self):
         self.user = Utilisateur.objects.create_user(
             username="op", password="secret123", role=Utilisateur.ADMIN, nom="Testeur")
         self.client.force_authenticate(user=self.user)
+        for nom, valeur in (("disponible", True), ("lire_image", FICHE_LIGNES)):
+            simulation = mock.patch.object(ocr_fiche, nom, return_value=valeur)
+            self.lecture = simulation.start()
+            self.addCleanup(simulation.stop)
 
-    def test_analyse_par_api(self):
-        r = self.client.post("/api/cabines/analyser-fiche/", {"texte": FICHE_LIGNES},
-                             format="json")
-        self.assertEqual(r.status_code, 200)
+    def lire(self):
+        fichier = SimpleUploadedFile("fiche.png", b"\x89PNG\r\n", content_type="image/png")
+        return self.client.post("/api/cabines/lire-fiche/", {"photo": fichier},
+                                format="multipart")
+
+    def test_seul_le_numero_est_rendu(self):
+        r = self.lire()
+        self.assertEqual(r.status_code, 200, getattr(r, "data", None))
         self.assertEqual(r.data["champs"]["numero"], "26_03_47")
         # L'API ne renvoie QUE le numéro, même sur une fiche qui porte tout le
         # reste lisiblement : c'est ce qui empêche une seconde source de vérité
@@ -217,18 +232,16 @@ class AnalyserFicheAPITest(APITestCase):
         from wms import services_cabines
         services_cabines.creer_cabine(numero="26_03_47", chantier="251280",
                                       utilisateur=self.user)
-        r = self.client.post("/api/cabines/analyser-fiche/", {"texte": FICHE_LIGNES},
-                             format="json")
+        r = self.lire()
         self.assertIsNotNone(r.data["cabine_existante"])
         self.assertEqual(r.data["cabine_existante"]["numero"], "26_03_47")
 
-    def test_texte_vide_refuse(self):
-        r = self.client.post("/api/cabines/analyser-fiche/", {"texte": "   "}, format="json")
-        self.assertEqual(r.status_code, 400)
+    def test_photo_sans_texte_refusee(self):
+        self.lecture.return_value = "   "
+        self.assertEqual(self.lire().status_code, 400)
 
-    def test_analyse_ne_cree_rien(self):
-        self.client.post("/api/cabines/analyser-fiche/", {"texte": FICHE_LIGNES},
-                         format="json")
+    def test_la_lecture_ne_cree_rien(self):
+        self.lire()
         self.assertEqual(Cabine.objects.count(), 0)
 
     def test_creation_avec_les_champs_de_la_fiche(self):
@@ -247,9 +260,7 @@ class AnalyserFicheAPITest(APITestCase):
 
     def test_authentification_requise(self):
         self.client.force_authenticate(user=None)
-        r = self.client.post("/api/cabines/analyser-fiche/", {"texte": FICHE_LIGNES},
-                             format="json")
-        self.assertIn(r.status_code, (401, 403))
+        self.assertIn(self.lire().status_code, (401, 403))
 
 
 def _image_fiche():

@@ -62,30 +62,6 @@ def _numero(valeur, meme_ligne=False):
     return None
 
 
-def _chantier(valeur, meme_ligne=False):
-    """Six chiffres d'affilée, tolérant les O/I pris pour des chiffres."""
-    for brut in re.findall(rf"[{_CH}]{{6,}}", valeur):
-        corrige = brut.translate(_CHIFFRES)
-        if len(corrige) == 6 and corrige.isdigit():
-            return corrige
-    return None
-
-
-def _texte_libre(valeur, meme_ligne=False):
-    valeur = valeur.strip(" :.-–—|")
-    return valeur or None
-
-
-def _reference_tissu(valeur, meme_ligne=False):
-    """Référence de tissu : une lettre éventuelle puis des chiffres (« A2419 »)."""
-    m = re.search(r"\b([A-Z]?\s?\d{3,6})\b", valeur)
-    if not m:
-        return None
-    return re.sub(r"\s+", "", m.group(1))
-
-
-#: Ordre d'analyse : les étiquettes longues d'abord. Sinon « CABINE » capturerait la
-#: ligne « REF. CABINE » ou « FOND CABINE » et écraserait le modèle.
 #: Ce qu'on cherche sur la fiche papier : le NUMÉRO, et rien d'autre.
 #:
 #: La liste en portait huit. Chantier, modèle, revendeur, client, tissus, fond

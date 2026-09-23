@@ -6,8 +6,8 @@ les codes, et surtout les montre AVANT d'écrire quoi que ce soit.
 """
 from rest_framework.test import APITestCase
 
-from wms import services
-from wms.models import Emplacement, Utilisateur, Zone
+from wms import services_emplacements
+from wms.models import Emplacement, Utilisateur
 
 
 class BaseRack(APITestCase):
@@ -25,7 +25,7 @@ class BaseRack(APITestCase):
 class CodesGeneresTest(BaseRack):
     def test_exemple_de_l_exploitation(self):
         """Rack AC, 10 colonnes à partir de 550, pas de 10, 3 niveaux."""
-        codes = [x["code"] for x in services.codes_de_rack(
+        codes = [x["code"] for x in services_emplacements.codes_de_rack(
             prefixe="AC", debut="550", pas=10, colonnes=10, niveaux=3)]
         self.assertEqual(len(codes), 30)
         self.assertEqual(codes[:6], ["AC550", "AC551", "AC552", "AC560", "AC561", "AC562"])
@@ -33,29 +33,29 @@ class CodesGeneresTest(BaseRack):
 
     def test_ordre_physique_colonne_par_colonne(self):
         """L'ordre est celui de l'impression : une colonne entière, puis la suivante."""
-        liste = services.codes_de_rack(prefixe="AC", debut="550", pas=10,
+        liste = services_emplacements.codes_de_rack(prefixe="AC", debut="550", pas=10,
                                        colonnes=2, niveaux=3)
         self.assertEqual([(x["colonne"], x["niveau"]) for x in liste],
                          [(550, 0), (550, 1), (550, 2), (560, 0), (560, 1), (560, 2)])
 
     def test_un_seul_niveau(self):
-        codes = [x["code"] for x in services.codes_de_rack(
+        codes = [x["code"] for x in services_emplacements.codes_de_rack(
             prefixe="B", debut="1", pas=1, colonnes=4, niveaux=1)]
         self.assertEqual(codes, ["B1", "B2", "B3", "B4"])
 
     def test_les_zeros_de_tete_sont_conservés(self):
         """« 050 » saisi doit rester « 050 » : c'est ce qui sera peint sur le rack."""
-        codes = [x["code"] for x in services.codes_de_rack(
+        codes = [x["code"] for x in services_emplacements.codes_de_rack(
             prefixe="AC", debut="050", pas=10, colonnes=2, niveaux=2)]
         self.assertEqual(codes, ["AC050", "AC051", "AC060", "AC061"])
 
     def test_prefixe_normalise(self):
-        codes = [x["code"] for x in services.codes_de_rack(
+        codes = [x["code"] for x in services_emplacements.codes_de_rack(
             prefixe="  ac ", debut="10", pas=10, colonnes=1, niveaux=1)]
         self.assertEqual(codes, ["AC10"])
 
     def test_separateur_optionnel(self):
-        codes = [x["code"] for x in services.codes_de_rack(
+        codes = [x["code"] for x in services_emplacements.codes_de_rack(
             prefixe="AC", debut="550", pas=10, colonnes=1, niveaux=2, separateur="-")]
         self.assertEqual(codes, ["AC-550", "AC-551"])
 
@@ -127,14 +127,19 @@ class CreationTest(BaseRack):
         e = Emplacement.objects.get(code="AC561")
         self.assertEqual((e.rack, e.colonne, e.niveau), ("AC", 560, 1))
 
-    def test_zone_et_mode_appliques_a_tout_le_rack(self):
-        zone = Zone.objects.create(nom="Rack AC", role=Zone.RANGEMENT)
-        self.generer(zone_cabine=zone.id, mode_places=Emplacement.ILLIMITE,
-                     description="allée centrale")
+    def test_mode_et_description_appliques_a_tout_le_rack(self):
+        self.generer(mode_places=Emplacement.ILLIMITE, description="allée centrale")
         for e in Emplacement.objects.all():
-            self.assertEqual(e.zone_cabine_id, zone.id)
             self.assertEqual(e.mode_places, Emplacement.ILLIMITE)
             self.assertEqual(e.description, "allée centrale")
+
+    def test_un_mode_inconnu_est_refuse_sans_rien_creer(self):
+        """`save()` ne contrôle pas les choix : « gmd », que l'écran envoyait
+        encore après le passage à deux places, était écrit tel quel."""
+        r = self.generer(mode_places="gmd")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("gmd", " ".join(r.data["erreur"]))
+        self.assertEqual(Emplacement.objects.count(), 0)
 
     def test_rejouable_pour_ajouter_un_niveau(self):
         """Ajouter un 4e niveau à un rack existant = relancer avec niveaux=4."""

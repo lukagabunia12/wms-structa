@@ -1,4 +1,4 @@
-"""Moteur métier des cabines — passage obligé, comme services.py l'est pour le stock.
+"""Moteur métier des cabines — le passage obligé de toute écriture sur une cabine.
 
 Toute écriture sur une `Cabine` passe par ce module : il applique les règles et écrit
 le `MouvementCabine` correspondant dans la même transaction. Écrire `Cabine` en direct
@@ -6,19 +6,25 @@ laisserait une cabine sans trace de son déplacement, alors que l'historique « 
 quand » est précisément ce que l'exploitation demande.
 
 Règles portées ici :
-- une place (emplacement × G/M/D) ne porte qu'une cabine ;
+- une place (emplacement × gauche/droite) ne porte qu'une cabine ;
 - une cabine envoyée est sortie de l'entrepôt : plus aucun mouvement possible ;
-- la mise en quarantaine et la sortie d'emplacement exigent un motif écrit ;
-- la sortie d'emplacement et l'envoi exigent un n° de chantier, y compris pour une
-  cabine express — c'est la seule contrainte qu'express ne relâche pas.
+- la mise en quarantaine et l'envoi exigent un motif écrit ;
+- l'envoi exige un n° de chantier, y compris pour une cabine express — c'est la
+  seule contrainte qu'express ne relâche pas.
 """
+import logging
+from pathlib import Path
+
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from .models import (Cabine, CabineAttendue, ModeleCabine, MouvementCabine,
-                     PlaceCondamnee,
-                     Occupation)
+from .models import (Cabine, CabineAttendue, Emplacement, ModeleCabine,
+                     MouvementCabine, Occupation, PlaceCondamnee, Utilisateur,
+                     Zone)
+
+
+logger = logging.getLogger(__name__)
 
 
 class ErreurCabine(ValidationError):
@@ -26,6 +32,8 @@ class ErreurCabine(ValidationError):
 
 
 PLACES = [c for c, _ in Cabine.PLACES]
+
+
 def _controler_fichier_production(numero, utilisateur, motif):
     """La cabine est-elle annoncée par la production ? Sinon, qui peut passer outre ?
 
@@ -141,7 +149,8 @@ def places_condamnees(emplacement):
             for p in emplacement.places_condamnees.all()}
 
 
-def places_libres(emplacement, cabine=None):
+def places_libres(emplacement, cabine=None, prises=None, condamnees=None,
+                  grand=None):
     """Places encore disponibles, dans l'ordre. Vide si capacité illimitée.
 
     `cabine` change la réponse, et c'est tout l'intérêt : un grand modèle ne se
@@ -150,20 +159,144 @@ def places_libres(emplacement, cabine=None):
 
     Un emplacement inactif ne laisse rien : c'est la définition. Et une place
     condamnée compte comme prise pour un grand modèle — il lui faut les deux.
+
+    `prises`, `condamnees` et `grand` permettent de passer ce qu'on a DÉJÀ lu,
+    pour répondre sur tout l'entrepôt sans plusieurs requêtes par emplacement
+    (voir `emplacements_pour`). Ce sont des raccourcis de LECTURE, pas une
+    seconde règle : la règle reste ici, et elle reste la seule.
+
+    `grand` mérite un mot : `cabine.prend_tout_l_emplacement` interroge la table
+    des modèles à chaque appel. Dans une boucle sur l'entrepôt, cette propriété
+    anodine coûte une requête par emplacement — mesuré, et corrigé ici plutôt
+    que par un cache qui survivrait à un modèle passé « grand » entre-temps.
     """
     if emplacement.illimite:
         return []
     if not emplacement.actif:
         return []
-    prises = set(occupations_presentes(emplacement).exclude(place="")
-                 .values_list("place", flat=True))
-    condamnees = set(places_condamnees(emplacement))
+    if prises is None:
+        prises = set(occupations_presentes(emplacement).exclude(place="")
+                     .values_list("place", flat=True))
+    if condamnees is None:
+        condamnees = set(places_condamnees(emplacement))
     # Un emplacement pris en entier ne laisse rien, quel que soit ce qui arrive.
     if Occupation.ENTIER in prises:
         return []
-    if cabine is not None and cabine.prend_tout_l_emplacement:
+    if grand is None:
+        grand = cabine is not None and cabine.prend_tout_l_emplacement
+    if grand:
         return [] if (prises or condamnees) else [Occupation.ENTIER]
     return [p for p in PLACES if p not in prises and p not in condamnees]
+
+
+def emplacements_pour(cabine, texte="", limite=60):
+    """Où cette cabine peut-elle aller ? Les meilleurs d'abord.
+
+    Rend une liste de dictionnaires, un par emplacement : ses places encore
+    libres POUR CETTE CABINE, s'il peut la prendre, et sinon pourquoi pas. La
+    raison compte autant que le refus — « complet » devant un emplacement dont
+    on voit une place vide fait douter de l'écran, alors que « ce modèle prend
+    l'emplacement entier » se comprend d'un coup d'œil.
+
+    L'ordre est celui de l'entrepôt, pas celui de l'alphabet :
+
+    1. d'abord finir un emplacement entamé. Les grands modèles n'acceptent que
+       les emplacements ENTIERS : chaque emplacement laissé à moitié vide leur
+       est perdu, et ce sont eux qu'on ne sait plus où mettre en fin de semaine ;
+    2. les emplacements vides ensuite ;
+    3. les zones de réception en dernier : on y dépose en attendant de ranger.
+       Les proposer comme destination ferait tourner la cabine en rond.
+
+    Deux requêtes pour tout l'entrepôt, quelle que soit sa taille.
+    """
+    from collections import defaultdict
+
+    from django.db.models import Q
+
+    qs = Emplacement.objects.select_related("zone_cabine")
+    texte = (texte or "").strip()
+    if texte:
+        qs = qs.filter(Q(code__icontains=texte)
+                       | Q(zone_cabine__nom__icontains=texte)
+                       | Q(description__icontains=texte))
+    emplacements = list(qs.order_by("code"))
+    identifiants = [e.pk for e in emplacements]
+
+    prises = defaultdict(set)
+    combien = defaultdict(int)
+    for emp, place in (Occupation.objects.filter(emplacement_id__in=identifiants)
+                       .exclude(cabine__statut=Cabine.ENVOYE)
+                       .values_list("emplacement_id", "place")):
+        combien[emp] += 1
+        # Les aires à capacité illimitée n'ont pas de place nommée : leurs
+        # occupations comptent, mais ne prennent aucune place.
+        if place:
+            prises[emp].add(place)
+    condamnees = defaultdict(dict)
+    for emp, place, motif in (PlaceCondamnee.objects
+                              .filter(emplacement_id__in=identifiants)
+                              .values_list("emplacement_id", "place", "motif")):
+        condamnees[emp][place] = motif
+
+    # Une lecture, pour tout l'entrepôt.
+    grand = cabine is not None and cabine.prend_tout_l_emplacement
+
+    lignes = []
+    for e in emplacements:
+        bloquees = condamnees[e.pk]
+        libres = places_libres(e, cabine, prises=prises[e.pk],
+                               condamnees=set(bloquees), grand=grand)
+        # Une aire à capacité illimitée n'a pas de place nommée : elle prend la
+        # cabine tant qu'elle est en service.
+        possible = e.actif and (e.illimite or bool(libres))
+        lignes.append({
+            "emplacement": e,
+            "libres": libres,
+            "possible": possible,
+            "pourquoi": _pourquoi_pas(e, grand, prises[e.pk], bloquees, possible),
+            "cabines": combien[e.pk],
+            "rang": _rang_emplacement(e, libres),
+        })
+
+    lignes.sort(key=lambda ligne: (not ligne["possible"], ligne["rang"],
+                                  ligne["emplacement"].code))
+    return lignes[:limite] if limite else lignes
+
+
+def _rang_emplacement(emplacement, libres):
+    """L'ordre de préférence. Voir `emplacements_pour` pour le pourquoi."""
+    if emplacement.staging:
+        return (3, 0)
+    if emplacement.illimite:
+        return (2, 0)
+    # Le moins de places libres d'abord : on finit ce qui est entamé.
+    return (1, len(libres))
+
+
+def _pourquoi_pas(emplacement, grand, prises, condamnees, possible):
+    """La phrase qui explique le refus. Vide quand l'emplacement convient.
+
+    Elle est écrite ici, une fois, et pas dans l'écran : c'est le serveur qui
+    connaît la règle, et deux formulations finiraient par se contredire.
+    """
+    if possible:
+        return ""
+    if not emplacement.actif:
+        return (f"hors service : {emplacement.motif_inactif}"
+                if emplacement.motif_inactif else "hors service")
+    if Occupation.ENTIER in prises:
+        return "occupé en entier par une cabine"
+    if grand:
+        if condamnees:
+            quoi = ", ".join(sorted(condamnees))
+            return (f"ce modèle prend l'emplacement entier, or la place {quoi} "
+                    "est condamnée")
+        return ("ce modèle prend l'emplacement entier, or une place est déjà "
+                "occupée")
+    manquantes = [p for p in PLACES if p in condamnees]
+    if manquantes and len(prises) + len(manquantes) >= len(PLACES):
+        return "les places restantes sont condamnées"
+    return "les deux places sont prises"
 
 
 def est_complet(emplacement, cabine=None):
@@ -491,54 +624,25 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
     etait_range = bool(cible.emplacement_id)
     cible.emplacement = emplacement
     cible.place = place
-    cible.save(update_fields=["emplacement", "place"])
+    try:
+        # Point de reprise : si la contrainte refuse, on revient ici et la
+        # transaction reste utilisable. Sans lui, tout ce qui suit échouerait à
+        # son tour et l'opérateur verrait une erreur sans rapport.
+        with transaction.atomic():
+            cible.save(update_fields=["emplacement", "place"])
+    except IntegrityError as souci:
+        # La place a été prise entre le contrôle et l'écriture — deux caristes,
+        # la même place, la même seconde. La base a refusé le doublon : rien
+        # n'est perdu, mais il faut le DIRE, pas rendre une erreur serveur.
+        raise ErreurCabine(
+            f"La place {place} de {emplacement.code} vient d'être prise par une "
+            "autre cabine. Rafraîchissez l'écran et choisissez une autre place."
+        ) from souci
     apres = _libelle(emplacement, place)
     # Un emplacement AJOUTÉ n'est pas un transfert : rien n'a été libéré.
     _tracer(cabine, MouvementCabine.TRANSFERT if etait_range else MouvementCabine.RANGEMENT,
             utilisateur, depuis=avant, vers=apres,
             note=("emplacement supplémentaire" if ajouter and not etait_range else ""))
-    return _rafraichir(cabine)
-
-
-@transaction.atomic
-def sortir_de_l_emplacement(*, cabine, occupation=None, utilisateur=None, note=""):
-    """Libère la place occupée par la cabine.
-
-    Exige un n° de chantier pour TOUS les types, y compris ceux qui peuvent
-    circuler sans (express, salon, occasion) : c'est la règle explicite du métier
-    (« on ne doit pas pouvoir sortir sans attribuer un numéro de chantier »).
-    L'exemption vaut pour entrer en stock, jamais pour en sortir.
-
-    Exige aussi un MOTIF. Sortir une cabine de son emplacement libère une place
-    et laisse la cabine nulle part : le lendemain, personne ne sait si elle est
-    partie en pose, remontée à l'atelier ou simplement déplacée à la main. Le
-    motif est la seule chose qui répondra, et il coûte une phrase.
-    """
-    _refuser_si_envoyee(cabine)
-    poses = cabine.emplacements_occupes
-    if not poses:
-        raise ErreurCabine(f"La cabine {cabine.numero} n'est rangée nulle part.")
-    if not (note or "").strip():
-        raise ErreurCabine(
-            "Dites pourquoi vous la sortez de son emplacement : le motif est "
-            "écrit au journal, et c'est lui qui dira où elle est passée.")
-    if not cabine.chantier:
-        raise ErreurCabine(
-            "Affectez un n° de chantier à cette cabine avant de la sortir de son emplacement.")
-
-    # Sans précision on libère TOUS les emplacements. Sortir une cabine à moitié
-    # sans le dire laisserait une place réservée par un morceau qu'on croit parti.
-    cibles = [occupation] if occupation is not None else poses
-    for cible in cibles:
-        if cible.cabine_id != cabine.pk:
-            raise ErreurCabine("Cet emplacement n'appartient pas à cette cabine.")
-        if not cible.emplacement_id:
-            continue
-        depuis = _libelle(cible.emplacement, cible.place)
-        cible.emplacement = None
-        cible.place = ""
-        cible.save(update_fields=["emplacement", "place"])
-        _tracer(cabine, MouvementCabine.RETRAIT, utilisateur, depuis=depuis, note=note)
     return _rafraichir(cabine)
 
 
@@ -580,10 +684,30 @@ def changer_statut(*, cabine, statut, utilisateur=None, motif=""):
 
 @transaction.atomic
 def envoyer(*, cabine, utilisateur=None, note=""):
-    """Envoi : irréversible. La cabine quitte l'entrepôt et rejoint les archives."""
+    """Envoi : irréversible. La cabine quitte l'entrepôt et rejoint les archives.
+
+    C'est LA sortie, et il n'y en a plus d'autre dans l'interface : sortir une
+    cabine de son emplacement, c'est la sortir de l'entrepôt. Le retrait de
+    place seul laissait une cabine « en stock, nulle part », un état que le
+    terrain ne connaît pas — une cabine qu'on descend du rack part.
+
+    Exige un MOTIF, comme le retrait de place l'exigeait avant la fusion des
+    deux gestes. Une sortie sans motif, c'est un rack qui se vide sans que
+    personne sache où sont passées les cabines ; le motif est écrit au journal
+    et il coûte une phrase. La règle ne doit pas disparaître avec le geste
+    qu'elle accompagnait.
+
+    Exige aussi un n° de chantier, pour TOUS les types y compris ceux qui
+    peuvent circuler sans (express, salon, occasion) : l'exemption vaut pour
+    entrer en stock, jamais pour en sortir.
+    """
     _refuser_si_envoyee(cabine)
     if not cabine.chantier:
         raise ErreurCabine("Affectez un n° de chantier à cette cabine avant de l'envoyer.")
+    if not (note or "").strip():
+        raise ErreurCabine(
+            "Dites pourquoi cette cabine sort : le motif est écrit au journal, "
+            "et c'est lui qui dira où elle est passée.")
 
     avant_statut = cabine.statut
     # `_libelle` et non `position` : le journal nomme la ZONE en plus de la
@@ -656,7 +780,7 @@ def historique(cabine):
 # --- Correction et suppression d'une cabine ---------------------------------
 #: Champs corrigeables sur une fiche, avec leur libellé pour le journal.
 #: La position et le statut n'y figurent pas : ils ont leurs opérations dédiées
-#: (ranger, sortir, statut, envoyer), qui écrivent chacune leur propre trace.
+#: (ranger, statut, envoyer, reprendre), qui écrivent chacune leur propre trace.
 CHAMPS_CORRIGEABLES = {
     "numero": "n°", "chantier": "chantier", "type_cabine": "type", "modele": "modèle",
     "revendeur": "revendeur", "client": "client", "tissu_bk": "tissu BK",
@@ -699,6 +823,98 @@ def corriger_fiche(*, cabine, utilisateur=None, **champs):
     cabine.save()   # clean_fields() + clean() rejouent les formats attendus
     _tracer(cabine, MouvementCabine.CORRECTION, utilisateur, note=" ; ".join(modifs)[:255])
     return cabine
+
+
+#: Où atterrissent les sauvegardes d'avant remise à zéro. À la racine du projet
+#: et non dans un dossier temporaire : c'est un fichier qu'on doit retrouver six
+#: mois plus tard, pas un intermédiaire technique.
+DOSSIER_SAUVEGARDES = "sauvegardes"
+
+
+def etat_du_stock():
+    """Ce qu'une remise à zéro effacerait, et ce qui resterait.
+
+    Une seule définition, pour que l'écran annonce exactement ce que
+    l'opération fera ensuite. Deux comptages écrits à deux endroits finissent
+    par diverger, et c'est l'écran qui aurait tort au pire moment.
+    """
+    return {
+        "cabines": Cabine.objects.count(),
+        "rangees": Occupation.objects.filter(emplacement__isnull=False)
+                                     .values("cabine").distinct().count(),
+        "journal": MouvementCabine.objects.count(),
+        "conserves": {
+            "emplacements": Emplacement.objects.count(),
+            "zones": Zone.objects.count(),
+            "comptes": Utilisateur.objects.count(),
+            "cabines_attendues": CabineAttendue.objects.count(),
+            "modeles_regles": ModeleCabine.objects.count(),
+            # Un pilier devant une place est toujours là après une remise à
+            # zéro : la condamnation décrit l'entrepôt, pas le stock.
+            "places_condamnees": PlaceCondamnee.objects.count(),
+        },
+    }
+
+
+def sauvegarder_le_stock(dossier=None, horodatage=None):
+    """Écrit tout ce qu'une remise à zéro ferait disparaître. Rend le chemin.
+
+    Le format est un export Django ordinaire : `manage.py loaddata <fichier>`
+    remet tout en place. Ce n'est pas une trace pour l'archive, c'est un retour
+    en arrière qui marche — et c'est la différence entre « irréversible, vous
+    êtes prévenu » et « irréversible, sauf si vous rechargez ce fichier ».
+
+    L'ordre des objets est celui du rechargement : les cabines d'abord, puis ce
+    qui pointe vers elles. Un fichier qui se recharge dans le désordre n'est pas
+    une sauvegarde, c'est un espoir.
+    """
+    from django.conf import settings
+    from django.core import serializers
+
+    racine = (Path(dossier) if dossier
+              else Path(settings.BASE_DIR) / DOSSIER_SAUVEGARDES)
+    racine.mkdir(parents=True, exist_ok=True)
+    quand = horodatage or timezone.localtime()
+    fichier = racine / f"remise-a-zero_{quand:%Y-%m-%d_%Hh%M%S}.json"
+    rang = 2
+    while fichier.exists():
+        fichier = racine / f"remise-a-zero_{quand:%Y-%m-%d_%Hh%M%S}-{rang}.json"
+        rang += 1
+
+    objets = (list(Cabine.objects.all())
+              + list(Occupation.objects.all())
+              + list(MouvementCabine.objects.all()))
+    fichier.write_text(serializers.serialize("json", objets, indent=1),
+                       encoding="utf-8")
+    return fichier
+
+
+@transaction.atomic
+def vider_le_stock(*, utilisateur=None, dossier=None):
+    """Efface TOUTES les cabines et leur journal, après les avoir sauvegardées.
+
+    Ce qu'elle ne touche pas, et c'est le point : les emplacements, les zones,
+    les comptes, le fichier de production et les réglages de taille de modèle.
+    Effacer le fichier de production désarmerait au passage la règle « une
+    cabine non annoncée ne s'enregistre pas », et il faudrait réimporter deux
+    mille lignes pour pouvoir entrer la première cabine.
+
+    Le journal part avec les cabines : il ne survit pas à ce qu'il raconte.
+    `MouvementCabine.cabine` est en SET_NULL, donc l'effacer d'abord évite de
+    laisser des lignes orphelines qui parleraient de cabines disparues.
+
+    La sauvegarde est écrite AVANT le premier effacement. Si elle échoue, rien
+    n'est effacé : l'exception traverse, et la transaction est annulée.
+    """
+    fichier = sauvegarder_le_stock(dossier)
+    journal = MouvementCabine.objects.count()
+    cabines = Cabine.objects.count()
+    MouvementCabine.objects.all().delete()
+    Cabine.objects.all().delete()
+    logger.warning("Stock des cabines vidé par %s : %s cabines, %s lignes de "
+                   "journal. Sauvegarde : %s",
+                   getattr(utilisateur, "username", "?"), cabines, journal, fichier)
+    return {"cabines": cabines, "journal": journal, "sauvegarde": fichier}
 
 
 #: Motifs qui appellent une confirmation supplémentaire avant de supprimer.

@@ -2,38 +2,45 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 
-from .models import (Occupation, Article, Cabine, CabineAttendue, Categorie,
-                     Emplacement, EtatCabine, ModeleCabine, Mouvement, MouvementCabine,
-                     Reception, Stock, Zone)
+from . import services_cabines, services_emplacements
+from .models import (Cabine, CabineAttendue, Emplacement, ModeleCabine, MouvementCabine,
+                     Occupation)
 
 
 class ChampNormalise(serializers.CharField):
     """CharField qui passe en majuscules AVANT l'exécution des validators.
 
-    `Article.save()` et `Emplacement.save()` normalisent en majuscules. Si le
-    UniqueValidator de DRF contrôle la valeur brute, « a001 » franchit la validation
-    alors que « A001 » existe déjà : la contrainte d'unicité saute ensuite au save,
-    et l'opérateur reçoit une erreur 500 au lieu d'un 400 explicite.
+    `Emplacement.save()` normalise le code en majuscules. Si le UniqueValidator
+    de DRF contrôle la valeur brute, « ac550 » franchit la validation alors que
+    « AC550 » existe déjà : la contrainte d'unicité saute ensuite au save, et
+    l'opérateur reçoit une erreur 500 au lieu d'un 400 explicite.
     """
 
     def to_internal_value(self, data):
         return super().to_internal_value(data).strip().upper()
 
 
-class CategorieSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Categorie
-        fields = "__all__"
-
-
 class CabineBreveSerializer(serializers.ModelSerializer):
-    """Vue réduite d'une cabine, pour l'imbriquer dans la liste des emplacements."""
+    """Vue réduite d'une cabine, pour l'imbriquer dans la liste des emplacements.
+
+    `place` n'y figure pas, et c'est délibéré. C'est une PROPRIÉTÉ de `Cabine`
+    qui relit ses occupations : la vue précharge celles de l'emplacement, pas
+    celles des cabines imbriquées, si bien que chaque ligne de la liste
+    déclenchait sa propre requête — mesuré, et c'est l'écran le plus ouvert de
+    la journée.
+
+    Elle était en plus FAUSSE pour une cabine occupant deux emplacements : la
+    propriété rend la place de la première occupation, qui peut être celle d'un
+    autre emplacement. La liste de A-02 annonçait « gauche » pour une cabine
+    posée à droite ici. La place d'une cabine DANS un emplacement donné se lit
+    par l'action `places/`, qui la tient de l'occupation elle-même.
+    """
     statut_libelle = serializers.CharField(source="get_statut_display", read_only=True)
 
     class Meta:
         model = Cabine
         fields = ["id", "numero", "chantier", "modele", "type_cabine",
-                  "statut", "statut_libelle", "place"]
+                  "statut", "statut_libelle"]
 
 
 class EmplacementSerializer(serializers.ModelSerializer):
@@ -52,7 +59,6 @@ class EmplacementSerializer(serializers.ModelSerializer):
     mode_libelle = serializers.CharField(source="get_mode_places_display", read_only=True)
     illimite = serializers.BooleanField(read_only=True)
     cabines = serializers.SerializerMethodField()
-    places_occupees = serializers.SerializerMethodField()
     places_libres = serializers.SerializerMethodField()
     nb_cabines = serializers.SerializerMethodField()
     # Renseignés sur la fiche d'un emplacement seulement (voir _sur_la_fiche) :
@@ -101,9 +107,9 @@ class EmplacementSerializer(serializers.ModelSerializer):
     def _sur_la_fiche(self):
         """Vrai pour la consultation d'un emplacement isolé.
 
-        Le diagnostic coûte trois comptages : le poser sur chaque ligne d'une liste
-        de 50 emplacements ferait 150 requêtes pour une information qui ne sert
-        qu'au moment d'ouvrir la fiche.
+        Le diagnostic coûte une requête : le poser sur chaque ligne d'une liste
+        de 50 emplacements en ferait 50 pour une information qui ne sert qu'au
+        moment d'ouvrir la fiche.
         """
         vue = self.context.get("view")
         # `activation` et `place` renvoient la fiche complète : c'est elle que
@@ -114,32 +120,11 @@ class EmplacementSerializer(serializers.ModelSerializer):
                                                 "place")
 
     def get_suppression(self, obj):
+        """Supprimable ou non, et pourquoi — l'écran le dit AVANT le clic."""
         if not obj.pk or not self._sur_la_fiche():
             return None
-        from .services import (BLOCAGE_STOCK, diagnostic_suppression, lignes_de_stock,
-                               suppression_forcable)
-
-        requete = self.context.get("request")
-        utilisateur = getattr(requete, "user", None)
-        motif, message = diagnostic_suppression(obj, utilisateur)
-        detail = {
-            "possible": motif is None,
-            "motif": motif,
-            "message": message,
-            # Ce que CE compte peut forcer : la perte de traçabilité pour tous,
-            # la suppression avec stock pour les seuls administrateurs.
-            "forcable": bool(motif) and suppression_forcable(motif, utilisateur),
-            "reserve_admin": motif == BLOCAGE_STOCK,
-        }
-        if motif == BLOCAGE_STOCK:
-            # Ce qui sera sorti : l'écran de confirmation l'annonce ligne par ligne
-            # plutôt que de faire signer un chèque en blanc.
-            detail["stock"] = [
-                {"ref": ligne.article.ref, "designation": ligne.article.designation,
-                 "qte": float(ligne.qte)}
-                for ligne in lignes_de_stock(obj)[:30]
-            ]
-        return detail
+        refus = services_emplacements.diagnostic_suppression(obj)
+        return {"possible": not refus, "message": refus}
 
     def _occupations_actives(self, obj):
         """Occupations d'ici. Utilise le prefetch de la vue ; requête à défaut.
@@ -164,11 +149,6 @@ class EmplacementSerializer(serializers.ModelSerializer):
     def get_nb_cabines(self, obj):
         return len({c.cabine_id for c in self._occupations_actives(obj)})
 
-    def get_places_occupees(self, obj):
-        if obj.illimite:
-            return []
-        return sorted(c.place for c in self._occupations_actives(obj) if c.place)
-
     def get_places_libres(self, obj):
         if obj.illimite:
             return []
@@ -178,10 +158,10 @@ class EmplacementSerializer(serializers.ModelSerializer):
     def validate_mode_places(self, value):
         """Changer de mode alors que des cabines sont là produirait un état incohérent.
 
-        En « gmd » les cabines portent une place, en « illimite » aucune : basculer
-        laisserait des cabines avec une place sur un emplacement qui n'en a plus, ou
-        sans place sur un emplacement qui en exige une — et plus de trois cabines ne
-        tiendraient de toute façon pas dans trois places.
+        En « deux places » les cabines portent une place, en « illimité » aucune :
+        basculer laisserait des cabines avec une place sur un emplacement qui n'en
+        a plus, ou sans place sur un emplacement qui en exige une — et plus de
+        deux cabines ne tiendraient de toute façon pas dans deux places.
         """
         if self.instance and value != self.instance.mode_places:
             presentes = (self.instance.occupations.exclude(cabine__statut=Cabine.ENVOYE).count())
@@ -190,94 +170,6 @@ class EmplacementSerializer(serializers.ModelSerializer):
                     f"{presentes} cabine(s) occupent cet emplacement : videz-le avant "
                     "de changer son mode de rangement.")
         return value
-
-
-class ArticleSerializer(serializers.ModelSerializer):
-    categorie_nom = serializers.CharField(source="categorie.nom", read_only=True,
-                                          default=None)
-    # Annotations posées par ArticleViewSet.get_queryset ; absentes après une création,
-    # d'où le getattr plutôt qu'un champ lié directement.
-    total_stock = serializers.SerializerMethodField()
-    nb_emplacements = serializers.SerializerMethodField()
-    ref = ChampNormalise(
-        max_length=64, required=False,
-        validators=[UniqueValidator(queryset=Article.objects.all(),
-                                    message="Cette référence existe déjà.")],
-    )
-    ean = ChampNormalise(max_length=64, required=False, allow_blank=True, default="")
-
-    class Meta:
-        model = Article
-        fields = "__all__"
-
-    def get_total_stock(self, obj):
-        total = getattr(obj, "total_stock", None)
-        return float(total) if total is not None else 0.0
-
-    def get_nb_emplacements(self, obj):
-        return getattr(obj, "nb_emplacements", 0) or 0
-
-    def validate_ean(self, value):
-        """L'unicité de l'EAN est une contrainte conditionnelle (ignorée si vide).
-
-        DRF ne construit pas de validator pour ce type de contrainte : sans ce
-        contrôle, un EAN en doublon remonte en IntegrityError (500) au lieu d'un 400.
-        """
-        ean = (value or "").strip().upper()
-        if not ean:
-            return ean
-        doublons = Article.objects.filter(ean=ean)
-        if self.instance is not None:
-            doublons = doublons.exclude(pk=self.instance.pk)
-        if doublons.exists():
-            raise serializers.ValidationError("Cet EAN est déjà utilisé par un autre article.")
-        return ean
-
-
-class StockSerializer(serializers.ModelSerializer):
-    article_ref = serializers.CharField(source="article.ref", read_only=True, default=None)
-    emplacement_code = serializers.CharField(source="emplacement.code", read_only=True,
-                                             default=None)
-
-    class Meta:
-        model = Stock
-        fields = ["id", "article", "article_ref", "emplacement", "emplacement_code", "qte"]
-
-
-class MouvementSerializer(serializers.ModelSerializer):
-    # Les FK de l'historique sont en SET_NULL : après la suppression d'un article ou
-    # d'un emplacement, ces deux clés disparaissaient de la réponse au lieu de valoir
-    # null, et le journal affichait une case vide sans dire pourquoi.
-    article_ref = serializers.CharField(source="article.ref", read_only=True, default=None)
-    emplacement_code = serializers.CharField(source="emplacement.code", read_only=True,
-                                             default=None)
-
-    class Meta:
-        model = Mouvement
-        fields = "__all__"
-
-
-class ReceptionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Reception
-        fields = "__all__"
-
-
-class EtatCabineSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = EtatCabine
-        fields = "__all__"
-
-
-class ZoneSerializer(serializers.ModelSerializer):
-    nb_emplacements = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Zone
-        fields = "__all__"
-
-    def get_nb_emplacements(self, obj):
-        return obj.emplacements.count()
 
 
 class OccupationSerializer(serializers.ModelSerializer):
@@ -319,19 +211,20 @@ class CabineSerializer(serializers.ModelSerializer):
     envoyee = serializers.BooleanField(read_only=True)
     etape = serializers.CharField(read_only=True)
     etape_libelle = serializers.CharField(read_only=True)
-    zone_role = serializers.SerializerMethodField()
     derniere_activite = serializers.SerializerMethodField()
     jours_immobile = serializers.SerializerMethodField()
     # Renseigné sur la fiche d'une cabine seulement : la liste n'a pas à payer le
     # comptage d'historique pour 50 lignes dont une seule sera ouverte.
     suppression = serializers.SerializerMethodField()
-    statut_motif = serializers.SerializerMethodField()
+    # Rendu en liste AUSSI, contrairement à `suppression` : c'est justement en
+    # liste qu'il évite d'ouvrir les fiches une par une.
+    quarantaine = serializers.SerializerMethodField()
 
     class Meta:
         model = Cabine
         fields = "__all__"
         # Position et statut ne se modifient que par les opérations dédiées
-        # (ranger / sortir / statut / envoyer), qui écrivent l'historique. Exposés en
+        # (ranger / statut / envoyer / reprendre), qui écrivent l'historique. Exposés en
         # écriture, un simple PATCH annulerait un envoi et laisserait la fiche sans trace.
         read_only_fields = ["statut", "statut_date", "envoi_date",
                             "utilisateur", "date"]
@@ -347,36 +240,53 @@ class CabineSerializer(serializers.ModelSerializer):
         vue = self.context.get("view")
         if not obj.pk or getattr(vue, "action", None) != "retrieve":
             return None
-        from .services_cabines import diagnostic_suppression
+        # Une cabine mal saisie doit pouvoir disparaître : aucun motif n'est
+        # définitivement bloquant, ils appellent seulement une confirmation.
+        motif, message = services_cabines.diagnostic_suppression(obj)
+        return {"possible": motif is None, "message": message}
 
-        motif, message = diagnostic_suppression(obj)
-        return {
-            "possible": motif is None,
-            "motif": motif,
-            "message": message,
-            # Une cabine mal saisie doit pouvoir disparaître : aucun motif n'est
-            # définitivement bloquant, ils appellent seulement une confirmation.
-            "forcable": motif is not None,
-        }
+    def get_quarantaine(self, obj):
+        """La dernière quarantaine de cette cabine : pourquoi, quand, par qui.
 
-    def get_statut_motif(self, obj):
-        """Pourquoi la cabine est dans cet état, d'après le dernier changement.
+        `active` dit si elle court encore. Une quarantaine LEVÉE est rendue
+        aussi : savoir ce qui avait bloqué une cabine est une question qu'on se
+        pose devant le rack, et la réponse n'était nulle part — sinon enfouie
+        dans l'historique.
 
-        Le motif est écrit au journal, pas sur la cabine : c'est la bonne place —
-        il en faut un par changement, pas un seul écrasé à chaque fois. Mais au
-        moment de confirmer la sortie d'une cabine en quarantaine, « bloquée :
-        rayure sur la paroi » est exactement ce qu'il faut avoir sous les yeux.
-        Comme `suppression`, il n'est calculé que sur la fiche.
+        Deux chemins, pour une raison de coût :
+
+        - en liste et à l'export, seul le motif est renseigné. Il vient de
+          l'annotation `quarantaine_motif` (voir `CabineViewSet._parc_annote`),
+          donc d'une seule sous-requête pour toute la page. La date et l'auteur
+          y coûteraient deux sous-requêtes de plus pour une ligne de liste qui
+          n'en a pas besoin ;
+        - ailleurs — la fiche, et la réponse d'une opération — la requête
+          complète, sur un seul objet : elle rend aussi la date et l'auteur, que
+          la fiche affiche.
+
+        Rend `None` si cette cabine n'a jamais été mise en quarantaine.
         """
-        vue = self.context.get("view")
-        if not obj.pk or getattr(vue, "action", None) != "retrieve":
+        if not obj.pk:
             return None
-        from .models import MouvementCabine
+        active = obj.statut == Cabine.QUARANTAINE
+        en_liste = getattr(self.context.get("view"), "action", None) in ("list", "export")
+        if en_liste and hasattr(obj, "quarantaine_motif"):
+            motif = (obj.quarantaine_motif or "").strip()
+            if not (motif or active):
+                return None
+            return {"motif": motif, "date": None, "par": None, "active": active}
 
-        dernier = (obj.historique.filter(type=MouvementCabine.STATUT,
-                                         statut_apres=obj.statut)
-                   .order_by("-date").values_list("note", flat=True).first())
-        return (dernier or "").strip()
+        dernier = (obj.historique
+                   .filter(type=MouvementCabine.STATUT,
+                           statut_apres=Cabine.QUARANTAINE)
+                   .order_by("-date").first())
+        if dernier is None:
+            return None
+        # `utilisateur_nom` est une colonne du mouvement, pas une jointure : le
+        # nom y est recopié à l'écriture, exprès, pour qu'un compte supprimé
+        # n'efface pas qui a fait quoi.
+        return {"motif": (dernier.note or "").strip(), "date": dernier.date,
+                "par": dernier.utilisateur_nom or "", "active": active}
 
     @staticmethod
     def _premier_pose(obj):
@@ -406,12 +316,6 @@ class CabineSerializer(serializers.ModelSerializer):
         premier = self._premier_pose(obj)
         if premier and premier.emplacement.zone_cabine_id:
             return premier.emplacement.zone_cabine.nom
-        return None
-
-    def get_zone_role(self, obj):
-        premier = self._premier_pose(obj)
-        if premier and premier.emplacement.zone_cabine_id:
-            return premier.emplacement.zone_cabine.role
         return None
 
     def _derniere(self, obj):
