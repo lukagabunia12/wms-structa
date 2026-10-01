@@ -187,7 +187,7 @@ la fenêtre du tunnel doit **rester ouverte**, l'accès s'arrête avec elle.
 
 Dès que le port est ouvert, on repasse sur l'accès interne : relancer
 `Installer-WMS.bat` sans `-Tunnel` (pour le certificat et la règle de pare-feu),
-puis `Demarrer-WMS-HTTPS.bat`.
+puis `Demarrer-WMS.bat`.
 
 ### Si PostgreSQL ne peut pas être installé
 
@@ -207,7 +207,7 @@ Les deux options se combinent : `Installer-WMS.bat -Tunnel -SansPostgreSQL`.
 ## 5. Démarrer, et vérifier
 
 ```
-Demarrer-WMS-HTTPS.bat
+Demarrer-WMS.bat
 ```
 
 L'écran affiche l'adresse à donner aux téléphones, de la forme

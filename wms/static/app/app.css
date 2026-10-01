@@ -379,26 +379,61 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
    bibliothèque mesure le conteneur pour dimensionner la vidéo, et sur un
    conteneur de hauteur nulle elle ne rend rien. Le fond noir tient la place
    pendant la seconde d'ouverture de la caméra. */
+.cam-ecran{position:relative}
 .cam-vue{display:none}
 .cam.actif .cam-vue{display:block;min-height:260px;background:#000}
 /* html5-qrcode pose une largeur et une hauteur en style « inline » sur la vidéo,
    calculées à l'ouverture : sans ce forçage, tourner le téléphone laisse une
    vidéo à l'ancienne taille, décalée dans son cadre. */
-.cam.actif .cam-vue video{width:100%!important;height:auto!important;display:block}
-.cam.actif .cam-vue #reader__scan_region{min-height:0}
-.cam.actif .cam-vue img[alt="Info icon"],
-.cam.actif .cam-vue #reader__dashboard_section_swaplink{display:none}
-.cam-stop{margin:0;border-radius:0;border:none;border-top:1px solid var(--ligne)}
+.cam.actif .cam-vue video{width:100%!important;height:auto!important;display:block;transition:filter .2s}
+/* Le bandeau « Scanner paused » que html5-qrcode pose sur l'image figée : en
+   anglais, et redit par la carte du code lu. C'est son seul bloc sans id. */
+.cam-vue > div:not([id]){display:none!important}
+.cam-actions{display:flex;border-top:1px solid var(--ligne)}
+.cam-actions[hidden]{display:none}
+.cam-stop{flex:1;margin:0;border-radius:0;border:none}
+.cam-stop + .cam-stop{border-left:1px solid var(--ligne)}
 
-/* Ce qui vient d'être lu. Le code est la seule chose qui compte ici : il se lit
-   en grand, dans la police des données, sans avoir à approcher le téléphone.
-   Trois étiquettes se touchent sur un montant — c'est cette ligne qui dit
-   laquelle a été prise. */
-.cam-lu{padding:16px 14px;border-top:1px solid var(--ligne);background:var(--marine-tint);text-align:center}
-.cam-lu .lu-t{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
-.cam-lu .lu-code{margin:6px 0 14px;font-family:var(--f-data);font-size:30px;font-weight:800;
-  line-height:1.1;color:var(--nuit);word-break:break-all}
-.cam-lu .row{max-width:340px;margin:0 auto}
+/* Pendant la visée, l'écran dit qu'il cherche : une pastille qui pulse, et un
+   trait qui balaie la fenêtre claire que html5-qrcode découpe au centre. Sans
+   eux, une image immobile ne disait pas si l'appareil lisait ou attendait. */
+.cam-statut{position:absolute;z-index:3;top:10px;left:50%;transform:translateX(-50%);
+  display:flex;align-items:center;gap:8px;max-width:calc(100% - 20px);padding:7px 13px;
+  border-radius:999px;background:rgba(8,20,32,.74);color:#fff;font-size:13px;font-weight:700;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.cam-statut[hidden]{display:none}
+.cam-statut .pouls{flex:none;width:9px;height:9px;border-radius:50%;background:#4ADE80;
+  animation:cam-pouls 1.4s ease-out infinite}
+@keyframes cam-pouls{0%{box-shadow:0 0 0 0 rgba(74,222,128,.75)}80%,100%{box-shadow:0 0 0 9px rgba(74,222,128,0)}}
+.cam.actif:not(.lu) #qr-shaded-region::after{content:"";position:absolute;left:7%;right:7%;top:8%;
+  height:3px;border-radius:2px;background:var(--brique);box-shadow:0 0 12px 2px rgba(191,78,20,.6);
+  animation:cam-balayage 1.8s ease-in-out infinite alternate}
+@keyframes cam-balayage{from{top:8%}to{top:90%}}
+
+/* Code lu : l'image se fige sur l'étiquette, s'assombrit, et le code s'affiche
+   par-dessus, en grand, avec « Confirmer » et « Rescanner ». On le lit sans
+   approcher le téléphone ; rien ne s'enchaîne avant d'avoir confirmé. */
+.cam.lu .cam-vue video{filter:brightness(.5)}
+.cam-lu{position:absolute;z-index:4;left:12px;right:12px;top:50%;transform:translateY(-50%);
+  max-width:380px;margin:0 auto;padding:14px;border-radius:14px;background:var(--surface);
+  box-shadow:0 12px 32px rgba(0,0,0,.4);text-align:center;
+  /* Ramenée à l'écran si elle tombe sous le bord : sous la barre du haut et
+     au-dessus des onglets du bas, pas derrière. */
+  scroll-margin:72px 0 100px}
+.cam-lu[hidden]{display:none}
+.cam-lu .lu-t{display:flex;align-items:center;justify-content:center;gap:6px;font-size:12px;
+  font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--ok)}
+.cam-lu .lu-code{margin:4px 0 12px;font-family:var(--f-data);font-size:42px;font-weight:800;
+  line-height:1.05;color:var(--nuit);word-break:break-all}
+.cam-lu .lu-msg{margin:-4px 0 14px;font-size:14px;line-height:1.4;font-weight:600;color:var(--danger)}
+.cam-lu.refus .lu-t{color:var(--danger)}
+.cam-lu .lu-boutons{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cam-lu.refus .lu-boutons{grid-template-columns:1fr}
+.cam-lu .lu-boutons .btn{margin:0;min-height:52px;font-size:16px}
+@media (prefers-reduced-motion:reduce){
+  .cam-statut .pouls{animation:none}
+  .cam.actif:not(.lu) #qr-shaded-region::after{display:none}
+}
 
 /* ============================================================================
    Choix du sous-emplacement — trois cases tactiles au lieu d'un menu déroulant.
@@ -448,6 +483,17 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
 .btn-fiche{display:flex;align-items:center;justify-content:center;gap:9px;
            padding:17px;font-size:16px;margin-top:14px;
            box-shadow:0 2px 8px rgba(191,78,20,.25)}
+
+/* ============================================================================
+   Le WMS sur l'écran d'accueil — carte de l'écran Plus.
+   Trois gestes numérotés, en gras ce qu'on lit sur le téléphone : c'est le mot
+   à chercher dans le menu, pas une explication.
+   ========================================================================== */
+.raccourci{margin-top:16px}
+.raccourci p{margin:0;font-size:14px;line-height:1.45;color:var(--txt)}
+.raccourci ol{margin:10px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:6px;
+  font-size:14px;line-height:1.4;color:var(--txt)}
+.raccourci .btn{margin-top:12px}
 
 /* `hidden` doit l'emporter : `.cam` et `.fichier` posent un display explicite,
    qui sinon annule l'attribut et laisse le bloc de prise de vue à l'écran une

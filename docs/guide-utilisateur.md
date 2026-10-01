@@ -62,8 +62,9 @@ rattacher ailleurs d'abord.
 
 ## Corriger ou supprimer une cabine mal saisie
 
-Tout se fait depuis la **fiche de la cabine** : écran Cabines (ou scan du QR), puis
-clic sur la cabine. Deux boutons sous l'étiquette QR.
+Tout se fait depuis la **fiche de la cabine** : écran Cabines, puis clic sur la
+cabine. Les deux boutons **« Corriger la fiche »** et **« Supprimer »** sont sous
+ses caractéristiques.
 
 ### Corriger la fiche — le bon geste dans la plupart des cas
 
@@ -140,7 +141,11 @@ Le mode de rangement et la description saisis s'appliquent à tout le rack.
 
 Chaque **bande** fait **8 cm de large** et **toute la hauteur de la feuille A4**.
 Les QR y sont empilés à la verticale, largement espacés — comme les niveaux le sont
-sur le montant — et **le code d'emplacement figure au-dessus de chaque QR**.
+sur le montant — et **le code d'emplacement figure au-dessus de chaque QR, en gros
+caractères gras, exactement aussi large que le QR** : au-dessus d'un QR de 40 mm,
+« Y550 » s'écrit sur 40 mm de large et 12 mm de haut. Il se lit de loin, en
+remontant l'allée, et se recopie sans hésiter quand le scan ne prend pas. Un code
+plus long s'écrit moins haut, jamais plus large que le QR.
 
 La bande est l'image du montant : **le niveau le plus haut est imprimé en haut, le
 niveau 0 tout en bas** (AC552, AC551, AC550). On la pose d'un bloc, sans avoir à la
@@ -153,6 +158,50 @@ coupée entre deux pages : on découpe le long des pointillés et on pose la ban
 d'un bloc sur le montant.
 
 La **taille des QR** se règle en haut de l'écran : grand (55 mm), moyen (40 mm,
-par défaut) ou compact (28 mm). C'est un maximum : au-delà de cinq ou six niveaux,
-les QR sont réduits automatiquement pour que la bande tienne encore sur une seule
-page — une bande n'est jamais coupée en deux.
+par défaut) ou compact (28 mm). C'est un maximum : dès quatre ou cinq niveaux, les
+QR — et leur code avec eux — sont réduits automatiquement pour que la bande tienne
+encore sur une seule page (environ 35 mm pour cinq niveaux) — une bande n'est jamais coupée
+en deux. Le QR ne descend jamais sous 20 mm : au-delà, c'est le code qui s'écrit
+moins haut.
+
+## Le WMS sur l'écran d'accueil du téléphone
+
+Écran **Plus** → carte **« Sur l'écran d'accueil »**. Sur Android, le bouton
+**« Installer sur ce téléphone »** pose l'icône **WMS Structa** en un geste quand
+Chrome le permet ; sinon, et sur iPhone, la carte rappelle les trois gestes à
+faire dans le navigateur. L'icône ouvre le WMS en plein écran, sans adresse à
+retaper. Ouvert depuis l'icône, le WMS ne propose plus rien : c'est le signe que
+tout est en place.
+
+Procédure complète, prérequis compris (certificat du réseau interne) :
+`docs/guide-https.md`, section « Mettre le WMS sur l'écran d'accueil ».
+
+## Scanner une étiquette d'emplacement
+
+Écran **Scanner** → « Scanner le QR d'un emplacement », ou l'étape « Où la ranger ? »
+du rangement. Seuls les emplacements portent un QR : la **fiche** collée sur la
+cabine se **photographie**, elle ne se scanne pas.
+
+1. **Pendant la visée**, une pastille **« Lecture en cours — visez l'étiquette »**
+   s'affiche en haut de la vidéo, et un trait orange balaie le cadre : l'appareil
+   cherche. Visez **une seule** étiquette, dans le cadre.
+2. **Dès qu'un code est lu**, l'image se fige sur l'étiquette, les angles du cadre
+   passent au vert, le téléphone vibre, et le code s'affiche **en grand sur la
+   vidéo** — par exemple « Emplacement lu : Y550 » — avec deux boutons :
+   - **Confirmer** : le WMS continue avec cet emplacement ;
+   - **Rescanner** : la visée repart aussitôt, caméra restée ouverte. La même
+     étiquette n'est pas relue pendant une seconde et demie, le temps de viser la
+     voisine.
+
+   **Rien ne s'enchaîne avant « Confirmer ».** Trois étiquettes se touchent sur un
+   montant : c'est là qu'on vérifie laquelle a été prise.
+3. **Un code refusé** — emplacement inconnu, ou plein pour cette cabine — se dit
+   au même endroit, sur l'image figée (« Code refusé : A-01 n'a plus de place
+   libre pour cette cabine »), avec « Rescanner ». Pas de message à chercher plus
+   bas, pas de caméra à rallumer.
+
+Sous la vidéo : **« Éclairer »** allume la lampe du téléphone quand il en a une,
+**« Arrêter la caméra »** la rend. Quitter l'écran l'éteint aussi.
+
+Sans caméra, à l'étape « Où la ranger ? » : **« Saisir le code à la main »** sous
+la vidéo, puis Entrée ou « Continuer ».

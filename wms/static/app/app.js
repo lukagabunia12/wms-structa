@@ -782,6 +782,44 @@ const TAILLES_QR = [['55', 'Grand — 55 mm'], ['40', 'Moyen — 40 mm'],
                     ['28', 'Compact — 28 mm']];
 let TAILLE_QR = '40';
 
+/* --- Le code, aussi large que le QR -------------------------------------------
+   Le code était écrit en 15 pt : « Y550 » tenait sur 12 mm au-dessus d'un carré
+   de 40. C'est pourtant lui qu'on cherche des yeux en remontant l'allée, et lui
+   qu'on recopie quand le scan ne prend pas.
+
+   Il prend maintenant exactement la largeur du QR : au-dessus d'un QR de 40 mm,
+   « Y550 » s'écrit sur 40 mm de large et 12 mm de haut. Le corps se déduit de la
+   longueur du code — un code long s'écrit moins haut, jamais plus large — et le
+   SVG (`textLength`) ajuste la largeur au dixième de millimètre, quelle que soit
+   la police réellement présente sur le poste qui imprime.                      */
+
+// Chasse des capitales et des chiffres en Arial gras, en millièmes de corps.
+const CHASSE_GRAS = { A: 722, B: 722, C: 722, D: 722, E: 667, F: 611, G: 778, H: 722,
+  I: 278, J: 556, K: 722, L: 611, M: 833, N: 722, O: 778, P: 667, Q: 778, R: 722,
+  S: 667, T: 611, U: 722, V: 667, W: 944, X: 667, Y: 667, Z: 611,
+  '-': 333, '.': 278, '/': 278, ' ': 278, '_': 556 };
+const HAUTEUR_CODE = 0.86;     // hauteur du bloc, en corps : la capitale et un filet dessous
+
+/** Corps (mm) qui donne au code la largeur `cote`. Plafonné à la moitié du côté :
+ *  un code de deux caractères ne doit pas devenir plus haut que le QR lui-même. */
+function corpsDuCode(code, cote) {
+  const chasse = [...String(code)].reduce((s, c) =>
+    s + (/\d/.test(c) ? 556 : (CHASSE_GRAS[c.toUpperCase()] || 722)), 0) / 1000;
+  return Math.min(cote / (chasse || 1), cote / 2);
+}
+
+/** Le code en SVG. `ajuste` : le texte est étiré ou resserré à la largeur exacte. */
+function codeEnSvg(code, largeur, corps, ajuste) {
+  const r = (x) => Math.round(x * 100) / 100;
+  const h = r(corps * HAUTEUR_CODE), texte = esc(code);
+  const position = ajuste
+    ? `x="0" textLength="${r(largeur)}" lengthAdjust="spacingAndGlyphs"`
+    : `x="${r(largeur / 2)}" text-anchor="middle"`;
+  return `<svg class="code" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${r(largeur)} ${h}"
+      width="${r(largeur)}mm" height="${h}mm" role="img" aria-label="${texte}"><text
+      ${position} y="${r(corps * 0.76)}" font-size="${r(corps)}">${texte}</text></svg>`;
+}
+
 /** Un QR en image, prêt à imprimer. Rendu à ~200 dpi : à 96 dpi le carré
  *  s'imprime flou et le scan devient capricieux sous l'éclairage d'un entrepôt. */
 function qrEnImage(texte, pixels) {
@@ -828,13 +866,32 @@ async function imprimerBandes(bandes, titre) {
   // ce qui laisse deux bandes côte à côte sur la feuille.
   const parBande = Math.max(1, ...bandes.map(b => b.codes.length));
   const pleineHauteur = parBande > 1;
-  // 297 mm − 2 × 8 mm de marge, moins la marge interne de la bande.
-  const utileMM = 297 - 16 - 12;
+  const multiple = bandes.length > 1;
+  // 297 mm − 2 × 8 mm de marge, moins la marge interne de la bande et la ligne
+  // de titre qu'elle porte quand il y en a plusieurs.
+  const utileMM = 297 - 16 - 12 - (multiple ? 5 : 0);
+  const parEtiquette = utileMM / parBande;
+  // Code → QR : 3 mm de blanc. Un QR se repère à ses trois carrés d'angle, cernés
+  // de blanc ; un texte gras collé au-dessus les ferait mal détecter.
+  const ECART = 3, AIR = 3;                   // puis 3 mm d'une étiquette à l'autre
+  // Hauteur du code pour un QR de 1 mm : il en prend la largeur, sa hauteur suit
+  // donc sa longueur. Le plus haut de la planche fixe l'encombrement.
+  const rapport = Math.max(...codes.map(c => corpsDuCode(c, 1) * HAUTEUR_CODE));
   // La taille choisie est un maximum : au-delà de quatre ou cinq niveaux, il faut
   // bien réduire pour que la bande tienne encore sur une seule page.
   const mm = pleineHauteur
-    ? Math.max(20, Math.min(Number(TAILLE_QR), Math.floor(utileMM / parBande) - 9))
+    ? Math.max(20, Math.min(Number(TAILLE_QR),
+                            Math.floor((parEtiquette - ECART - AIR) / (1 + rapport))))
     : Number(TAILLE_QR);
+  // Passé six ou sept niveaux, même un QR de 20 mm ne laisse plus la place d'un
+  // code aussi large que lui : c'est alors le code qui rapetisse. Jamais le QR
+  // sous 20 mm — en dessous, un téléphone ne le lit plus à bout de bras.
+  const hauteurMax = pleineHauteur ? Math.max(4, parEtiquette - ECART - AIR - mm) : Infinity;
+  const codeDe = (c) => {
+    const plein = corpsDuCode(c, mm);
+    const corps = Math.min(plein, hauteurMax / HAUTEUR_CODE);
+    return codeEnSvg(c, mm, corps, corps >= plein * 0.98);
+  };
   const pixels = Math.round(mm * 8);          // ≈ 200 dpi
   if (codes.length > 4) toast(`Préparation de ${codes.length} étiquettes…`);
 
@@ -846,13 +903,12 @@ async function imprimerBandes(bandes, titre) {
   const fenetre = window.open('', '_blank');
   if (!fenetre) { toast('Autorise les fenêtres pop-up pour imprimer.', 'err'); return; }
 
-  const multiple = bandes.length > 1;
   // Les étiquettes sont dans leur propre bloc : sinon le titre de la bande entre
   // dans la répartition et creuse un écart plus large en haut qu'entre les QR.
   const corps = bandes.map(b => `<div class="bande${b.codes.length > 1 ? ' pleine' : ''}">
       ${multiple && b.titre ? `<div class="bande-titre">${esc(b.titre)}</div>` : ''}
       <div class="etiquettes">${b.codes.map(c => `<div class="etiquette">
-          <div class="code">${esc(c)}</div>
+          ${codeDe(c)}
           <img class="qr" src="${images[c]}" alt="${esc(c)}">
         </div>`).join('')}</div>
     </div>`).join('');
@@ -881,11 +937,13 @@ async function imprimerBandes(bandes, titre) {
     flex: 1; display: flex; flex-direction: column; justify-content: space-between;
   }
   .bande-titre { font-size: 7.5pt; letter-spacing: .5pt; text-transform: uppercase;
-                 color: #6b7780; text-align: center }
+                 color: #6b7780; text-align: center; margin-bottom: 2mm }
   .etiquette { text-align: center }
-  /* Le code au-dessus du QR : c'est lui qu'on lit à l'œil quand le scan ne prend pas. */
-  .code { font-family: Consolas, 'Courier New', monospace; font-size: 15pt;
-          font-weight: 700; letter-spacing: .6pt; margin-bottom: 1.5mm }
+  /* Le code au-dessus du QR, de sa largeur exacte : c'est lui qu'on lit de loin,
+     et lui qu'on recopie quand le scan ne prend pas. */
+  .code { display: block; margin: 0 auto ${ECART}mm; overflow: visible }
+  .code text { font-family: Arial, 'Liberation Sans', 'Helvetica Neue', Helvetica, Roboto, sans-serif;
+               font-weight: 700; fill: #000 }
   .qr { display: block; margin: 0 auto; width: ${mm}mm; height: ${mm}mm }
   @media print { .entete { display: none } }
 </style></head><body>
@@ -939,7 +997,7 @@ function renderEtiquettes() {
       <div class="card">
         <label for="pTaille">Taille des QR</label>
         <select id="pTaille">${TAILLES_QR.map(([v, l]) => `<option value="${v}"${v === TAILLE_QR ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>
-        <div class="aide">Bandes de ${LARGEUR_BANDE_MM} mm de large, QR empilés à la verticale, code d'emplacement au-dessus de chacun. Deux bandes tiennent côte à côte sur une A4.</div>
+        <div class="aide">Bandes de ${LARGEUR_BANDE_MM} mm de large, QR empilés à la verticale. Au-dessus de chacun, le code d'emplacement en gros caractères, aussi large que le QR. Deux bandes tiennent côte à côte sur une A4.</div>
       </div>
       <div class="row" style="margin-top:12px">
         <button class="btn ghost" data-portee="cellule">Une cellule</button>
@@ -1812,25 +1870,19 @@ function etiquetteChamp(cle) {
 async function ouvrirScanFiche(emp, d, redessiner) {
   const zone = $('#eAct');
   if (!zone) return;
+  /* Une photo, pas la caméra de scan. Ce bloc proposait aussi « Activer la
+     caméra » sous le titre « Photographier la fiche » : on visait le tableau et
+     rien ne se passait, cette caméra-là ne lit que les QR — et les cabines n'en
+     portent pas. */
   zone.innerHTML = `<div class="sec" style="margin-top:14px">Lire le n° de cabine</div>
-    ${blocCameraHTML('Photographier la fiche', 'Le n° est lu sur le tableau — le reste vient du fichier de production')}
-    <label class="fichier" id="fLabel">${icon('camera', 19)} <span>Prendre la photo</span>
+    <label class="fichier btn-fiche" id="fLabel">${icon('camera', 22)} <span>Photographier la fiche</span>
       <input type="file" id="fPhoto" accept="image/*" capture="environment"></label>
+    <div class="meta" style="margin-top:6px;text-align:center">Le tableau à deux colonnes,
+      bien à plat et éclairé : le n° est lu tout seul, le reste vient du fichier de production.</div>
     <div id="fEtat"></div><div id="fSuite"></div>
     <button class="btn ghost" id="fNon" style="margin-top:10px">Annuler</button>`;
 
-  // La lecture d'un QR reste possible ici : certaines cabines portent déjà
-  // l'étiquette imprimée par le WMS, plus fiable qu'une photo de la fiche.
-  brancherCamera(async (texte) => {
-    const ref = String(texte || '').replace(/^(CAB|ART|LOC):/i, '').trim();
-    const res = (await api('/cabines/?toutes=1&numero=' + encodeURIComponent(ref))
-      .then(x => x.results || []).catch(() => []));
-    const c = res.find(x => (x.numero || '').toUpperCase() === ref.toUpperCase());
-    if (c) proposerRangement(c, emp, d, redessiner);
-    else toast('Aucune cabine ne porte le n° « ' + ref + ' »', 'err');
-  });
-
-  $('#fNon').onclick = () => { arreterCamera(); redessiner(); };
+  $('#fNon').onclick = () => redessiner();
   $('#fPhoto').onchange = (ev) => lireFichePourRangement(ev.target.files[0], emp, d, redessiner);
 }
 
@@ -2337,10 +2389,6 @@ function brancherBlocFiche(surCabine, surInconnue) {
     } catch (e) { toast(e.message, 'err'); }
   };
 
-  brancherCamera((texte) => {
-    const ref = String(texte || '').replace(/^(CAB|ART|LOC):/i, '').trim();
-    if (ref) chercher(ref);
-  });
   masquerNumero($('#fNum'));
   $('#fNumOk').onclick = () => {
     const n = ($('#fNum').value || '').trim();
@@ -2643,37 +2691,39 @@ function etapeEmplacement() {
       </details>
     </div>`;
   brancherRappel();
+  // Scan : un refus s'affiche sur la vidéo. Saisie : sous le champ.
   brancherCamera((texte) => retenirEmplacement(texte));
-  $('#rEmpOk').onclick = () => retenirEmplacement($('#rEmp').value);
+  const valider = async () => {
+    const refus = await retenirEmplacement($('#rEmp').value);
+    const etat = $('#rEmpEtat');
+    if (etat) etat.innerHTML = refus ? `<div class="banner">${esc(refus)}</div>` : '';
+  };
+  $('#rEmpOk').onclick = valider;
+  $('#rEmp').onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); valider(); } };
 }
 
+/** Retient l'emplacement scanné ou saisi. Renvoie '' quand il est retenu — l'étape
+ *  suivante s'ouvre —, sinon la raison du refus, que l'appelant affiche. */
 async function retenirEmplacement(texte) {
   const code = String(texte || '').replace(/^LOC:/i, '').trim();
-  if (!code) { toast('Saisis le code de l’emplacement.', 'err'); return; }
-  const etat = $('#rEmpEtat');
+  if (!code) return 'Saisis le code de l’emplacement.';
   try {
     const res = await api('/emplacements/?search=' + encodeURIComponent(code))
       .then(d => d.results || []);
     const e = res.find(x => (x.code || '').toUpperCase() === code.toUpperCase())
            || (res.length === 1 ? res[0] : null);
-    if (!e) {
-      if (etat) etat.innerHTML = `<div class="banner">Aucun emplacement ne correspond à « ${esc(code)} ».</div>`;
-      return;
-    }
+    if (!e) return `Aucun emplacement ne correspond à « ${code} ».`;
     const d = await api(`/emplacements/${e.id}/places/`
       + (RANGEMENT.cabine ? '?pour_cabine=' + RANGEMENT.cabine.id : ''));
-    if (d.complet) {
-      // On reste à l'étape 2 : la cabine reste en main, il suffit de scanner
-      // une autre emplacement. Repartir de zéro ferait refaire la photo de la fiche.
-      if (etat) etat.innerHTML = `<div class="banner">${esc(d.code)} n’a plus de place
-        libre pour cette cabine. Scanne un autre emplacement.</div>`;
-      return;
-    }
-    arreterCamera();
+    // On reste à l'étape 2 : la cabine reste en main, il suffit de scanner un
+    // autre emplacement. Repartir de zéro ferait refaire la photo de la fiche.
+    if (d.complet) return `${d.code} n’a plus de place libre pour cette cabine. Scanne un autre emplacement.`;
+    await arreterCamera();
     RANGEMENT.emp = e;
     RANGEMENT.d = d;
     etapeRangement();
-  } catch (err) { toast(err.message, 'err'); }
+    return '';
+  } catch (err) { return err.message; }
 }
 
 /* --- Étape 3 : quelle place ? ---------------------------------------------- */
@@ -4929,7 +4979,11 @@ let CAMERA = null;
 
 function blocCameraHTML(titre, sousTitre) {
   return `<div class="cam" id="cam">
-    <div class="cam-vue" id="reader"></div>
+    <div class="cam-ecran">
+      <div class="cam-vue" id="reader"></div>
+      <div class="cam-statut" id="camStatut" role="status" hidden></div>
+      <div class="cam-lu" id="camLu" hidden></div>
+    </div>
     <div class="cam-repos" id="camRepos">
       <div class="cam-ico">${icon('camera', 38)}</div>
       <div class="cam-t">${esc(titre)}</div>
@@ -4937,48 +4991,20 @@ function blocCameraHTML(titre, sousTitre) {
       <button class="btn orange cam-btn" id="camGo">${icon('camera', 20)} Activer la caméra</button>
       <div class="cam-note" id="camNote">Le navigateur va demander l’autorisation. Elle n’est demandée qu’une fois.</div>
     </div>
-    <button class="btn ghost cam-stop" id="camStop" hidden>Arrêter la caméra</button>
-    <div class="cam-lu" id="camLu" hidden></div>
+    <div class="cam-actions" id="camActions" hidden>
+      <button class="btn ghost cam-stop" id="camStop" type="button">Arrêter la caméra</button>
+    </div>
   </div>`;
 }
 
-/* --- Ce qui a été lu, avant d'agir -----------------------------------------
-   Le décodage est immédiat, et l'application enchaînait aussitôt : la caméra
-   s'éteignait, l'écran suivant s'ouvrait, et personne n'avait vu passer le code.
-   Au poste, cela donnait des gens qui ne savaient pas quel emplacement ils
-   venaient de scanner — trois étiquettes empilées sur le même montant, et rien
-   à l'écran pour dire laquelle avait été prise.
+const STATUT_OUVERTURE = 'Ouverture de la caméra…';
+const STATUT_LECTURE = '<span class="pouls" aria-hidden="true"></span> Lecture en cours — visez l’étiquette';
 
-   On s'arrête donc un instant : le code en grand, et deux boutons. « Continuer »
-   fait exactement ce que faisait la lecture avant, « Rescanner » rallume la
-   caméra. Le décodage n'est pas ralenti d'une milliseconde — c'est
-   l'enchaînement qui demande un appui, et c'est tout ce qui manquait.
-
-   La vibration sert au cas où la lecture arrive alors qu'on ne regarde pas
-   l'écran : elle dit « c'est lu », sans obliger à fixer le téléphone.        */
-function confirmerLecture(texte, surLecture) {
-  const lu = (texte || '').trim();
-  vibrer(40);
-  const bloc = $('#camLu');
-  // Un écran qui n'a pas de zone de confirmation garde l'ancien comportement :
-  // mieux vaut enchaîner que perdre la lecture.
-  if (!bloc) { surLecture(lu); return; }
-  bloc.hidden = false;
-  bloc.innerHTML = `<div class="lu-t">Code lu</div>
-    <div class="lu-code">${esc(lu.replace(/^(LOC|CAB|ART):/i, ''))}</div>
-    <div class="row">
-      <button class="btn orange" id="luOk" style="margin-top:0">Continuer</button>
-      <button class="btn ghost" id="luNon" style="margin-top:0">Rescanner</button>
-    </div>`;
-  const fermer = () => { bloc.hidden = true; bloc.innerHTML = ''; };
-  const ok = bloc.querySelector('#luOk');
-  ok.onclick = () => { fermer(); surLecture(lu); };
-  bloc.querySelector('#luNon').onclick = () => {
-    fermer();
-    const go = $('#camGo');
-    if (go) go.click();          // on rallume : la visée reprend là où elle était
-  };
-  ok.focus();
+/** Ce que désigne un code lu, dit en clair au-dessus du code. */
+function natureDuCode(texte) {
+  if (/^LOC:/i.test(texte)) return 'Emplacement lu';
+  if (/^CAB:/i.test(texte) || MOTIF_NUMERO_CABINE.test(texte)) return 'Cabine lue';
+  return 'Code lu';
 }
 
 /** Traduit l'échec du navigateur en geste à faire, plutôt qu'en nom d'erreur. */
@@ -5012,7 +5038,7 @@ async function arreterCamera() {
    La torche est proposée seulement si l'appareil la déclare. Dans une allée de
    rack, c'est la différence entre une étiquette lue et une étiquette recopiée
    à la main. */
-function reglerCamera(lecteur) {
+function reglerCamera() {
   let piste = null;
   try {
     const flux = document.querySelector('#reader video');
@@ -5020,7 +5046,9 @@ function reglerCamera(lecteur) {
   } catch (_) { return; }
   if (!piste) return;
 
-  try { piste.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (_) {}
+  // `applyConstraints` échoue par promesse, pas par exception : sans ce `catch`,
+  // un appareil sans mise au point pilotable laissait une erreur non traitée.
+  try { piste.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {}); } catch (_) {}
 
   let capacites = {};
   try { capacites = (piste.getCapabilities && piste.getCapabilities()) || {}; } catch (_) {}
@@ -5040,29 +5068,124 @@ function reglerCamera(lecteur) {
   };
 }
 
-/** Branche le bloc caméra rendu par `blocCameraHTML`. `surLecture(texte)` au scan. */
+/* --- Scanner : on voit qu'il lit, on confirme ce qu'il a lu -------------------
+   Avant, la lecture « basculait » : au premier code décodé, la caméra
+   s'éteignait, la vidéo disparaissait, « Activer la caméra » revenait à sa place
+   et le code lu s'écrivait plus bas — souvent sous le bord de l'écran.
+   « Rescanner » rallumait la caméra de zéro.
+
+   Tout se passe maintenant SUR la vidéo :
+   - pendant la visée, une pastille « Lecture en cours » et un trait qui balaie
+     le cadre disent que l'appareil cherche ;
+   - dès qu'un code est lu, l'image se fige sur l'étiquette, les angles du cadre
+     passent au vert, le téléphone vibre, et le code s'affiche en grand avec
+     « Confirmer » et « Rescanner ». Rien ne s'enchaîne avant « Confirmer » —
+     trois étiquettes se touchent sur un montant, c'est ici qu'on voit laquelle
+     a été prise ;
+   - « Rescanner » relance la visée à l'instant, caméra restée ouverte, et ignore
+     une seconde et demie le code qu'on vient d'écarter : le temps de viser la
+     voisine sans relire aussitôt la même ;
+   - un code refusé (emplacement inconnu, déjà plein) se dit au même endroit, sur
+     l'image figée, avec « Rescanner » : ni message à chercher plus bas, ni
+     caméra à rallumer.
+
+   `surLecture(texte)` reçoit le texte brut (« LOC:Y550 ») au « Confirmer ».
+   Elle peut renvoyer, ou promettre, un message de refus : il s'affiche sur la
+   vidéo et la caméra reste prête. Sinon la caméra s'éteint : l'écran suivant a
+   pris le relais.                                                            */
 function brancherCamera(surLecture) {
   const bouton = $('#camGo'), repos = $('#camRepos'), note = $('#camNote'),
-        stop = $('#camStop'), cadre = $('#cam');
+        actions = $('#camActions'), stop = $('#camStop'), cadre = $('#cam'),
+        statut = $('#camStatut'), carte = $('#camLu');
   if (!bouton) return;
+  let lecteur = null;                       // la caméra de CE bloc
+  let tenu = null;                          // le code affiché, qui attend un geste
+  let ecarte = { texte: '', jusqua: 0 };    // le code qu'on vient de refuser
+  const present = () => document.body.contains(cadre);
+  const direStatut = (html) => { statut.innerHTML = html; statut.hidden = !html; };
+  const fermerCarte = () => {
+    carte.hidden = true; carte.innerHTML = ''; cadre.classList.remove('lu');
+  };
 
   const eteindre = async () => {
-    await arreterCamera();
-    if (!$('#cam')) return;             // l'écran a changé entre-temps
-    repos.hidden = false; stop.hidden = true; cadre.classList.remove('actif');
+    const l = lecteur;
+    lecteur = null; tenu = null;
+    // Un geste a pu l'éteindre avant nous (l'étape suivante, un changement
+    // d'écran) : on n'éteint que la sienne, jamais celle d'un autre bloc.
+    if (l && CAMERA === l) await arreterCamera();
+    if (!present()) return;                 // l'écran a changé entre-temps
+    fermerCarte(); direStatut('');
+    const torche = $('#camTorche');
+    if (torche) torche.remove();            // liée à la piste qu'on vient de fermer
+    cadre.classList.remove('actif');
+    repos.hidden = false; actions.hidden = true;
     bouton.disabled = false;
+  };
+
+  const reprendre = () => {
+    ecarte = { texte: tenu || '', jusqua: Date.now() + 1500 };
+    tenu = null;
+    fermerCarte();
+    direStatut(STATUT_LECTURE);
+    try { lecteur.resume(); } catch (_) { eteindre().then(() => bouton.click()); }
+  };
+
+  const montrer = (texte, refus) => {
+    carte.className = 'cam-lu' + (refus ? ' refus' : '');
+    carte.innerHTML = `<div class="lu-t">${icon(refus ? 'alert' : 'check', 16)}
+        ${esc(refus ? 'Code refusé' : natureDuCode(texte))}</div>
+      <div class="lu-code">${esc(texte.replace(/^(LOC|CAB):/i, ''))}</div>
+      ${refus ? `<div class="lu-msg">${esc(refus)}</div>` : ''}
+      <div class="lu-boutons">
+        ${refus ? '' : '<button class="btn orange" id="luOk" type="button">Confirmer</button>'}
+        <button class="btn ${refus ? 'orange' : 'ghost'}" id="luNon" type="button">Rescanner</button>
+      </div>`;
+    carte.hidden = false;
+    cadre.classList.add('lu');
+    const ok = carte.querySelector('#luOk'), non = carte.querySelector('#luNon');
+    non.onclick = reprendre;
+    if (ok) ok.onclick = () => confirmer(texte, ok, non);
+    (ok || non).focus({ preventScroll: true });
+    carte.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+
+  const confirmer = async (texte, ok, non) => {
+    ok.disabled = non.disabled = true;
+    ok.textContent = 'Vérification…';
+    let refus = '';
+    try { refus = await surLecture(texte); }
+    catch (e) { refus = (e && e.message) || 'Lecture refusée.'; }
+    refus = typeof refus === 'string' ? refus.trim() : '';
+    if (refus && present() && lecteur && tenu === texte) { montrer(texte, refus); return; }
+    if (refus) toast(refus, 'err');
+    await eteindre();
+  };
+
+  const lu = (brut) => {
+    const texte = String(brut || '').trim();
+    if (!texte || !lecteur || tenu !== null) return;
+    if (texte === ecarte.texte && Date.now() < ecarte.jusqua) return;
+    tenu = texte;
+    try { lecteur.pause(true); } catch (_) {}   // l'image reste figée sur l'étiquette lue
+    vibrer(40);
+    direStatut('');
+    montrer(texte, '');
   };
 
   bouton.onclick = async () => {
     bouton.disabled = true;
+    note.classList.remove('erreur');
     note.textContent = 'Autorisation demandée…';
+    await arreterCamera();                  // une seule caméra à la fois
     // Le conteneur doit être VISIBLE avant `start()`. html5-qrcode mesure sa
     // largeur pour dimensionner la vidéo et le cadre de visée : sur un conteneur
     // en `display:none` il lit 0 et n'affiche rien. La caméra tournait bien —
     // voyant allumé, bouton passé à « Arrêter » — mais l'écran restait vide.
     cadre.classList.add('actif');
+    direStatut(STATUT_OUVERTURE);
+    let l = null;
     try {
-      const lecteur = new Html5Qrcode('reader', false, {
+      l = new Html5Qrcode('reader', false, {
         // Détecteur de codes NATIF du navigateur quand il existe. C'est la
         // correction qui compte sur Android : Chrome décode alors le QR dans le
         // système, en une fraction du temps que met le décodeur JavaScript, et
@@ -5070,8 +5193,8 @@ function brancherCamera(surLecture) {
         // biais ou mal éclairée n'était tout simplement jamais lue.
         experimentalFeatures: { useBarCodeDetectorIfSupported: true },
       });
-      CAMERA = lecteur;
-      await lecteur.start(
+      lecteur = l; CAMERA = l;
+      await l.start(
         { facingMode: 'environment' },
         {
           // 15 images par seconde : le décodeur natif les tient sans peine, et
@@ -5086,7 +5209,7 @@ function brancherCamera(surLecture) {
           // toutes les trois dans le champ, et c'est celle qui entrait la
           // première qui gagnait. Un cadre plus serré oblige à viser — et sur un
           // flux de 1280 px de large, il reste 768 px pour le code : bien assez.
-          qrbox: (l, h) => { const c = Math.floor(Math.min(l, h) * 0.6); return { width: c, height: c }; },
+          qrbox: (lg, h) => { const c = Math.floor(Math.min(lg, h) * 0.6); return { width: c, height: c }; },
           // `aspectRatio: 1` forçait un flux carré. Android n'en produit pas :
           // il rendait alors sa plus petite définition, souvent 480 px de large,
           // sur laquelle un QR d'étiquette ne fait plus assez de pixels pour être
@@ -5099,14 +5222,17 @@ function brancherCamera(surLecture) {
             advanced: [{ focusMode: 'continuous' }],
           },
         },
-        (texte) => { eteindre(); confirmerLecture(texte, surLecture); },
-        () => {});                       // échecs de décodage : normaux, image par image
-      if (!$('#cam')) { await arreterCamera(); return; }
-      repos.hidden = true; stop.hidden = false;
-      reglerCamera(lecteur);
+        lu,
+        () => {});                          // échecs de décodage : normaux, image par image
+      if (!present() || lecteur !== l) { if (CAMERA === l) await arreterCamera(); return; }
+      repos.hidden = true; actions.hidden = false;
+      direStatut(STATUT_LECTURE);
+      reglerCamera();
     } catch (e) {
-      CAMERA = null;
-      cadre.classList.remove('actif');   // retour à l'état de repos, bouton compris
+      if (l && CAMERA === l) CAMERA = null;
+      lecteur = null;
+      direStatut('');
+      cadre.classList.remove('actif');     // retour à l'état de repos, bouton compris
       bouton.disabled = false;
       note.innerHTML = messageCamera(e);
       note.classList.add('erreur');
@@ -5192,18 +5318,23 @@ async function renderTrouver(titre = 'Trouver une cabine') {
 
   // Valider / Entrée / lecture caméra : code complet attendu, on résout à l'exact.
   // Si le texte est ambigu, on n'échoue plus en cul-de-sac : on montre les choix.
+  // Renvoie '' quand l'écran a trouvé, sinon la raison — affichée par l'appelant.
   const run = async () => {
     const brut = (champ.value || '').trim();
-    if (!brut) return;
+    if (!brut) return '';
     try {
       if (/^LOC:/i.test(brut)) {
         const code = brut.slice(4).trim().toUpperCase();
         const d = await api('/emplacements/?search=' + encodeURIComponent(code));
         const res = d.results || [];
         const e = res.find(x => (x.code || '').toUpperCase() === code) || (res.length === 1 ? res[0] : null);
-        if (!e) { suggerer(); toast(res.length ? 'Plusieurs emplacements correspondent, choisis dans la liste.' : 'Emplacement introuvable', 'err'); return; }
+        if (!e) {
+          suggerer();
+          return res.length ? 'Plusieurs emplacements correspondent, choisis dans la liste.'
+                            : `Aucun emplacement ne porte le code « ${code} ».`;
+        }
         choisirEmplacement(e);
-        return;
+        return '';
       }
       const ref = brut.replace(/^CAB:/i, '').trim();
       const cible = ref.toUpperCase();
@@ -5221,27 +5352,34 @@ async function renderTrouver(titre = 'Trouver une cabine') {
       // Une correspondance exacte l'emporte, quel que soit le référentiel.
       const empExact = emps.find(x => (x.code || '').toUpperCase() === cible);
       const cabExact = cabs.find(x => (x.numero || '').toUpperCase() === cible);
-      if (cabExact) { choisirCabine(cabExact); return; }
-      if (empExact) { choisirEmplacement(empExact); return; }
+      if (cabExact) { choisirCabine(cabExact); return ''; }
+      if (empExact) { choisirEmplacement(empExact); return ''; }
       if (cabs.length + emps.length === 1) {
         if (cabs.length) choisirCabine(cabs[0]); else choisirEmplacement(emps[0]);
-        return;
+        return '';
       }
       suggerer();
-      toast(cabs.length + emps.length
+      return cabs.length + emps.length
         ? 'Plusieurs correspondances, choisis dans la liste.'
-        : 'Ni cabine ni emplacement ne correspond à « ' + ref + ' »', 'err');
-    } catch (e) { toast(e.message, 'err'); }
+        : 'Ni cabine ni emplacement ne correspond à « ' + ref + ' »';
+    } catch (e) { return e.message; }
   };
+  const valider = async () => { const refus = await run(); if (refus) toast(refus, 'err'); };
 
   champ.oninput = suggerer;
   champ.onfocus = () => { if (!champ.value.trim()) suggerer(); };
-  $('#go').onclick = run;
-  champ.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+  $('#go').onclick = valider;
+  champ.addEventListener('keydown', e => { if (e.key === 'Enter') valider(); });
   suggerer();
 
   if (secure && hasLib) {
-    brancherCamera((texte) => { champ.value = texte; run(); });
+    brancherCamera(async (texte) => {
+      champ.value = texte;
+      const refus = await run();
+      // Trouvé : la fiche s'écrit plus bas, sous le champ — on y descend.
+      if (!refus && $('#zone')) $('#zone').scrollIntoView({ block: 'start', behavior: 'smooth' });
+      return refus;
+    });
   }
 }
 
@@ -5250,13 +5388,96 @@ async function renderTrouver(titre = 'Trouver une cabine') {
    les droits : un cariste s'y voyait proposer les zones et les étiquettes, deux
    écrans que le serveur lui refuse. Elle dérivait aussi du menu à chaque ajout —
    « Suivi du processus » y serait resté après avoir été retiré partout ailleurs. */
+/* --- Le WMS sur l'écran d'accueil ------------------------------------------
+   Une icône sur le téléphone, qui ouvre le WMS en plein écran : plus d'adresse
+   https://…:8443 à retaper, plus d'onglet perdu parmi vingt autres.
+
+   Chrome sur Android sait l'installer d'un geste : il annonce l'installation
+   possible par `beforeinstallprompt`, qu'on garde pour le bouton « Installer »
+   de l'écran Plus. L'iPhone n'a pas d'équivalent — Safari ne laisse aucune page
+   proposer son installation —, on y écrit donc le geste, en trois lignes.
+
+   Ouvert depuis l'icône, le WMS le sait (`display-mode: standalone`) et ne
+   propose plus rien.                                                          */
+let INVITATION_INSTALL = null;
+window.addEventListener('beforeinstallprompt', (ev) => {
+  // Pas de bandeau surgi au milieu d'un rangement : c'est l'écran Plus qui propose.
+  ev.preventDefault();
+  INVITATION_INSTALL = ev;
+  if (ECRAN === 'more') rejouerEcran();
+});
+window.addEventListener('appinstalled', () => {
+  INVITATION_INSTALL = null;
+  toast('WMS Structa est sur l’écran d’accueil.', 'ok');
+  if (ECRAN === 'more') rejouerEcran();
+});
+
+/** Le geste à proposer : 'installe' (ouvert depuis l'icône), 'invitation'
+ *  (Chrome installe d'un geste), 'ios', 'android' — ou '' sur un ordinateur. */
+function plateformeRaccourci({ ua = '', installe = false, invitation = false, tactile = false } = {}) {
+  if (installe) return 'installe';
+  if (invitation) return 'invitation';
+  // Un iPad se présente comme un Mac : c'est l'écran tactile qui le trahit.
+  if (/iPhone|iPad|iPod/i.test(ua) || (/Macintosh/i.test(ua) && tactile)) return 'ios';
+  if (/Android/i.test(ua)) return 'android';
+  return '';
+}
+
+const ETAPES_RACCOURCI = {
+  android: ['Menu <b>⋮</b> de Chrome, en haut à droite',
+            '<b>Ajouter à l’écran d’accueil</b>',
+            '<b>Installer</b>'],
+  ios: ['Dans Safari : <b>…</b> à droite de l’adresse, puis <b>Partager</b> — ou directement le bouton Partager',
+        '<b>Sur l’écran d’accueil</b>',
+        '<b>Ajouter</b>'],
+};
+
+function blocRaccourci() {
+  const cas = plateformeRaccourci({
+    ua: navigator.userAgent,
+    installe: (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+              || navigator.standalone === true,
+    invitation: Boolean(INVITATION_INSTALL),
+    tactile: (navigator.maxTouchPoints || 0) > 1,
+  });
+  if (!cas || cas === 'installe') return '';
+  return `<div class="card raccourci">
+    <div class="sec" style="margin-top:0">Sur l’écran d’accueil</div>
+    <p>Une icône <b>WMS Structa</b> sur ce téléphone, qui ouvre le WMS en plein écran —
+      sans adresse à retaper.</p>
+    ${cas === 'invitation'
+      ? '<button class="btn orange" id="rcInstaller">Installer sur ce téléphone</button>'
+      : `<ol>${ETAPES_RACCOURCI[cas].map(e => `<li>${e}</li>`).join('')}</ol>`}
+  </div>`;
+}
+
+function brancherRaccourci() {
+  const bouton = $('#rcInstaller');
+  if (!bouton) return;
+  bouton.onclick = async () => {
+    const invitation = INVITATION_INSTALL;
+    INVITATION_INSTALL = null;             // une invitation ne sert qu'une fois
+    if (invitation) {
+      try {
+        await invitation.prompt();
+        const choix = await invitation.userChoice;
+        if (choix && choix.outcome !== 'accepted') {
+          toast('Pas installé. Le menu ⋮ de Chrome → « Ajouter à l’écran d’accueil » le propose aussi.');
+        }
+      } catch (_) {}
+    }
+    if (ECRAN === 'more') rejouerEcran();
+  };
+}
+
 function renderMore() {
   const dansLaBarre = new Set((ONGLETS[profil()] || ONGLETS.lecture).map(o => o[0]));
   const items = menuLateral()
     .flatMap(([, liens]) => liens)
     .filter(([cle]) => !dansLaBarre.has(cle));
-  layout(`<h2 class="title">Plus</h2><div class="list">${items.map(([g,l,ic]) => `<div class="item" data-go="${g}"><div class="r">${icon(ic,18)} ${l}</div></div>`).join('')}</div><button class="btn ghost" id="logout" style="margin-top:16px">Se déconnecter (${esc(USER)})</button>`, 'more');
+  layout(`<h2 class="title">Plus</h2><div class="list">${items.map(([g,l,ic]) => `<div class="item" data-go="${g}"><div class="r">${icon(ic,18)} ${l}</div></div>`).join('')}</div>${blocRaccourci()}<button class="btn ghost" id="logout" style="margin-top:16px">Se déconnecter (${esc(USER)})</button>`, 'more');
   $('#logout').onclick = logout;
+  brancherRaccourci();
 }
 
 /* --- Accès des testeurs -----------------------------------------------------
@@ -5917,26 +6138,27 @@ function brancherChoixScanner() {
   champ.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); suivre(); } };
 }
 
-/** QR lu : c'est un emplacement. On tolère un n° de cabine par prudence — un
-    code mal collé ne doit pas être un cul-de-sac. */
+/** QR lu et confirmé : c'est un emplacement. On tolère un n° de cabine par
+    prudence — un code mal collé ne doit pas être un cul-de-sac. Renvoie la raison
+    d'un refus, affichée sur la vidéo ; '' quand l'écran suivant s'est ouvert. */
 async function retenirScanEmplacement(texte) {
   const code = String(texte || '').replace(/^(LOC|CAB):/i, '').trim();
-  if (!code) return;
-  await arreterCamera();
-  if (MOTIF_NUMERO_CABINE.test(code)) { ouvrirGestes({ numero: code }); return; }
+  if (!code) return 'Ce QR ne porte aucun code.';
+  if (MOTIF_NUMERO_CABINE.test(code)) {
+    await arreterCamera();
+    ouvrirGestes({ numero: code });
+    return '';
+  }
   try {
     const res = (await api('/emplacements/?search=' + encodeURIComponent(code))).results || [];
     const e = res.find(x => (x.code || '').toUpperCase() === code.toUpperCase())
            || (res.length === 1 ? res[0] : null);
-    if (!e) {
-      const etat = $('#fEtat');
-      if (etat) etat.innerHTML = `<div class="banner">Aucun emplacement ne porte le code
-        « ${esc(code)} ». Vérifie l’étiquette, ou saisis le n° de la cabine.</div>`;
-      return;
-    }
+    if (!e) return `Aucun emplacement ne porte le code « ${code} ». Vérifie l’étiquette, ou saisis le n° de la cabine.`;
+    await arreterCamera();
     // `pied: true` : cette fiche est le bout d'un scan, pas une destination du
     // menu. Sans porte de sortie visible, on n'a que l'onglet du bas pour
     // revenir — et l'écran des gestes, lui, en propose une.
     await montrerEmplacement(e, { retour: () => go('scanner'), pied: true });
-  } catch (err) { toast(err.message, 'err'); }
+    return '';
+  } catch (err) { return err.message; }
 }

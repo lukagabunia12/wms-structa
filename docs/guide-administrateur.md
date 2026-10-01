@@ -2,9 +2,12 @@
 
 ## Installation sur site (poste Windows du LAN)
 
-Le plus simple : double-cliquer sur **`Demarrer-WMS.bat`**. Au premier lancement il
-installe l'environnement, prépare `.env` (clé secrète générée, mode production),
-applique les migrations, télécharge les bibliothèques du scanner et démarre le serveur.
+Le plus simple : double-cliquer sur **`Demarrer-WMS.bat`**, le seul lanceur. Au
+premier lancement il installe l'environnement, prépare `.env` (clé secrète générée,
+mode production), applique les migrations, télécharge les bibliothèques du scanner,
+puis démarre le serveur **en HTTPS** et ouvre le WMS dans le navigateur. La première
+fois, le lancer en administrateur (clic droit → Exécuter en tant qu'administrateur) :
+il ouvre alors le port 8443 et inscrit l'autorité dans Windows.
 
 En ligne de commande :
 
@@ -13,7 +16,8 @@ En ligne de commande :
 3. `python outils/preparer_env.py` — crée `.env`, génère la clé secrète, met `DEBUG=False`.
 4. `python manage.py migrate` puis `python manage.py createsuperuser`.
 5. `python manage.py telecharger_libs` — une fois, avec internet (voir « Sans internet »).
-6. Démarrer : `waitress-serve --listen=0.0.0.0:8000 --threads=8 config.wsgi:application`.
+6. Démarrer : `python outils/demarrer_https.py` — waitress sur la boucle locale et le
+   HTTPS sur le port 8443, exactement ce que fait `Demarrer-WMS.bat`.
 
 > `python manage.py runserver` est l'outil de **développement** de Django. Il dépanne,
 > mais il n'est pas fait pour tenir un poste d'entrepôt à la journée. `waitress`
@@ -37,8 +41,9 @@ python manage.py test                      # la suite complète doit être verte
 
 ## Accès depuis les téléphones (HTTPS interne)
 
-`Demarrer-WMS-HTTPS.bat` sert le WMS en HTTPS sur le réseau de l'entrepôt. C'est
-une obligation, pas un raffinement : hors HTTPS, les navigateurs mobiles refusent
+`Demarrer-WMS.bat` sert le WMS en HTTPS sur le réseau de l'entrepôt — toujours :
+l'ancien `Demarrer-WMS-HTTPS.bat` y est fusionné. C'est une obligation, pas un
+raffinement : hors HTTPS, les navigateurs mobiles refusent
 l'accès à la caméra, et le scan des QR codes est indisponible.
 
 Le lanceur pose lui-même dans l'environnement du serveur :

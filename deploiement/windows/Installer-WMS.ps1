@@ -380,9 +380,9 @@ if ($Tunnel) {
     Noter ""
     Noter "  Des que le port $PortHttps sera ouvert, repasser sur l'acces interne :" "Yellow"
     Noter "     Installer-WMS.bat        (sans -Tunnel, pour le certificat et le pare-feu)" "Yellow"
-    Noter "     Demarrer-WMS-HTTPS.bat" "Yellow"
+    Noter "     Demarrer-WMS.bat" "Yellow"
 } else {
-    Noter "  Pour demarrer le WMS :  Demarrer-WMS-HTTPS.bat" "Cyan"
+    Noter "  Pour demarrer le WMS :  Demarrer-WMS.bat  (toujours en HTTPS)" "Cyan"
     Noter ""
     $adresses = Get-NetIPAddress -AddressFamily IPv4 |
         Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" }

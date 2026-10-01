@@ -4,8 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>WMS Structa</title>
+{% comment %}
+   Raccourci sur l'écran d'accueil des téléphones. Android lit le manifeste
+   (nom, icônes — dont une « maskable » que le lanceur découpe en rond ou en
+   carré sans rogner le logo — et ouverture plein écran). L'iPhone lit d'abord
+   `apple-touch-icon` et `apple-mobile-web-app-title` : c'est ce qui garantit la
+   bonne icône et le bon nom, y compris sur les iOS qui ignorent le manifeste.
+{% endcomment %}
 <link rel="manifest" href="{% static 'app/manifest.webmanifest' %}">
 <meta name="theme-color" content="#1C394B">
+<meta name="application-name" content="WMS Structa">
+<meta name="apple-mobile-web-app-title" content="WMS Structa">
+<link rel="apple-touch-icon" href="{% static 'app/apple-touch-icon.png' %}">
 <link rel="icon" href="{% static 'app/icon-192.png' %}">
 <link rel="stylesheet" href="{% static 'app/app.css' %}?v={{ v }}">
 </head>

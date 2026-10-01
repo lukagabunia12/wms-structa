@@ -67,6 +67,9 @@ A_ARCHIVER = [
     ("wms/tests/test_reinitialiser.py", "tests de la commande reinitialiser, retirée"),
     ("docs/inventaire-maquette-wms.md",
      "inventaire de la maquette Node.js d'origine et de son volet articles"),
+    ("Demarrer-WMS-HTTPS.bat",
+     "fusionné dans Demarrer-WMS.bat le 1er octobre 2026 : un seul lanceur, "
+     "toujours en HTTPS. Il ne faisait plus que passer la main"),
     ("docs/CE-QUI-CHANGE_2026-09-09.md",
      "notes de la livraison du 9 septembre : elles décrivent un onglet « Repartir "
      "de zéro » qui n'existe plus"),

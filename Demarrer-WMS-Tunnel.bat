@@ -3,8 +3,8 @@ rem =====================================================================
 rem  DEMARRE LE WMS ET LE PUBLIE PAR UN TUNNEL CLOUDFLARE.
 rem
 rem  SOLUTION D'ATTENTE, tant que l'acces par le reseau interne n'est pas
-rem  ouvert (port 8443 en entree). A remplacer par Demarrer-WMS-HTTPS.bat
-rem  des que le prestataire a fait le necessaire.
+rem  ouvert (port 8443 en entree). A remplacer par Demarrer-WMS.bat, qui
+rem  sert le WMS en HTTPS sur le reseau interne, des que le port est ouvert.
 rem
 rem  Ce qu'il faut savoir :
 rem   - l'adresse produite est PUBLIQUE. Toute personne qui la connait

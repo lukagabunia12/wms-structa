@@ -131,5 +131,76 @@ for (const [valeur, attendu] of casMotif) {
   verifier(`motif : ${valeur || '(vide)'}`, motif.test(valeur), attendu);
 }
 
+/* --- Le code imprimé sur l'étiquette ------------------------------------------
+   Il doit prendre exactement la largeur du QR : c'est lui qu'on lit de loin. Le
+   corps se calcule sur la longueur du code, plafonné pour qu'un code court ne
+   devienne pas plus haut que le QR. */
+const { corpsDuCode, codeEnSvg } = (() => {
+  const i = source.indexOf('const CHASSE_GRAS');
+  const j = source.indexOf('async function imprimerBandes', i);
+  if (i < 0 || j < 0) {
+    throw new Error('Repères des étiquettes introuvables dans app.js : le code a été '
+      + 'réorganisé, mettez-les à jour plutôt que de retirer le test.');
+  }
+  const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return eval(`(function(){${source.slice(i, j)}; return { corpsDuCode, codeEnSvg };})()`);
+})();
+
+console.log('\nCode imprimé sur l’étiquette');
+verifier('« Y550 » remplit un QR de 40 mm', corpsDuCode('Y550', 40).toFixed(2), '17.13');
+verifier('un code court plafonne à la moitié du côté', corpsDuCode('A1', 40), 20);
+verifier('un code long s’écrit moins haut', corpsDuCode('AC-1557', 40) < corpsDuCode('AC551', 40), true);
+verifier('minuscules comptées comme capitales', corpsDuCode('ac551', 40), corpsDuCode('AC551', 40));
+const svgAjuste = codeEnSvg('Y550', 40, 17.13, true);
+verifier('largeur imposée : celle du QR', /textLength="40" lengthAdjust="spacingAndGlyphs"/.test(svgAjuste)
+  && /width="40mm"/.test(svgAjuste), true);
+const svgLibre = codeEnSvg('<b>', 40, 10, false);
+verifier('code resserré : centré, sans largeur imposée', /text-anchor="middle"/.test(svgLibre)
+  && !/textLength/.test(svgLibre), true);
+verifier('code échappé', /&lt;b&gt;/.test(svgLibre) && !/<b>/.test(svgLibre), true);
+
+/* --- Ce que le scan annonce au-dessus du code lu ------------------------------ */
+const { natureDuCode } = (() => {
+  const motif = source.match(/const MOTIF_NUMERO_CABINE = [^;]+;/);
+  const i = source.indexOf('function natureDuCode');
+  const j = source.indexOf('/** Traduit l', i);
+  if (!motif || i < 0 || j < 0) {
+    throw new Error('Repères du scan introuvables dans app.js : le code a été '
+      + 'réorganisé, mettez-les à jour plutôt que de retirer le test.');
+  }
+  return eval(`(function(){${motif[0]} ${source.slice(i, j)}; return { natureDuCode };})()`);
+})();
+
+console.log('\nCode lu à la caméra');
+for (const [texte, attendu] of [['LOC:Y550', 'Emplacement lu'], ['loc:ac551', 'Emplacement lu'],
+                                ['CAB:26_03_47', 'Cabine lue'], ['26_03_479', 'Cabine lue'],
+                                ['Y550', 'Code lu']]) {
+  verifier(`${texte} → ${attendu}`, natureDuCode(texte), attendu);
+}
+
+/* --- Le raccourci sur l'écran d'accueil ----------------------------------------
+   Le bon geste selon l'appareil : un bouton quand Chrome sait installer, les
+   trois gestes sur iPhone ou Android, et rien sur un ordinateur ni une fois
+   ouvert depuis l'icône. */
+const { plateformeRaccourci } = extraire('function plateformeRaccourci', 'const ETAPES_RACCOURCI',
+                                         'plateformeRaccourci');
+const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1';
+const IPAD = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
+const ANDROID = 'Mozilla/5.0 (Linux; Android 14; SM-A536B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36';
+const PC = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+
+console.log('\nRaccourci sur l’écran d’accueil');
+for (const [nom, cas, attendu] of [
+  ['iPhone dans Safari', { ua: IPHONE }, 'ios'],
+  ['iPad (se dit Mac, mais tactile)', { ua: IPAD, tactile: true }, 'ios'],
+  ['vrai Mac : rien', { ua: IPAD, tactile: false }, ''],
+  ['Android sans invitation de Chrome', { ua: ANDROID }, 'android'],
+  ['Android, Chrome prêt à installer', { ua: ANDROID, invitation: true }, 'invitation'],
+  ['ordinateur : rien', { ua: PC }, ''],
+  ['ouvert depuis l’icône : rien à proposer', { ua: ANDROID, invitation: true, installe: true }, 'installe'],
+]) {
+  verifier(nom, plateformeRaccourci(cas), attendu);
+}
+
 console.log(echecs ? `\n${echecs} test(s) en échec.` : '\nInterface OK — tous les tests passent.');
 process.exit(echecs ? 1 : 0);

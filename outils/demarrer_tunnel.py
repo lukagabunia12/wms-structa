@@ -805,14 +805,10 @@ def main():
             print("   cloudflared s'enregistre, et Cloudflare repond qu'il ne")
             print("   trouve aucun tunnel derriere le nom d'hote qu'il vient de")
             print("   creer.")
-            print("\n   Ce qui marche en attendant, sans Cloudflare :")
-            print("     - Demarrer-WMS.bat, puis sur les telephones l'adresse")
-            print("       locale de ce poste (ipconfig, ligne « Adresse IPv4 »),")
-            print("       port 8000, sur le meme Wi-Fi ;")
-            print("     - la camera du WMS n'y fonctionne pas (http), on tape le")
-            print("       numero de cabine au lieu de le scanner.")
-            print("\n   Pour de bon : faire ouvrir le port 8443 en entree, et")
-            print("   utiliser Demarrer-WMS-HTTPS.bat.")
+            print("\n   Ce qui marche, sans Cloudflare : Demarrer-WMS.bat, puis sur")
+            print("   les telephones l'adresse https://<adresse de ce poste>:8443,")
+            print("   sur le meme Wi-Fi, une fois l'autorite certificats\\ac-structa.crt")
+            print("   installee (docs/guide-https.md).")
             if derniere:
                 # Pour memoire, et sans l'encadrer : elle ne repond pas, on ne
                 # veut pas qu'elle attire l'oeil ni qu'on la recopie.

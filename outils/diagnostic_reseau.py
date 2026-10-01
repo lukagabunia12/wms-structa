@@ -95,7 +95,7 @@ def main():
         print(DOUTE, f"impossible de lire l'état du port {port}.")
     elif not interfaces:
         print(KO, f"rien n'écoute sur le port {port}.")
-        print(INFO, "  -> Demarrer-WMS-HTTPS.bat n'est pas lancé, ou s'est arrêté.")
+        print(INFO, "  -> Demarrer-WMS.bat n'est pas lancé, ou s'est arrêté.")
         bloquant = "serveur"
     else:
         ouvert_partout = any(a in ("0.0.0.0", "::", "*") for a in interfaces)
@@ -142,7 +142,7 @@ def main():
         "if ($r) { \"$($r.Enabled)|$($r.Profile)|$($r.Action)|$($r.Direction)\" }")
     if not regle:
         print(KO, "aucune règle de pare-feu « WMS Structa HTTPS ».")
-        print(INFO, "  -> relancez Demarrer-WMS-HTTPS.bat en ADMINISTRATEUR")
+        print(INFO, "  -> relancez Demarrer-WMS.bat en ADMINISTRATEUR")
         print(INFO, "     (clic droit > Exécuter en tant qu'administrateur).")
         bloquant = bloquant or "regle-absente"
     else:
@@ -194,16 +194,16 @@ def main():
     print("\n" + "=" * 66)
     if bloquant == "serveur":
         print("  VERDICT : le serveur ne tourne pas. Rien à demander à personne.")
-        print("  Lancez Demarrer-WMS-HTTPS.bat et relisez ce qu'il affiche.")
+        print("  Lancez Demarrer-WMS.bat et relisez ce qu'il affiche.")
     elif bloquant == "ecoute-locale":
         print("  VERDICT : le serveur n'écoute que sur lui-même.")
-        print("  Utilisez Demarrer-WMS-HTTPS.bat, qui ouvre le port au réseau.")
+        print("  Utilisez Demarrer-WMS.bat, qui ouvre le port au réseau.")
     elif bloquant == "profil-public":
         print("  VERDICT : c'est Windows, et VOUS pouvez le régler.")
         print("  Passez le réseau en « Privé », puis relancez ce diagnostic.")
     elif bloquant in ("regle-absente", "regle-mauvais-profil"):
         print("  VERDICT : c'est le pare-feu de CE PC, et vous pouvez le régler.")
-        print("  Relancez Demarrer-WMS-HTTPS.bat en administrateur.")
+        print("  Relancez Demarrer-WMS.bat en administrateur.")
     elif bloquant == "adresse-reseau":
         print("  VERDICT : le serveur écoute mais ne répond pas sur son adresse réseau.")
         print("  C'est le pare-feu de CE PC. Relancez le .bat en administrateur.")

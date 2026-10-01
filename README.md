@@ -101,8 +101,8 @@ L'interface est servie par le même serveur — aucun outil de build à installe
 Fichiers : `wms/templates/app.html` et `wms/static/app/` (app.js, app.css, manifest, icônes).
 
 ## Lanceur automatique (Windows)
-Double-clique sur **`Demarrer-WMS.bat`** : au premier lancement il installe tout (environnement + dependances), prepare `.env` (cle secrete generee, mode production), applique les migrations, telecharge les bibliotheques du scanner, puis demarre le serveur et ouvre l'application dans le navigateur. Les fois suivantes, il demarre directement.
-Astuce : clic droit sur le fichier > Envoyer vers > Bureau (creer un raccourci) pour l'avoir a portee de main. Pour arreter, ferme la fenetre "serveur".
+Double-clique sur **`Demarrer-WMS.bat`**, le seul lanceur : au premier lancement il installe tout (environnement + dépendances), prépare `.env` (clé secrète générée, mode production), applique les migrations, télécharge les bibliothèques du scanner, puis démarre le serveur **en HTTPS** (`https://<adresse du PC>:8443`, la caméra des téléphones l'exige) et ouvre l'application dans le navigateur. Les fois suivantes, il démarre directement. La première fois, lance-le en administrateur (clic droit > Exécuter en tant qu'administrateur) : il ouvre le port 8443 et inscrit l'autorité dans Windows. Détail : `docs/guide-https.md`.
+Astuce : clic droit sur le fichier > Envoyer vers > Bureau (créer un raccourci) pour l'avoir à portée de main. Pour arrêter, ferme sa fenêtre.
 
 ## Copier le WMS sur un autre poste
 

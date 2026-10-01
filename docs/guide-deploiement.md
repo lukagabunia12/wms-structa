@@ -273,9 +273,13 @@ Puis, depuis un autre poste du réseau :
 
 | Adresse | Attendu |
 |---|---|
-| `http://<ip-serveur>:8000/` | l'écran de connexion |
-| `http://<ip-serveur>:8000/api/sante/` | `{"service":"ok","base":"ok","migrations":"ok"}` |
-| `http://<ip-serveur>:8000/admin/` | l'administration Django |
+| `https://<ip-serveur>:8443/` | l'écran de connexion |
+| `https://<ip-serveur>:8443/api/sante/` | `{"service":"ok","base":"ok","migrations":"ok"}` |
+| `https://<ip-serveur>:8443/admin/` | l'administration Django |
+
+`Demarrer-serveur.bat` sert le WMS en HTTPS, comme `Demarrer-WMS.bat` : le port
+8000 n'écoute que sur la machine elle-même, et ne répond donc pas depuis un autre
+poste — c'est voulu.
 
 Enfin, le vrai test : **connectez-vous, scannez un emplacement, rangez une cabine,
 et vérifiez que le journal l'a enregistré.** Une base qui répond ne prouve pas que

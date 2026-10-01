@@ -29,6 +29,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-rem Waitress : serveur d'application multi-thread. 8 fils suffisent
-rem largement pour une vingtaine de postes et de telephones.
-".venv\Scripts\waitress-serve.exe" --listen=0.0.0.0:8000 --threads=8 config.wsgi:application
+rem Le WMS en HTTPS, exactement comme Demarrer-WMS.bat : waitress (8 fils,
+rem large pour une vingtaine de postes et de telephones) sur la boucle
+rem locale, et seul le port 8443, chiffre, ouvert au reseau. Il servait
+rem auparavant le port 8000 en clair : plus de camera sur les telephones, et
+rem les mots de passe en clair sur le Wi-Fi.
+rem
+rem Sans navigateur : c'est la tache planifiee qui le lance, sans ecran.
+rem Si le serveur d'application tombe, le lanceur s'arrete avec lui (code 1) :
+rem la tache planifiee peut alors relancer.
+".venv\Scripts\python.exe" outils\demarrer_https.py --sans-navigateur

@@ -1,5 +1,8 @@
 """Tests de bout en bout des pages servies (interface et administration)."""
+import json
 import os
+import struct
+from pathlib import Path
 from unittest import mock
 
 from django.test import TestCase, override_settings
@@ -70,3 +73,59 @@ class AccesTesteursTest(TestCase):
             with self.subTest(brut=brut), mock.patch.dict(os.environ,
                                                           {"WMS_ACCES_TEST": brut}):
                 self.assertEqual(_acces_test(), attendu)
+
+
+STATIQUES = Path(__file__).resolve().parents[1] / "static" / "app"
+
+
+def _taille_png(chemin):
+    """Largeur et hauteur lues dans l'en-tête PNG — sans dépendre de Pillow."""
+    entete = chemin.read_bytes()[:24]
+    assert entete[:8] == b"\x89PNG\r\n\x1a\n", f"{chemin.name} n'est pas un PNG"
+    return struct.unpack(">II", entete[16:24])
+
+
+class RaccourciTelephoneTest(TestCase):
+    """Ce qu'il faut pour que l'icône posée sur l'écran d'accueil soit la bonne.
+
+    Une icône manquante ne casse rien à l'écran : le téléphone pose alors une
+    capture de la page, ou un « S » générique. C'est pour cela qu'un test la
+    guette — personne ne le verrait avant d'équiper vingt téléphones.
+    """
+
+    def setUp(self):
+        self.manifeste = json.loads((STATIQUES / "manifest.webmanifest").read_text("utf-8"))
+
+    def test_la_page_annonce_le_manifeste_et_l_icone_iphone(self):
+        html = self.client.get("/").content.decode()
+        self.assertIn("app/manifest.webmanifest", html)
+        self.assertIn('rel="apple-touch-icon"', html)
+        self.assertIn('name="apple-mobile-web-app-title" content="WMS Structa"', html)
+
+    def test_le_manifeste_ouvre_le_wms_en_plein_ecran(self):
+        self.assertEqual(self.manifeste["start_url"], "/")
+        self.assertEqual(self.manifeste["scope"], "/")
+        self.assertEqual(self.manifeste["display"], "standalone")
+        self.assertEqual(self.manifeste["name"], "WMS Structa")
+
+    def test_chaque_icone_existe_a_la_taille_annoncee(self):
+        for icone in self.manifeste["icons"]:
+            with self.subTest(icone=icone["src"]):
+                fichier = STATIQUES / Path(icone["src"]).name
+                self.assertTrue(fichier.is_file(), f"{icone['src']} introuvable")
+                largeur, hauteur = map(int, icone["sizes"].split("x"))
+                self.assertEqual(_taille_png(fichier), (largeur, hauteur))
+
+    def test_android_a_une_icone_decoupable(self):
+        """Sans icône « maskable », Android réduit le logo dans une pastille blanche."""
+        tailles = {i["sizes"] for i in self.manifeste["icons"] if i.get("purpose") == "maskable"}
+        self.assertIn("512x512", tailles)
+
+    def test_l_icone_iphone_fait_180_pixels(self):
+        self.assertEqual(_taille_png(STATIQUES / "apple-touch-icon.png"), (180, 180))
+
+    def test_le_manifeste_est_servi(self):
+        r = self.client.get("/static/app/manifest.webmanifest")
+        self.assertEqual(r.status_code, 200)
+        contenu = b"".join(r.streaming_content) if r.streaming else r.content
+        self.assertEqual(json.loads(contenu)["short_name"], "WMS Structa")
