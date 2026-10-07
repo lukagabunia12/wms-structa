@@ -37,6 +37,10 @@ UNION ALL SELECT 'Positions',         COUNT(*) FROM wms_occupation
 UNION ALL SELECT 'Journal cabines',   COUNT(*) FROM wms_mouvementcabine
 UNION ALL SELECT 'Modeles regles',    COUNT(*) FROM wms_modelecabine
 UNION ALL SELECT 'Fichier production',COUNT(*) FROM wms_cabineattendue
+UNION ALL SELECT 'Codes MP (base)',   COUNT(*) FROM wms_articlemp
+UNION ALL SELECT 'Stock MP (lignes)', COUNT(*) FROM wms_stockmp
+UNION ALL SELECT 'Journal MP',        COUNT(*) FROM wms_mouvementmp
+UNION ALL SELECT 'Codes acceptes',    COUNT(*) FROM wms_emplacement_codes_acceptes
 UNION ALL SELECT 'Comptes',           COUNT(*) FROM wms_utilisateur;
 
 
@@ -44,13 +48,14 @@ UNION ALL SELECT 'Comptes',           COUNT(*) FROM wms_utilisateur;
 --      Un superutilisateur a TOUS les droits, quelles que soient les cases :
 --      c'est pourquoi elles peuvent etre a 0 sur un compte admin.
 SELECT username, nom, role, is_superuser, is_active,
-       droit_cab, droit_ref
+       droit_cab, droit_ref, droit_mp
 FROM wms_utilisateur
 ORDER BY username;
 
 
 -- 1.3  Les emplacements, avec leur zone cabine et leur position dans le rack.
-SELECT e.code, e.zone, z.nom AS zone_cabine, e.rack, e.colonne, e.niveau,
+--      "usage" dit ce qu'ils rangent : cabines, carton ou vitrage.
+SELECT e.code, e.usage, e.zone, z.nom AS zone_cabine, e.rack, e.colonne, e.niveau,
        e.staging, e.actif, e.description
 FROM wms_emplacement e
 LEFT JOIN wms_zone z ON z.id = e.zone_cabine_id
@@ -286,6 +291,86 @@ ORDER BY MAX(m.date) DESC;
 
 
 -- ============================================================================
+--  3 ter. MATIERES PREMIERES - VITRAGES ET CARTONS
+--
+--  Quatre tables : wms_articlemp (la base des codes, avec leur seuil
+--  d'alerte -- colonne seuil_reappro), wms_stockmp (ce qui est pose, place
+--  par place : G, M, D), wms_mouvementmp (le journal des entrees, des
+--  sorties et des changements d'emplacement) et wms_emplacement_codes_acceptes
+--  (les emplacements reserves a certains codes). Le stock ne se corrige pas
+--  ici : une entree, une sortie ou un changement d'emplacement dans le WMS,
+--  qui l'ecrit au journal.
+-- ============================================================================
+
+-- 3.11 Le stock MP par code : combien, et sur combien de positions.
+SELECT a.famille, a.code, a.designation, a.ancienne_generation,
+       SUM(s.quantite)  AS en_stock,
+       COUNT(s.id)      AS positions,
+       a.seuil_reappro
+FROM wms_articlemp a
+JOIN wms_stockmp s ON s.article_id = a.id
+GROUP BY a.id, a.famille, a.code, a.designation, a.ancienne_generation, a.seuil_reappro
+ORDER BY a.famille, a.code;
+
+
+-- 3.12 Le stock MP place par place : l'inventaire a recompter devant le rack.
+SELECT e.rack, e.code AS emplacement, s.place, a.code, s.quantite,
+       s.modifie_le AS dernier_mouvement
+FROM wms_stockmp s
+JOIN wms_emplacement e ON e.id = s.emplacement_id
+JOIN wms_articlemp   a ON a.id = s.article_id
+ORDER BY e.rack, e.code,
+         CASE s.place WHEN 'G' THEN 1 WHEN 'M' THEN 2 ELSE 3 END,  -- gauche, milieu, droite
+         a.code;
+
+
+-- 3.13 Le journal MP d'un code. Remplacer le code ci-dessous.
+--      Pour un changement d'emplacement (type 'transfert'), "origine" est la
+--      position de depart et "reste_origine" ce qui y restait ; "position" et
+--      "reste", l'arrivee.
+SELECT date, type, quantite, origine, reste_origine, position, reste,
+       utilisateur_nom, note
+FROM wms_mouvementmp
+WHERE article_code = 'VITR.445X2072.BP'
+ORDER BY date DESC;
+
+
+-- 3.14 Les codes a recommander : sous leur seuil d'alerte -- ceux que
+--      signale la cloche (anciennes generations exclues : on les ecoule, on ne
+--      les recommande pas). Le seuil se franchit EN DESSOUS : 50 en stock pour
+--      un seuil de 50 ne sonne pas.
+SELECT a.code, a.fournisseur, a.seuil_reappro,
+       COALESCE(SUM(s.quantite), 0) AS en_stock
+FROM wms_articlemp a
+LEFT JOIN wms_stockmp s ON s.article_id = a.id
+WHERE a.seuil_reappro IS NOT NULL AND a.actif AND NOT a.ancienne_generation
+GROUP BY a.id, a.code, a.fournisseur, a.seuil_reappro
+HAVING COALESCE(SUM(s.quantite), 0) < a.seuil_reappro
+ORDER BY a.code;
+
+
+-- 3.15 Les emplacements reserves a certains codes. Un emplacement MP absent
+--      de cette liste accepte tous les codes de sa famille.
+SELECT e.code AS emplacement, e.usage, a.code AS code_accepte
+FROM wms_emplacement_codes_acceptes r
+JOIN wms_emplacement e ON e.id = r.emplacement_id
+JOIN wms_articlemp   a ON a.id = r.articlemp_id
+ORDER BY e.code, a.code;
+
+
+-- 3.16 Les changements d'emplacement, du plus recent au plus ancien : d'ou,
+--      vers ou, combien. Ni une entree ni une sortie : ils ne comptent pas
+--      dans la consommation (type 'sortie').
+SELECT date, article_code, quantite,
+       origine       AS depuis,   reste_origine AS reste_au_depart,
+       position      AS vers,     reste         AS reste_a_l_arrivee,
+       utilisateur_nom
+FROM wms_mouvementmp
+WHERE type = 'transfert'
+ORDER BY date DESC;
+
+
+-- ============================================================================
 --  4. EXTRAIRE - LISTES POUR EXCEL
 --
 --  Dans DB Browser : executer, puis clic droit sur le resultat ->
@@ -375,6 +460,14 @@ ORDER BY colonne, niveau DESC;
 --    wms_mouvementcabine-> le journal des cabines. On n'efface pas une ligne
 --                          d'historique ; l'application elle-meme s'interdit
 --                          de le modifier.
+--    wms_stockmp        -> le stock des vitrages et des cartons. Le corriger
+--                          ici fait mentir le journal MP : faire une entree ou
+--                          une sortie dans le WMS (motif "Inventaire").
+--    wms_mouvementmp    -> le journal MP. Meme regle que celui des cabines.
+--    wms_emplacement_codes_acceptes -> les codes qu'accepte un emplacement MP.
+--                          Se reglent dans le WMS, qui verifie la famille :
+--                          un vitrage accepte sur un emplacement de cartons
+--                          ici le fermerait a tout.
 --    wms_utilisateur.password -> mot de passe chiffre. Le remplacer par du
 --                          texte rend le compte inutilisable. Passer par
 --                          /admin/ ou par : manage.py changepassword

@@ -77,6 +77,26 @@ class CoutDesEcransTest(APITestCase):
     def test_le_journal_ne_coute_pas_une_requete_par_mouvement(self):
         self.verifier("/api/mouvements-cabine/?page=1", "Journal")
 
+    def test_le_stock_mp_ne_coute_pas_une_requete_par_code(self):
+        """Le Parc côté MP : deux requêtes, quelle que soit la base des codes."""
+        from wms import services_mp
+        from wms.models import ArticleMP
+
+        vitrages = [Emplacement.objects.create(code=f"V{i:03d}", usage=Emplacement.MP_VITRAGE)
+                    for i in range(12)]
+        codes = list(ArticleMP.objects.filter(famille=ArticleMP.VITRAGE, ancienne_generation=False))
+
+        def poser(combien):
+            for i in range(combien):
+                services_mp.entrer(emplacement=vitrages[i], place="G", article=codes[i],
+                                   quantite=5, utilisateur=self.user)
+
+        poser(2)
+        avec_deux = self.requetes("/api/mp/stock/")
+        poser(10)
+        self.assertEqual(self.requetes("/api/mp/stock/"), avec_deux,
+                         "le coût du stock MP suit le nombre de codes en stock")
+
     def test_la_proposition_d_emplacement_ne_suit_pas_l_entrepot(self):
         """L'écran le plus utilisé : il relit tout l'entrepôt à chaque appel."""
         self.peupler(2)

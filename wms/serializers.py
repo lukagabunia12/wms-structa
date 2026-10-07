@@ -2,7 +2,7 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 
-from . import services_cabines, services_emplacements
+from . import services_cabines, services_emplacements, services_mp
 from .models import (Cabine, CabineAttendue, Emplacement, ModeleCabine, MouvementCabine,
                      Occupation)
 
@@ -58,6 +58,17 @@ class EmplacementSerializer(serializers.ModelSerializer):
                                             default=None)
     mode_libelle = serializers.CharField(source="get_mode_places_display", read_only=True)
     illimite = serializers.BooleanField(read_only=True)
+    usage_libelle = serializers.CharField(source="get_usage_display", read_only=True)
+    est_mp = serializers.BooleanField(read_only=True)
+    #: Ce que porte un emplacement MP, en résumé : de quoi colorer une case du
+    #: plan sans ouvrir l'emplacement. `None` pour un emplacement de cabines.
+    mp = serializers.SerializerMethodField()
+    #: Les codes acceptés, lisibles — `[{id, code}]`, vide : toute la famille.
+    #: EN LECTURE SEULE ici : ils se règlent par `/emplacements/codes/`, qui
+    #: vérifie la famille. Le champ du modèle, laissé tel quel dans `__all__`,
+    #: se serait écrit par un simple PATCH, vitrages sur un emplacement de
+    #: cartons compris.
+    codes_acceptes = serializers.SerializerMethodField()
     cabines = serializers.SerializerMethodField()
     places_libres = serializers.SerializerMethodField()
     nb_cabines = serializers.SerializerMethodField()
@@ -149,11 +160,67 @@ class EmplacementSerializer(serializers.ModelSerializer):
     def get_nb_cabines(self, obj):
         return len({c.cabine_id for c in self._occupations_actives(obj)})
 
+    def get_mp(self, obj):
+        """Résumé du stock MP. Lit le prefetch de la vue ; une requête à défaut."""
+        if not obj.est_mp:
+            return None
+        lignes = getattr(obj, "lignes_mp", None)
+        if lignes is None:
+            lignes = list(obj.stock_mp.select_related("article"))
+        return {
+            "lignes": len(lignes),
+            "codes": len({x.article_id for x in lignes}),
+            "quantite": sum(x.quantite for x in lignes),
+            "places": sorted({x.place for x in lignes}, key="GMD".index),
+        }
+
+    def get_codes_acceptes(self, obj):
+        """Lit le préchargement de la vue ; une requête à défaut."""
+        if not obj.pk:
+            return []
+        return [{"id": a.id, "code": a.code} for a in services_mp.codes_acceptes(obj)]
+
+    def update(self, instance, validated_data):
+        """Un emplacement qui change de famille perd ses codes acceptés : ils
+        appartenaient à l'ancienne, et n'y voudraient plus rien dire."""
+        usage_avant = instance.usage
+        instance = super().update(instance, validated_data)
+        if instance.usage != usage_avant:
+            services_mp.oublier_codes([instance.pk])
+        return instance
+
     def get_places_libres(self, obj):
-        if obj.illimite:
+        # Un emplacement MP n'offre aucune place à une cabine.
+        if obj.illimite or obj.est_mp:
             return []
         prises = {c.place for c in self._occupations_actives(obj) if c.place}
         return [code for code, _ in Cabine.PLACES if code not in prises]
+
+    def validate(self, attrs):
+        """Changer ce que range un emplacement : seulement s'il est vide.
+
+        La règle est celle du réglage en nombre (`services_mp.bilan_usage`),
+        appliquée à un seul emplacement : la fiche et la sélection d'un rack
+        refusent exactement la même chose, avec la même phrase.
+        """
+        attrs = super().validate(attrs)
+        if self.instance is None:
+            return attrs
+        usage = attrs.get("usage", self.instance.usage)
+        mode = attrs.get("mode_places", self.instance.mode_places)
+        if usage == Emplacement.CABINES:
+            choix = "cabines-illimite" if mode == Emplacement.ILLIMITE else "cabines-gd"
+        else:
+            choix = usage
+        avant = services_mp.choix_de(self.instance)
+        # Le mode d'un emplacement MP ne décrit rien : seul l'usage compte.
+        if usage != Emplacement.CABINES and self.instance.usage == usage:
+            return attrs
+        if choix != avant:
+            refus = services_mp.refus_changement_usage(self.instance, choix)
+            if refus:
+                raise serializers.ValidationError({"usage": f"{self.instance.code} : {refus}"})
+        return attrs
 
     def validate_mode_places(self, value):
         """Changer de mode alors que des cabines sont là produirait un état incohérent.

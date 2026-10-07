@@ -20,8 +20,8 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from .models import (Cabine, CabineAttendue, Emplacement, ModeleCabine,
-                     MouvementCabine, Occupation, PlaceCondamnee, Utilisateur,
-                     Zone)
+                     MouvementCabine, Occupation, PlaceCondamnee, StockMP,
+                     Utilisateur, Zone)
 
 
 logger = logging.getLogger(__name__)
@@ -170,6 +170,10 @@ def places_libres(emplacement, cabine=None, prises=None, condamnees=None,
     anodine coûte une requête par emplacement — mesuré, et corrigé ici plutôt
     que par un cache qui survivrait à un modèle passé « grand » entre-temps.
     """
+    # Un emplacement de matières premières ne prend pas de cabine, quel que soit
+    # son mode : il porte des palettes ou des chevalets.
+    if emplacement.est_mp:
+        return []
     if emplacement.illimite:
         return []
     if not emplacement.actif:
@@ -248,7 +252,7 @@ def emplacements_pour(cabine, texte="", limite=60):
                                condamnees=set(bloquees), grand=grand)
         # Une aire à capacité illimitée n'a pas de place nommée : elle prend la
         # cabine tant qu'elle est en service.
-        possible = e.actif and (e.illimite or bool(libres))
+        possible = e.actif and not e.est_mp and (e.illimite or bool(libres))
         lignes.append({
             "emplacement": e,
             "libres": libres,
@@ -281,6 +285,8 @@ def _pourquoi_pas(emplacement, grand, prises, condamnees, possible):
     """
     if possible:
         return ""
+    if emplacement.est_mp:
+        return f"réservé aux matières premières ({emplacement.get_usage_display()})"
     if not emplacement.actif:
         return (f"hors service : {emplacement.motif_inactif}"
                 if emplacement.motif_inactif else "hors service")
@@ -300,7 +306,13 @@ def _pourquoi_pas(emplacement, grand, prises, condamnees, possible):
 
 
 def est_complet(emplacement, cabine=None):
-    """Un emplacement à capacité illimitée n'est jamais complet."""
+    """Un emplacement à capacité illimitée n'est jamais complet.
+
+    Un emplacement de matières premières l'est toujours, pour une cabine : il
+    ne lui offre aucune place.
+    """
+    if emplacement.est_mp:
+        return True
     return False if emplacement.illimite else not places_libres(emplacement, cabine)
 
 
@@ -343,6 +355,31 @@ def _cabines_presentes(emplacement, place=None):
     return [o.cabine for o in occs if o.cabine_id]
 
 
+def _verrouiller(emplacement):
+    """Le verrou de ligne de l'emplacement, et ce qui décide d'un refus, relu.
+
+    Le stock MP s'écrit sous le verrou de son emplacement (`services_mp`), le
+    réglage de l'usage aussi. Sans ce verrou-ci, une palette entrée entre le
+    contrôle et l'écriture laissait un emplacement « hors service » chargé, ou
+    une cabine rangée sur un emplacement passé aux MP la seconde d'avant.
+    La relecture vient APRÈS le verrou : ce qui est lu ne peut plus changer
+    avant la fin de la transaction. Sans effet sur SQLite, qui n'a pas de
+    verrou de ligne.
+    """
+    list(Emplacement.objects.select_for_update().filter(pk=emplacement.pk)
+         .values_list("pk", flat=True))
+    emplacement.refresh_from_db(fields=["usage", "actif"])
+
+
+def _codes_mp_presents(emplacement, place=None):
+    """Les codes MP posés ici (sur cette place), pour les NOMMER dans un refus."""
+    lignes = StockMP.objects.filter(emplacement=emplacement)
+    if place is not None:
+        lignes = lignes.filter(place=place)
+    return list(dict.fromkeys(lignes.order_by("article__code")
+                              .values_list("article__code", flat=True)))
+
+
 @transaction.atomic
 def changer_activation(*, emplacement, actif, motif="", utilisateur=None):
     """Met un emplacement en service ou hors service.
@@ -357,6 +394,7 @@ def changer_activation(*, emplacement, actif, motif="", utilisateur=None):
     mois plus tard, que l'emplacement est encore condamné.
     """
     actif = bool(actif)
+    _verrouiller(emplacement)
     if emplacement.actif == actif:
         etat = "en service" if actif else "hors service"
         raise ErreurCabine(f"{emplacement.code} est déjà {etat}.")
@@ -372,6 +410,11 @@ def changer_activation(*, emplacement, actif, motif="", utilisateur=None):
             raise ErreurCabine(
                 f"{emplacement.code} porte encore {noms}. Sortez la cabine de son "
                 "emplacement d'abord — le WMS ne déplace pas une cabine tout seul.")
+        codes = _codes_mp_presents(emplacement)
+        if codes:
+            raise ErreurCabine(
+                f"{emplacement.code} porte encore du stock MP ({', '.join(codes)}). "
+                "Sortez-le d'abord : un emplacement hors service ne doit rien cacher.")
 
     emplacement.actif = actif
     emplacement.motif_inactif = "" if actif else motif.strip()[:255]
@@ -388,12 +431,17 @@ def condamner_place(*, emplacement, place, motif="", utilisateur=None):
     Le motif est obligatoire pour la même raison que celui d'une quarantaine :
     sans lui, la place reste condamnée des mois faute de savoir pourquoi.
     """
-    codes = [c for c, _ in PlaceCondamnee.PLACES]
+    _verrouiller(emplacement)
+    # Trois places sur un emplacement de matières premières, deux pour des
+    # cabines : « Milieu » n'existe pas pour une cabine, et le proposer ferait
+    # croire qu'on peut y en poser une.
+    codes = ([c for c, _ in PlaceCondamnee.PLACES] if emplacement.est_mp else PLACES)
     if place not in codes:
+        noms = "gauche, milieu ou droite" if emplacement.est_mp else "gauche ou droite"
         raise ErreurCabine(
-            f"Place inconnue : « {place} ». On condamne une place, gauche ou "
-            "droite — pour retirer l'emplacement entier, désactivez-le.")
-    if emplacement.illimite:
+            f"Place inconnue : « {place} ». On condamne une place, {noms} — pour "
+            "retirer l'emplacement entier, désactivez-le.")
+    if emplacement.illimite and not emplacement.est_mp:
         raise ErreurCabine(
             f"{emplacement.code} n'a pas de place nommée : c'est une aire à "
             "capacité illimitée. Désactivez-la pour la retirer du stock.")
@@ -410,6 +458,11 @@ def condamner_place(*, emplacement, place, motif="", utilisateur=None):
         raise ErreurCabine(
             f"La place {place} de {emplacement.code} porte {noms}. Sortez la "
             "cabine d'abord — le WMS ne déplace pas une cabine tout seul.")
+    codes_mp = _codes_mp_presents(emplacement, place)
+    if codes_mp:
+        raise ErreurCabine(
+            f"La place {place} de {emplacement.code} porte du stock MP "
+            f"({', '.join(codes_mp)}). Sortez-le d'abord.")
 
     return PlaceCondamnee.objects.create(
         emplacement=emplacement, place=place, motif=motif.strip()[:255],
@@ -557,6 +610,12 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
     emplacement.
     """
     _refuser_si_envoyee(cabine)
+    _verrouiller(emplacement)
+    if emplacement.est_mp:
+        raise ErreurCabine(
+            f"{emplacement.code} range des matières premières "
+            f"({emplacement.get_usage_display()}) : on n'y pose pas de cabine. "
+            "Choisissez un emplacement de cabines.")
     if not emplacement.actif:
         raise ErreurCabine(f"L'emplacement {emplacement.code} est inactif.")
 
@@ -852,6 +911,9 @@ def etat_du_stock():
             # Un pilier devant une place est toujours là après une remise à
             # zéro : la condamnation décrit l'entrepôt, pas le stock.
             "places_condamnees": PlaceCondamnee.objects.count(),
+            # Les matières premières ne sont pas des cabines : la remise à zéro
+            # du parc ne touche ni à leur stock ni à leur journal.
+            "lignes_stock_mp": StockMP.objects.count(),
         },
     }
 

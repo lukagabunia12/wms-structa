@@ -6,6 +6,12 @@ Deux droits : « cabines » (ranger, changer un statut, envoyer…) et « réfé
 Principe : la **lecture** reste ouverte à tout compte authentifié ; chaque **écriture**
 exige le droit correspondant, déclaré par la vue via `droit_ecriture` (un seul droit pour
 toute la vue) ou `droits_par_action` (un droit par action).
+
+Les deux se combinent : `droits_par_action` nomme les exceptions, `droit_ecriture`
+couvre tout le reste. C'est le cas des matières premières — entrer, sortir et
+déplacer demandent la case « matières premières », régler un seuil d'alerte
+demande le référentiel. Une action ajoutée plus tard sans y penser tombe alors
+sous le droit de la vue, au lieu de s'ouvrir à tous les comptes par omission.
 """
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
@@ -29,10 +35,16 @@ class DroitWMS(BasePermission):
 
     @staticmethod
     def droit_requis(view):
-        """Droit exigé pour l'écriture en cours, ou None si la vue n'en déclare aucun."""
-        par_action = getattr(view, "droits_par_action", None)
-        if par_action:
-            return par_action.get(getattr(view, "action", None))
+        """Droit exigé pour l'écriture en cours, ou None si la vue n'en déclare aucun.
+
+        L'action d'abord, la vue ensuite : une vue qui ne déclare que
+        `droits_par_action` laisse ouvertes les actions qu'elle ne nomme pas,
+        comme avant ; une vue qui déclare aussi `droit_ecriture` les ferme.
+        """
+        par_action = getattr(view, "droits_par_action", None) or {}
+        action = getattr(view, "action", None)
+        if action in par_action:
+            return par_action[action]
         return getattr(view, "droit_ecriture", None)
 
 

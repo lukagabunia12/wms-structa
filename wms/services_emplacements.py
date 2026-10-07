@@ -12,7 +12,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Count
 
-from .models import Cabine, Emplacement, Occupation
+from .models import Cabine, Emplacement, Occupation, StockMP
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +23,11 @@ class ErreurEmplacement(ValidationError):
 
 # --- Suppression : un emplacement, une sélection, un rack --------------------
 #
-# Un seul obstacle : des cabines rangées. `Occupation.emplacement` est en
-# SET_NULL, donc la base ne remonterait aucune erreur — elle détacherait les
-# cabines en silence, et le parc se retrouverait « non rangé » sans la moindre
-# trace. C'est le cas le plus dangereux, et le plus discret.
+# Deux obstacles : des cabines rangées, du stock MP posé. `Occupation.emplacement`
+# est en SET_NULL, donc la base ne remonterait aucune erreur — elle détacherait
+# les cabines en silence, et le parc se retrouverait « non rangé » sans la
+# moindre trace. C'est le cas le plus dangereux, et le plus discret. Le stock
+# MP, lui, est en PROTECT : la base refuserait, mais par une erreur brute.
 #
 # Le passé, lui, ne s'y oppose pas : le journal des cabines recopie le code de
 # l'emplacement en toutes lettres, il reste lisible une fois l'emplacement
@@ -46,16 +47,31 @@ def _cabines_rangees(emplacements):
     return {ligne["emplacement_id"]: ligne["n"] for ligne in lignes}
 
 
-def _refus(emplacement, cabines):
-    if not cabines:
-        return ""
-    return (f"{cabines} cabine(s) sont rangées sur {emplacement.code} : "
-            "déplacez-les ou envoyez-les avant de supprimer l'emplacement.")
+def _lignes_mp(emplacements):
+    """{id d'emplacement: lignes de stock MP}, en UNE requête.
+
+    Le stock MP est en PROTECT : la base refuserait l'effacement par une erreur
+    brute. On le dit avant, en clair, comme pour les cabines.
+    """
+    lignes = (StockMP.objects.filter(emplacement__in=emplacements)
+              .values("emplacement_id").annotate(n=Count("id")))
+    return {ligne["emplacement_id"]: ligne["n"] for ligne in lignes}
+
+
+def _refus(emplacement, cabines, lignes_mp=0):
+    if cabines:
+        return (f"{cabines} cabine(s) sont rangées sur {emplacement.code} : "
+                "déplacez-les ou envoyez-les avant de supprimer l'emplacement.")
+    if lignes_mp:
+        return (f"{lignes_mp} ligne(s) de stock MP sont posées sur {emplacement.code} : "
+                "sortez-les avant de supprimer l'emplacement.")
+    return ""
 
 
 def diagnostic_suppression(emplacement):
     """Pourquoi cet emplacement ne peut pas être supprimé — "" s'il le peut."""
-    return _refus(emplacement, _cabines_rangees([emplacement]).get(emplacement.pk, 0))
+    return _refus(emplacement, _cabines_rangees([emplacement]).get(emplacement.pk, 0),
+                  _lignes_mp([emplacement]).get(emplacement.pk, 0))
 
 
 def _bilan(liste):
@@ -65,8 +81,10 @@ def _bilan(liste):
     lieu de les découvrir à la première erreur.
     """
     par_emplacement = _cabines_rangees(liste)
-    bloquants = [{"code": e.code, "message": _refus(e, par_emplacement.get(e.pk, 0))}
-                 for e in liste if par_emplacement.get(e.pk)]
+    mp = _lignes_mp(liste)
+    bloquants = [{"code": e.code,
+                  "message": _refus(e, par_emplacement.get(e.pk, 0), mp.get(e.pk, 0))}
+                 for e in liste if par_emplacement.get(e.pk) or mp.get(e.pk)]
     # Recompté sur l'ensemble : une cabine posée sur deux emplacements de la
     # sélection est UNE cabine, pas deux.
     cabines = (Cabine.objects.filter(occupations__emplacement__in=liste)
@@ -75,6 +93,7 @@ def _bilan(liste):
         "emplacements": len(liste),
         "codes": [e.code for e in liste],
         "cabines": cabines,
+        "lignes_mp": sum(mp.values()),
         "bloquants": bloquants,
         "supprimable": not bloquants,
     }
@@ -306,7 +325,7 @@ def apercu_rack(**parametres):
 
 
 @transaction.atomic
-def generer_rack(*, mode_places=None, description="", **parametres):
+def generer_rack(*, mode_places=None, usage=None, description="", **parametres):
     """Crée le rack. Les codes déjà pris sont laissés intacts et rapportés.
 
     Volontairement rejouable : ajouter un quatrième niveau à un rack existant se
@@ -318,6 +337,10 @@ def generer_rack(*, mode_places=None, description="", **parametres):
     # qui distinguent « deux places » de « capacité illimitée ».
     if mode_places and mode_places not in dict(Emplacement.MODES_PLACES):
         raise ErreurEmplacement(f"Mode de rangement inconnu : « {mode_places} ».")
+    # Un rack se crée directement pour les matières premières : le niveau du sol
+    # des chevalets, une rangée de palettes de cartons.
+    if usage and usage not in dict(Emplacement.USAGES):
+        raise ErreurEmplacement(f"Usage inconnu : « {usage} ».")
     apercu = apercu_rack(**parametres)
     a_creer = [x for x in apercu["codes"] if not x["existe"]]
     prefixe = (parametres.get("prefixe") or "").strip().upper()
@@ -330,6 +353,7 @@ def generer_rack(*, mode_places=None, description="", **parametres):
             code=x["code"], rack=prefixe, colonne=x["colonne"], niveau=x["niveau"],
             description=description,
             **({"mode_places": mode_places} if mode_places else {}),
+            **({"usage": usage} if usage else {}),
         )
         try:
             emplacement.save()

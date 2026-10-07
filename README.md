@@ -46,7 +46,7 @@ python manage.py runserver        # développement
 
 ## Tests et style
 ```bash
-python manage.py test           # 534 tests côté serveur
+python manage.py test           # 684 tests côté serveur
 ruff check .                    # style et erreurs de code (pip install ruff)
 node outils/verifier_interface.js   # les écrans de l'interface existent et sont joignables
 node outils/tester_interface.js     # le comportement de l'interface, sans navigateur
@@ -69,6 +69,7 @@ wms-structa/
 │   ├── models.py      Cabines, emplacements, journal, fichier de production
 │   ├── services_cabines.py       Toute écriture sur une cabine (cœur métier)
 │   ├── services_emplacements.py  Racks, suppression d'emplacements
+│   ├── services_mp.py            Matières premières : vitrages et cartons
 │   ├── services_import.py        Import du fichier de production
 │   ├── serializers.py / views.py / urls.py   API REST
 │   ├── export_inventaire.py  Inventaire des cabines en CSV lisible par Excel
@@ -87,12 +88,18 @@ wms-structa/
 ## Modèle de données
 `cabine`, `occupation` (où se trouve chaque cabine), `mouvementcabine` (le journal),
 `emplacement`, `placecondamnee`, `zone`, `modelecabine`, `cabineattendue` (le fichier de
-production) et `utilisateur`. Détail et invariants : `docs/guide-developpeur.md`.
+production), `articlemp`, `stockmp` et `mouvementmp` (les matières premières : la base des
+codes et leurs seuils d'alerte, le stock place par place, le journal — entrées, sorties,
+changements d'emplacement), les codes acceptés par emplacement, et `utilisateur`. Détail et invariants :
+`docs/guide-developpeur.md`.
 
 ## Périmètre
 Le suivi des cabines de douche : entrée, rangement, statut, envoi, et le référentiel des
-emplacements. Le volet « articles » de la maquette (stock d'articles, mouvements,
-réceptions) a été retiré en septembre 2026 : aucun écran ne s'en servait.
+emplacements. Depuis octobre 2026, les **matières premières** — vitrages et cartons — :
+emplacements dédiés à trois places (gauche, milieu, droite), réservables à certains codes,
+entrées, sorties, changements d'emplacement en un geste, stock par code, seuils d'alerte et
+cloche des alertes, base des codes prête à l'emploi. Le volet « articles » de la maquette (stock
+d'articles générique) avait été retiré en septembre 2026 : aucun écran ne s'en servait.
 
 ## Interface opérateur
 Une fois le serveur démarré (`runserver`), l'interface est à **http://127.0.0.1:8000/**

@@ -12,7 +12,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from wms.management.commands.reprise_sql import Command, modeles_a_recaler
-from wms.models import Cabine, Emplacement, ModeleCabine, Utilisateur
+from wms.models import ArticleMP, Cabine, Emplacement, ModeleCabine, Utilisateur
 
 
 class RepriseTest(TestCase):
@@ -56,7 +56,9 @@ class RepriseTest(TestCase):
         Utilisateur.objects.all().delete()
         # Les grands modèles semés par la migration 0020 comptent des lignes :
         # sans les retirer, la base n'est plus « vide » et rien ne serait refusé.
+        # De même pour la base des codes MP, semée par 0026.
         ModeleCabine.objects.all().delete()
+        ArticleMP.objects.all().delete()
         with self.assertRaisesMessage(CommandError, "vide"):
             call_command("reprise_sql", "exporter", vers=str(self.dossier), verbosity=0)
 
@@ -83,6 +85,9 @@ class RepriseTest(TestCase):
         self.assertEqual(Emplacement.objects.count(), 1)
         self.assertEqual(ModeleCabine.objects.count(),
                          manifeste["comptages"]["wms.modelecabine"])
+        # La base MP aussi : semée par la migration, remplacée par le fichier.
+        self.assertEqual(ArticleMP.objects.count(),
+                         manifeste["comptages"]["wms.articlemp"])
 
     def test_import_refuse_une_base_deja_peuplee(self):
         """Charger par-dessus des données existantes produit des doublons de clé."""
@@ -127,7 +132,8 @@ class RecalageDesSequences(TestCase):
         tables = {m._meta.db_table for m in modeles_a_recaler()}
         for attendue in ("wms_emplacement", "wms_occupation", "wms_placecondamnee",
                          "wms_cabine", "wms_mouvementcabine", "wms_cabineattendue",
-                         "wms_modelecabine", "wms_utilisateur", "wms_zone"):
+                         "wms_modelecabine", "wms_utilisateur", "wms_zone",
+                         "wms_articlemp", "wms_stockmp", "wms_mouvementmp"):
             self.assertIn(attendue, tables)
 
     def test_les_tables_gerees_par_migrate_sont_exclues(self):

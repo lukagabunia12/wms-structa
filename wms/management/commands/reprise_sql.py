@@ -42,7 +42,10 @@ EXCLUES = ["contenttypes", "auth.Permission", "admin.logentry", "sessions.sessio
 #:   fichier, et `ModeleCabine.cle` est unique : deux lignes « QUATTRO » de clés
 #:   primaires différentes se heurteraient, et la reprise échouerait à moitié
 #:   faite si elle n'était pas dans une transaction.
-SEMEES_PAR_MIGRATION = ["wms.modelecabine"]
+#:
+#: La base des codes MP (vitrages, cartons), semée par 0026, suit la même règle :
+#: `ArticleMP.code` est unique, et le stock qui la cite arrive dans le fichier.
+SEMEES_PAR_MIGRATION = ["wms.modelecabine", "wms.articlemp"]
 
 FICHIER_DONNEES = "donnees.json"
 FICHIER_MANIFESTE = "manifeste.json"

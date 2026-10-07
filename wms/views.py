@@ -17,10 +17,10 @@ from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from . import (export_inventaire, lecture_fiche, ocr_fiche, services_cabines,
-               services_emplacements, services_import)
-from .models import (Cabine, CabineAttendue, Emplacement, ModeleCabine, MouvementCabine,
-                     Occupation)
+from . import (export_inventaire, export_mp, lecture_fiche, ocr_fiche, services_cabines,
+               services_emplacements, services_import, services_mp)
+from .models import (ArticleMP, Cabine, CabineAttendue, Emplacement, ModeleCabine,
+                     MouvementCabine, MouvementMP, Occupation, StockMP)
 from .permissions import EstAdministrateur
 from .serializers import (CabineAttendueSerializer, CabineSerializer, EmplacementSerializer,
                           ModeleCabineSerializer, MouvementCabineSerializer,
@@ -58,9 +58,21 @@ class EmplacementViewSet(viewsets.ModelViewSet):
         qs = (Emplacement.objects
               .select_related("zone_cabine", "actif_par")
               .prefetch_related(Prefetch("occupations", queryset=actifs.order_by("place"),
-                                         to_attr="occupations_actives")))
+                                         to_attr="occupations_actives"),
+                                # Le résumé MP de chaque case du plan : une requête
+                                # pour toute la liste, pas une par emplacement.
+                                Prefetch("stock_mp", queryset=StockMP.objects.order_by("place"),
+                                         to_attr="lignes_mp"),
+                                # Les codes acceptés : idem, une requête en tout.
+                                "codes_acceptes"))
         if p.get("rack"):
             qs = qs.filter(rack__iexact=p["rack"].strip())
+        # `?usage=mp` : les emplacements de matières premières, toutes familles.
+        usage = (p.get("usage") or "").strip()
+        if usage == "mp":
+            qs = qs.exclude(usage=Emplacement.CABINES)
+        elif usage in dict(Emplacement.USAGES):
+            qs = qs.filter(usage=usage)
         colonne = _filtre_id(p, "colonne")
         if colonne is not None:
             qs = qs.filter(colonne=colonne)
@@ -137,6 +149,10 @@ class EmplacementViewSet(viewsets.ModelViewSet):
             "emplacement": emplacement.id,
             "code": emplacement.code,
             "zone": emplacement.zone_cabine.nom if emplacement.zone_cabine_id else None,
+            # Un emplacement MP ne se lit pas ici : l'écran passe à son contenu MP.
+            "usage": emplacement.usage,
+            "usage_libelle": emplacement.get_usage_display(),
+            "est_mp": emplacement.est_mp,
             "mode_places": emplacement.mode_places,
             "mode_libelle": emplacement.get_mode_places_display(),
             "illimite": emplacement.illimite,
@@ -241,11 +257,57 @@ class EmplacementViewSet(viewsets.ModelViewSet):
             if d.get("apercu"):
                 return Response(services_emplacements.apercu_rack(**parametres))
             resultat = services_emplacements.generer_rack(
-                mode_places=d.get("mode_places"),
+                mode_places=d.get("mode_places"), usage=d.get("usage"),
                 description=(d.get("description") or "")[:255], **parametres)
         except ValidationError as e:
             return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
         return Response(resultat, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"])
+    def usage(self, request):
+        """Change ce que rangent plusieurs emplacements : cabines, cartons, vitrages.
+
+        `{ids: [...], choix: "vitrage", apercu: true}` rend le bilan sans rien
+        écrire ; sans `apercu`, l'applique aux emplacements qui le peuvent. Les
+        autres sont nommés, avec ce qui les retient. Droit « référentiel ».
+        """
+        d = request.data
+        ids = d.get("ids")
+        if isinstance(ids, str):
+            ids = ids.split(",")
+        choix = str(d.get("choix") or "").strip()
+        try:
+            if d.get("apercu"):
+                bilan = services_mp.apercu_usage(ids, choix)
+            else:
+                bilan = services_mp.changer_usage(ids, choix, utilisateur=request.user)
+        except ValidationError as e:
+            return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(bilan)
+
+    @action(detail=False, methods=["post"])
+    def codes(self, request):
+        """Les codes qu'acceptent un ou plusieurs emplacements MP.
+
+        `{ids: [...], articles: [...], mode: "remplacer" | "ajouter" | "tous",
+        apercu: true}` rend le bilan sans rien écrire ; sans `apercu`, l'applique
+        à ceux qui le prennent. « tous » retire la réservation : l'emplacement
+        accepte de nouveau toute sa famille. Droit « référentiel », comme tout
+        réglage d'emplacement.
+        """
+        d = request.data
+        ids, articles = d.get("ids"), d.get("articles")
+        if isinstance(ids, str):
+            ids = ids.split(",")
+        mode = str(d.get("mode") or "").strip()
+        try:
+            if d.get("apercu"):
+                bilan = services_mp.apercu_codes(ids, articles, mode)
+            else:
+                bilan = services_mp.regler_codes(ids, articles, mode, utilisateur=request.user)
+        except ValidationError as e:
+            return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(bilan)
 
     @action(detail=False, methods=["get"])
     def racks(self, request):
@@ -656,7 +718,10 @@ class CabineViewSet(viewsets.ModelViewSet):
             "modeles": distinctes("modele"),
             # Les racks viennent du référentiel, pas des cabines : un rack vidé
             # doit rester proposé, sinon on ne peut plus vérifier qu'il est vide.
-            "racks": sorted(r for r in (Emplacement.objects.exclude(rack="").order_by()
+            # Seulement les racks qui rangent des cabines : un rack tout entier
+            # passé aux matières premières n'en contiendra jamais.
+            "racks": sorted(r for r in (Emplacement.objects.exclude(rack="")
+                                        .filter(usage=Emplacement.CABINES).order_by()
                                         .values_list("rack", flat=True).distinct()) if r),
             "seuil_immobile_jours": SEUIL_IMMOBILE_JOURS,
             "compteurs": {
@@ -918,12 +983,34 @@ def pouls(request):
     et les suppressions, qui ne passent pas toujours par lui.
     """
     mouvements = MouvementCabine.objects.aggregate(dernier=Max("id"), total=Count("id"))
+    # Le journal MP dit de même toute entrée et toute sortie de matières premières.
+    mp = services_mp.empreinte()
+    # La cloche : le nombre d'alertes et leur empreinte, pas leur liste. Elle
+    # suit aussi ce qui ne passe pas par le journal — un seuil réglé, une
+    # réservation posée —, que les compteurs ci-dessus ne voient pas.
+    alertes, empreinte_alertes = services_mp.empreinte_alertes()
     return Response({
         "mouvements": mouvements["total"] or 0,
         "dernier": mouvements["dernier"] or 0,
         "cabines": Cabine.objects.count(),
         "emplacements": Emplacement.objects.count(),
+        "mouvements_mp": mp["total"] or 0,
+        "dernier_mp": mp["dernier"] or 0,
+        "alertes": alertes,
+        "alertes_empreinte": empreinte_alertes,
     })
+
+
+@api_view(["GET"])
+def alertes(request):
+    """Ce que signale la cloche, en haut à droite des écrans.
+
+    Aujourd'hui, les matières premières : les codes sous leur seuil d'alerte,
+    et les lignes posées là où leur code n'est plus accepté. La réponse est
+    rangée par groupes — `type`, `titre`, `items` — pour qu'une autre sorte
+    d'alerte s'y ajoute sans changer l'écran.
+    """
+    return Response(services_mp.alertes())
 
 
 @api_view(["GET"])
@@ -1136,3 +1223,229 @@ class CabineAttendueViewSet(viewsets.ReadOnlyModelViewSet):
                     request.user, rapport["retenues"], len(rapport["erreurs"]),
                     rapport["fichier"])
         return Response(rapport)
+
+
+def _entier(brut):
+    """Un identifiant entier, ou `None`. Les chiffres 0 à 9 seulement :
+    `isdigit()` accepte « ² », que `int()` refuse ensuite — une erreur 500."""
+    texte = str(brut if brut is not None else "").strip()
+    return int(texte) if re.fullmatch(r"[0-9]+", texte) else None
+
+
+class MatieresPremieresViewSet(viewsets.ViewSet):
+    """Matières premières : vitrages et cartons, emplacement par emplacement.
+
+    Toutes les routes sont sous `/api/mp/`. La lecture est ouverte à tout
+    compte ; les gestes sur le stock — entrer, sortir, changer d'emplacement —
+    exigent la case « matières premières ». Régler un seuil d'alerte est un
+    réglage de la base des codes, pas un geste de poste : il demande le
+    référentiel. Les règles vivent dans `services_mp`, la vue ne fait que
+    traduire les refus en réponses 400.
+    """
+
+    droit_ecriture = "mp"
+    #: Les exceptions au droit de la vue. Toute autre écriture reste sous
+    #: `droit_ecriture` — voir `DroitWMS.droit_requis`.
+    droits_par_action = {"seuils": "ref"}
+
+    @staticmethod
+    def _400(e):
+        return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
+
+    @staticmethod
+    def _emplacement(params):
+        """L'emplacement visé, par identifiant ou par le code lu sur l'étiquette."""
+        brut_id = str(params.get("id") or params.get("emplacement") or "").strip()
+        code = re.sub(r"^LOC:", "", str(params.get("code") or "").strip(), flags=re.I).strip().upper()
+        if _entier(brut_id) is not None:
+            e = Emplacement.objects.filter(pk=_entier(brut_id)).first()
+        elif code:
+            e = Emplacement.objects.filter(code=code).first()
+        else:
+            raise ErreurAPI({"erreur": ["Indiquez l'emplacement : ?id= ou ?code=."]})
+        if e is None:
+            raise ErreurAPI({"erreur": [
+                f"Aucun emplacement ne porte le code « {code or brut_id} »."]})
+        return e
+
+    @action(detail=False, methods=["get"])
+    def emplacement(self, request):
+        """Ce que porte un emplacement MP, place par place.
+
+        Un emplacement de cabines répond aussi, avec `est_mp: false` et la
+        phrase à afficher : l'écran le dit sur la vidéo, au moment du scan.
+        """
+        e = self._emplacement(request.query_params)
+        reponse = services_mp.contenu(e)
+        reponse["refus"] = services_mp.refus_emplacement(e) if not e.est_mp else ""
+        return Response(reponse)
+
+    @action(detail=False, methods=["get"])
+    def suggestions(self, request):
+        """Les codes qui ressemblent à la saisie : « vitr.8 » → VITR.831…, VITR.814…
+
+        `?emplacement=<id>` : seulement ceux qu'il accepte, s'il est réservé.
+        """
+        p = request.query_params
+        famille = (p.get("famille") or "").strip()
+        if famille and famille not in dict(ArticleMP.FAMILLES):
+            raise ErreurAPI({"erreur": [f"Famille inconnue : « {famille} »."]})
+        emplacement = None
+        if str(p.get("emplacement") or "").strip():
+            emplacement = self._emplacement({"id": p.get("emplacement")})
+        return Response(services_mp.suggerer(p.get("q") or "", famille=famille or None,
+                                             emplacement=emplacement))
+
+    @staticmethod
+    def _filtres(p):
+        return {
+            "texte": p.get("q") or p.get("search") or "",
+            "famille": (p.get("famille") or "").strip(),
+            "fournisseur": (p.get("fournisseur") or "").strip(),
+            "rack": (p.get("rack") or "").strip(),
+            "generation": (p.get("generation") or "").strip(),
+            "sous_seuil": _actif(p, "sous_seuil"),
+            "tous": _actif(p, "tous"),
+            "tri": (p.get("tri") or "code").strip(),
+        }
+
+    @action(detail=False, methods=["get"])
+    def stock(self, request):
+        """Le stock par code, avec ses positions. Toute la liste : elle est courte."""
+        return Response(services_mp.stock(**self._filtres(request.query_params)))
+
+    @action(detail=False, methods=["get"])
+    def export(self, request):
+        """Le stock affiché, en fichier pour Excel : une ligne par position."""
+        return export_mp.reponse(services_mp.stock(**self._filtres(request.query_params)))
+
+    @action(detail=False, methods=["get"])
+    def filtres(self, request):
+        return Response(services_mp.compteurs())
+
+    @action(detail=False, methods=["get"])
+    def article(self, request):
+        brut = str(request.query_params.get("id") or "").strip()
+        article = ArticleMP.objects.filter(pk=_entier(brut)).first() if _entier(brut) else None
+        if article is None:
+            raise ErreurAPI({"erreur": ["Code introuvable dans la base MP."]})
+        return Response(services_mp.detail_article(article))
+
+    @action(detail=False, methods=["get"])
+    def journal(self, request):
+        """Le journal MP, paginé comme celui des cabines."""
+        p = request.query_params
+        qs = MouvementMP.objects.all()
+        if p.get("type") in dict(MouvementMP.TYPES):
+            qs = qs.filter(type=p["type"])
+        terme = (p.get("search") or "").strip()
+        if terme:
+            cle = re.sub(r"[^0-9A-Za-z]", "", terme)
+            # Un changement d'emplacement se retrouve par son départ comme par
+            # son arrivée : « AH500 » doit montrer ce qui en est parti.
+            filtre = (Q(article_code__icontains=terme) | Q(position__icontains=terme)
+                      | Q(origine__icontains=terme)
+                      | Q(utilisateur_nom__icontains=terme) | Q(note__icontains=terme))
+            if cle:
+                filtre |= Q(article__cle__icontains=cle.upper())
+            qs = qs.filter(filtre)
+        if _entier(p.get("article")) is not None:
+            qs = qs.filter(article_id=_entier(p.get("article")))
+        page = self.paginator.paginate_queryset(qs, request, view=self)
+        return self.paginator.get_paginated_response(
+            [services_mp.mouvement_public(m) for m in page])
+
+    @property
+    def paginator(self):
+        if not hasattr(self, "_paginateur"):
+            from rest_framework.pagination import PageNumberPagination
+            self._paginateur = PageNumberPagination()
+        return self._paginateur
+
+    @action(detail=False, methods=["post"])
+    def entrer(self, request):
+        """Entre du stock : `{emplacement, place, article, quantite, ancienne_confirmee}`.
+
+        `article` est l'identifiant choisi dans les suggestions — ou, à défaut, le
+        code exact. Un code approchant n'est jamais deviné : la saisie se choisit
+        dans la liste, c'est ce qui garde la base propre.
+        """
+        d = request.data
+        e = self._emplacement(d)
+        brut = str(d.get("article") or "").strip()
+        article = (ArticleMP.objects.filter(pk=_entier(brut)).first() if _entier(brut) is not None
+                   else ArticleMP.objects.filter(code=brut.upper()).first() if brut else None)
+        if article is None:
+            return Response({"erreur": [
+                "Choisis le code dans la liste proposée : il doit exister dans la base MP."]},
+                status=status.HTTP_400_BAD_REQUEST)
+        try:
+            ligne = services_mp.entrer(
+                emplacement=e, place=d.get("place"), article=article,
+                quantite=d.get("quantite"), utilisateur=request.user,
+                ancienne_confirmee=str(d.get("ancienne_confirmee", "")).lower() in _VRAI,
+                note=str(d.get("note") or "")[:255])
+        except ValidationError as err:
+            return self._400(err)
+        return Response({"ligne": services_mp.ligne_publique(ligne),
+                         "emplacement": services_mp.contenu(ligne.emplacement)},
+                        status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"])
+    def sortir(self, request):
+        """Sort du stock : `{ligne, quantite}` — sans quantité, toute la ligne."""
+        d = request.data
+        ligne = _entier(d.get("ligne"))
+        if ligne is None:
+            return Response({"erreur": ["Quelle ligne de stock sortir ?"]},
+                            status=status.HTTP_400_BAD_REQUEST)
+        emplacement_id, article_id = (StockMP.objects.filter(pk=ligne)
+                                      .values_list("emplacement_id", "article_id").first()
+                                      or (None, None))
+        try:
+            reste = services_mp.sortir(ligne=ligne, quantite=d.get("quantite"),
+                                       utilisateur=request.user,
+                                       note=str(d.get("note") or "")[:255])
+        except ValidationError as err:
+            return self._400(err)
+        emplacement = Emplacement.objects.get(pk=emplacement_id)
+        # Ce qu'il reste du code, partout : la phrase de réussite dit tout de
+        # suite qu'il vient de passer sous son seuil d'alerte.
+        return Response({"reste": reste, "emplacement": services_mp.contenu(emplacement),
+                         "article": services_mp.etat_du_code(ArticleMP.objects.get(pk=article_id))})
+
+    @action(detail=False, methods=["post"])
+    def deplacer(self, request):
+        """Change d'emplacement : `{lignes: [{ligne, quantite}], emplacement | code, place}`.
+
+        Une ligne sans quantité part entière. Tout passe, ou rien : la réponse
+        400 nomme la ligne qui bloque. La réponse rend le contenu des deux
+        bouts — l'écran redessine le départ, et propose d'ouvrir l'arrivée.
+        """
+        d = request.data
+        vers = self._emplacement({"id": d.get("emplacement"), "code": d.get("code")})
+        try:
+            r = services_mp.deplacer(lignes=d.get("lignes"), vers=vers, place=d.get("place"),
+                                     utilisateur=request.user,
+                                     note=str(d.get("note") or "")[:255])
+        except ValidationError as err:
+            return self._400(err)
+        return Response({
+            "deplaces": r["deplaces"],
+            "destination": services_mp.contenu(r["destination"]),
+            "sources": [services_mp.contenu(e) for e in r["sources"]],
+        })
+
+    @action(detail=False, methods=["post"])
+    def seuils(self, request):
+        """Le même seuil d'alerte pour un ou plusieurs codes : `{articles: [...], seuil}`.
+
+        `seuil` vide ou 0 : plus d'alerte pour ces codes. Droit « référentiel ».
+        """
+        d = request.data
+        try:
+            r = services_mp.regler_seuils(d.get("articles"), d.get("seuil"),
+                                          utilisateur=request.user)
+        except ValidationError as err:
+            return self._400(err)
+        return Response(r)

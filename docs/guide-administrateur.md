@@ -85,17 +85,40 @@ plus besoin d'internet. À rejouer avec `--forcer` pour changer de version.
 ## Comptes et droits
 
 - Rôles : administrateur, opérateur, lecture seule.
-- 2 droits fins ajustables par compte : **cabines** (ranger, changer un statut, envoyer,
-  corriger ou supprimer une cabine) et **référentiel** (créer, modifier, supprimer des
-  emplacements et des racks, régler la taille des modèles). L'administrateur a tous les
-  droits.
+- 3 droits fins ajustables par compte : **cabines** (ranger, changer un statut, envoyer,
+  corriger ou supprimer une cabine), **référentiel** (créer, modifier, supprimer des
+  emplacements et des racks, régler ce qu'ils rangent et les codes MP qu'ils acceptent,
+  régler les seuils d'alerte des codes MP, régler la taille des modèles) et **matières
+  premières** (entrer, sortir et changer d'emplacement des vitrages et des cartons).
+  L'administrateur a tous les droits. À la mise à jour qui l'a créée, la case « matières premières » a été
+  cochée sur tous les comptes qui avaient « cabines » : décochez-la là où elle n'a pas
+  lieu d'être.
 - Deux opérations sont réservées au **rôle administrateur**, au-delà des droits fins :
   importer le fichier de production, et vider le stock des cabines (« Repartir de
   zéro », dans l'administration, derrière trois phrases à recopier et avec une
   sauvegarde écrite avant tout effacement).
-- Un emplacement ne se supprime pas tant qu'une cabine y est rangée : il faut d'abord la
-  déplacer ou l'envoyer. Chaque suppression est notée dans `logs/wms.log`, avec son
-  auteur et son motif.
+- Un emplacement ne se supprime pas tant qu'une cabine y est rangée ou que du stock MP y
+  est posé : il faut d'abord le libérer. Chaque suppression est notée dans
+  `logs/wms.log`, avec son auteur et son motif — comme chaque changement de ce que
+  rangent les emplacements (cabines, cartons, vitrages), de leurs codes acceptés, et
+  des seuils d'alerte.
+- La base des codes MP (vitrages, cartons) se complète dans l'administration, **Codes
+  MP** : code élément, famille, désignation, fournisseur, n° article, autres références
+  (séparées par « · », toutes cherchables), colisage, **seuil d'alerte**, ancienne
+  génération. La liste permet de modifier directement le seuil d'alerte, « ancienne
+  génération » et « actif », ligne par ligne ; l'application, elle, règle le même seuil
+  pour une sélection de codes (Stock → MP → « Régler les seuils d'alerte »). Un code
+  réservé sur des emplacements ne change pas de famille et ne se décoche pas « actif »
+  tant qu'il y est réservé : l'administration nomme les emplacements à régler d'abord.
+- Dans **Emplacements**, la fiche d'un emplacement MP porte ses **codes acceptés**
+  (vide : toute sa famille). L'administration y applique la règle de l'application :
+  pas de code d'une autre famille, aucun code sur un emplacement de cabines. Le
+  réglage courant se fait plutôt dans l'application, à l'unité ou en nombre.
+- Le **stock MP** et le **journal MP** y sont consultables, jamais modifiables : un
+  écart se corrige par une entrée ou une sortie dans l'application, motif
+  « Inventaire ». Le journal montre aussi les changements d'emplacement, avec la
+  position de départ (« depuis »).
+- « Repartir de zéro » ne vide que les cabines : le stock MP et son journal restent.
 - Les zones se règlent dans l'administration ; une zone à laquelle des emplacements sont
   rattachés ne se supprime pas.
 - Gestion via l'administration : `/admin/`.

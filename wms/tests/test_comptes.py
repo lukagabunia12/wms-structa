@@ -21,14 +21,22 @@ class AdministrationDesComptesTest(TestCase):
         champs = []
         for _, section in self.admin_vue.add_fieldsets:
             champs.extend(section["fields"])
-        for attendu in ("nom", "role", "droit_cab", "droit_ref"):
+        for attendu in ("nom", "role", "droit_cab", "droit_ref", "droit_mp"):
             self.assertIn(attendu, champs)
 
     def test_la_fiche_ne_montre_que_les_droits_qui_commandent_quelque_chose(self):
         """Cinq cases (mouvements, inventaire, appro…) ne commandaient plus rien
-        depuis le retrait du volet articles : on les cochait sans effet."""
+        depuis le retrait du volet articles : on les cochait sans effet. La case
+        « matières premières » commande l'onglet MP — elle, elle sert."""
         champs = [c for _, section in self.admin_vue.fieldsets for c in section["fields"]]
-        self.assertEqual([c for c in champs if c.startswith("droit_")], ["droit_cab", "droit_ref"])
+        self.assertEqual([c for c in champs if c.startswith("droit_")],
+                         ["droit_cab", "droit_ref", "droit_mp"])
+
+    def test_chaque_case_commande_un_droit(self):
+        """Une case affichée sans droit derrière, c'est la dérive d'avant."""
+        champs = [c for _, section in self.admin_vue.fieldsets for c in section["fields"]]
+        cases = [c.removeprefix("droit_") for c in champs if c.startswith("droit_")]
+        self.assertEqual(cases, Utilisateur.DROITS)
 
     def test_profil_affiche_ce_que_la_personne_verra(self):
         cas = [
@@ -68,4 +76,4 @@ class AdministrationDesComptesTest(TestCase):
         """Ce que « Cariste » veut dire, noir sur blanc."""
         u = Utilisateur.objects.create_user(username="c7", password="motdepasse123",
                                             **PROFIL_CARISTE)
-        self.assertEqual(u.droits_effectifs(), {"cab": True, "ref": False})
+        self.assertEqual(u.droits_effectifs(), {"cab": True, "ref": False, "mp": False})

@@ -28,6 +28,12 @@
   --warn-tx:#8A4B0B; --warn-bg:#FBE7D6;
   --danger:#B3261E; --danger-tint:#FBE9E6;
 
+  /* --- matières premières : la couleur de la matière, pas de la charte. Le
+     verre en bleu-vert froid, le carton en kraft. Ni l'une ni l'autre ne
+     ressemble à l'échelle libre / occupé / plein des cabines. --- */
+  --verre:#24657C; --verre-tint:#E3F1F6; --verre-ligne:#A3CBDA;
+  --kraft:#7A5524; --kraft-tint:#F4E9D7; --kraft-ligne:#D3B88E;
+
   --radius:14px; --radius-s:10px;
   --ombre:0 1px 2px rgba(22,34,44,.05), 0 8px 24px rgba(22,34,44,.05);
   --f:'Lato','Calibri','Segoe UI',system-ui,-apple-system,Roboto,sans-serif;
@@ -705,11 +711,13 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
 .case.complet[aria-pressed="true"]::after{color:#fff}
 
 /* La barre de sélection : elle reste sous la main, en bas de l'écran, pendant
-   qu'on coche des cases en haut du plan. */
-.selbar{position:sticky;bottom:0;margin-top:18px;padding:12px 14px;
+   qu'on coche des cases en haut du plan. Au téléphone, AU-DESSUS des onglets :
+   collée au bas de l'écran, sa dernière rangée de boutons passait dessous. */
+.selbar{position:sticky;bottom:calc(68px + env(safe-area-inset-bottom));margin-top:18px;padding:12px 14px;
   background:var(--surface);border:1px solid var(--ligne);border-radius:var(--radius);
   box-shadow:0 -6px 18px rgba(28,57,75,.10)}
 .selbar .sel-n{font-size:13px;font-weight:700;color:var(--nuit);margin-bottom:10px}
+@media (min-width:1024px){ .selbar{bottom:0} }   /* au bureau, plus d'onglets en bas */
 .case.vide-trou{border:1px dashed var(--ligne);background:transparent;cursor:default;min-height:52px}
 .cases-libres{display:grid;gap:6px;grid-template-columns:repeat(auto-fill,minmax(86px,1fr))}
 
@@ -770,3 +778,252 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
 .place.condamnee{opacity:.75;border-style:dashed}
 .place.condamnee .o{color:var(--danger);font-weight:700}
 .etat.hs{background:var(--danger-tint);color:var(--danger)}
+
+/* ============================================================================
+   Matières premières — vitrages et cartons.
+
+   Deux matières, deux textures. Le verre en reflets obliques, le carton en
+   cannelures verticales : sur le plan d'un rack, elles se reconnaissent d'un
+   bout de l'allée sans lire un mot, et ne se confondent pas avec l'échelle
+   vert-orange-rouge des cabines, qui dit autre chose — la place qui reste.
+   ========================================================================== */
+
+/* Les deux boutons du haut du Parc : cabines, ou matières premières. Un seul
+   choix à la fois, et il se voit : le bouton retenu est plein. */
+.bascule-parc{display:grid;grid-template-columns:1fr 1fr;gap:5px;padding:4px;margin:0 0 14px;
+  background:var(--surface);border:1px solid var(--ligne);border-radius:var(--radius)}
+.bascule-parc button{display:flex;align-items:center;justify-content:center;gap:9px;min-height:48px;
+  margin:0;border:none;border-radius:var(--radius-s);background:transparent;color:var(--muted);
+  font:inherit;font-size:15.5px;font-weight:700;cursor:pointer;transition:background .15s,color .15s}
+.bascule-parc button:hover{color:var(--marine);background:var(--surface-2)}
+.bascule-parc button[aria-selected="true"]{background:var(--marine);color:#fff;
+  box-shadow:0 2px 8px rgba(28,57,75,.22)}
+@media (min-width:1024px){ .bascule-parc{max-width:620px} }
+
+/* Le code élément : dans la police des étiquettes, celle qu'on compare au
+   papier collé sur la palette. Les codes longs passent à la ligne au lieu de
+   faire déborder la carte. */
+.code-mp{font-family:var(--f-data);font-weight:700;letter-spacing:.01em;overflow-wrap:anywhere}
+
+.famille-mp{display:inline-block;border-radius:20px;padding:1px 9px;font-size:11.5px;font-weight:700;
+  letter-spacing:.02em}
+.famille-mp.vitrage{background:var(--verre-tint);color:var(--verre)}
+.famille-mp.carton{background:var(--kraft-tint);color:var(--kraft)}
+.etat.ancienne{background:var(--warn-bg);color:var(--warn-tx)}
+.etat.mp.vitrage{background:var(--verre-tint);color:var(--verre)}
+.etat.mp.carton{background:var(--kraft-tint);color:var(--kraft)}
+.ancienne-txt{color:var(--warn-tx)}
+.banner.fait{background:var(--ok-tint);color:var(--ok)}
+
+/* --- Un emplacement MP : ses trois places, ce qu'elles portent ----------- */
+.emp-mp-tete{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.emp-mp-tete .r{font-size:17px;font-weight:700;margin-top:5px}
+.emp-mp-tete .total{font-size:13px;font-weight:700;color:var(--muted);white-space:nowrap;padding-top:3px}
+.mp-places{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.mp-place{display:grid;grid-template-columns:54px minmax(0,1fr);gap:10px;padding:8px;
+  border:1px solid var(--ligne);border-radius:var(--radius-s);background:var(--surface)}
+.mp-lettre{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+  min-height:56px;border-radius:9px;background:var(--marine-tint);color:var(--nuit)}
+.mp-lettre b{font-size:23px;line-height:1}
+.mp-lettre span{font-size:10.5px;color:var(--muted)}
+.emp-mp.vitrage .mp-lettre{background:var(--verre-tint);color:var(--verre)}
+.emp-mp.carton .mp-lettre{background:var(--kraft-tint);color:var(--kraft)}
+.mp-contenu{display:flex;flex-direction:column;gap:6px;min-width:0;justify-content:center}
+.mp-ligne{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:10px;align-items:baseline;
+  width:100%;margin:0;padding:8px 10px;text-align:left;font:inherit;color:var(--txt);cursor:pointer;
+  background:var(--surface-2);border:1px solid var(--ligne);border-radius:9px;
+  transition:border-color .12s,box-shadow .12s}
+.mp-ligne:hover:not(:disabled){border-color:var(--marine-2)}
+.mp-ligne:disabled{cursor:default;opacity:1}
+.mp-ligne .code-mp{font-size:14px}
+.mp-ligne .q{font-size:18px;font-weight:800;color:var(--nuit);font-variant-numeric:tabular-nums}
+.mp-ligne .d{grid-column:1/-1;margin-top:2px;font-size:12px;line-height:1.35;color:var(--muted)}
+.mp-vide{display:flex;align-items:center;min-height:40px;padding:0 4px;font-size:13px;color:var(--muted)}
+.mp-place.condamnee{border-style:dashed}
+.mp-place.condamnee .mp-vide{color:var(--danger);font-weight:700}
+/* « Sortir » avec plusieurs lignes : on désigne celle qu'on emporte. */
+.mp-places.choisir .mp-ligne{border-color:var(--brique);box-shadow:0 0 0 3px var(--brique-tint)}
+
+/* Le geste en cours, sous l'emplacement : entrer ou sortir. */
+.mp-panneau{margin-top:14px;padding-top:14px;border-top:1px solid var(--ligne)}
+.mp-choisi{margin-top:8px;padding:9px 11px;border-radius:9px;background:var(--surface-2);
+  border:1px solid var(--ligne);font-size:13px;line-height:1.45}
+.mp-choisi.ancienne{background:var(--warn-bg);border-color:transparent;color:var(--warn-tx)}
+.mp-choisi .code-mp{font-size:14.5px;color:var(--nuit)}
+.mp-choisi.ancienne .code-mp{color:var(--warn-tx)}
+/* La quantité se lit de loin et se tape au pavé numérique ; la palette entière
+   est un raccourci posé à côté, jamais une valeur écrite d'office. */
+.qte-mp{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.qte-mp input{flex:0 1 150px;min-width:110px;font-size:22px;font-weight:700;text-align:center;
+  font-variant-numeric:tabular-nums}
+.qte-mp .chip,.mp-panneau .chips .chip{margin:0}
+.sugg-mp .r{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px}
+
+/* --- Le stock par code (Parc, côté MP) ------------------------------------ */
+.article-mp .r,.r.ligne-total{display:flex;flex-wrap:wrap;align-items:baseline;gap:7px}
+.article-mp .code-mp{font-size:14.5px}
+.article-mp .total,.list .total{margin-left:auto;font-size:18px;font-weight:800;color:var(--nuit);
+  font-variant-numeric:tabular-nums}
+.positions{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.positions .jeton b{color:var(--nuit)}
+.kpi-mp.vitrage .v{color:var(--verre)}
+.kpi-mp.carton .v{color:var(--kraft)}
+
+/* --- Sur le plan d'un rack ------------------------------------------------ */
+.case.mp.vitrage{background:repeating-linear-gradient(135deg,var(--verre-tint) 0 9px,#F3F9FB 9px 12px);
+  border-color:var(--verre-ligne)}
+.case.mp.carton{background:repeating-linear-gradient(90deg,var(--kraft-tint) 0 4px,#EDDFC6 4px 5px);
+  border-color:var(--kraft-ligne)}
+.case.mp .o{color:var(--muted)}
+/* Chargé : le contour prend la couleur de la matière, et le compte se lit. */
+.case.mp.charge{border-width:2px}
+.case.mp.vitrage.charge{border-color:var(--verre)}
+.case.mp.carton.charge{border-color:var(--kraft)}
+.case.mp.charge .o{color:var(--nuit);font-weight:700}
+.pastille.vitrage{background:var(--verre-tint);box-shadow:inset 0 0 0 1.5px var(--verre)}
+.pastille.carton{background:var(--kraft-tint);box-shadow:inset 0 0 0 1.5px var(--kraft)}
+/* En sélection, le n° de colonne et le niveau deviennent des boutons : ils
+   cochent toute la colonne, tout le niveau. */
+.plan button.sel{margin:0;padding:4px 2px;min-height:30px;font:inherit;font-size:11px;font-weight:700;
+  color:var(--brique);background:var(--brique-tint);border:none;border-radius:8px;cursor:pointer}
+.plan button.sel:hover{filter:brightness(.96)}
+
+/* ============================================================================
+   La cloche des alertes, en haut à droite.
+
+   Au téléphone, dans la barre marine, à côté du compte. Au bureau, la barre
+   marine n'existe pas — marque et compte sont dans la barre latérale — : la
+   cloche y a sa propre bande, fine, collée en haut pendant qu'on fait
+   défiler. La pastille est marine quand tout a été vu, ROUGE quand une
+   alerte est nouvelle : c'est elle qui doit attirer l'œil, pas la cloche.
+   ========================================================================== */
+.top-droite{display:flex;align-items:center;gap:8px}
+.cloche{position:relative;display:grid;place-items:center;width:42px;height:42px;margin:0;padding:0;
+  border:none;border-radius:50%;background:transparent;color:#fff;cursor:pointer}
+.cloche:hover{background:#ffffff1f}
+.cloche .pastille-n{position:absolute;top:2px;right:0;min-width:19px;height:19px;padding:0 5px;
+  border-radius:10px;background:#ffffff40;color:#fff;font-size:11px;font-weight:800;line-height:19px;
+  text-align:center;font-variant-numeric:tabular-nums;box-shadow:0 0 0 2px var(--marine)}
+.cloche.neuve .pastille-n{background:var(--danger)}
+/* Une alerte nouvelle : un halo autour de la pastille, deux fois, puis il se
+   tait. Une lumière qui clignote sans fin finit par ne plus se voir. */
+.cloche.neuve .pastille-n::after{content:'';position:absolute;inset:-2px;border-radius:12px;
+  box-shadow:0 0 0 0 rgba(179,38,30,.55);animation:pastille-halo 1.6s ease-out 2}
+@keyframes pastille-halo{0%{box-shadow:0 0 0 0 rgba(179,38,30,.55)}100%{box-shadow:0 0 0 9px rgba(179,38,30,0)}}
+.cloche.sonne svg{animation:cloche-sonne .9s ease-in-out;transform-origin:50% 12%}
+@keyframes cloche-sonne{0%,100%{transform:rotate(0)}15%{transform:rotate(15deg)}30%{transform:rotate(-12deg)}
+  45%{transform:rotate(8deg)}60%{transform:rotate(-5deg)}75%{transform:rotate(2deg)}}
+@media (prefers-reduced-motion:reduce){
+  .cloche.sonne svg,.cloche.neuve .pastille-n::after{animation:none}
+}
+
+@media (min-width:1024px){
+  .top{display:flex;position:sticky;top:0;z-index:5;justify-content:flex-end;padding:10px 26px 4px;
+    background:var(--fond);color:var(--marine)}
+  .top.sans-cloche{display:none}
+  .top .brand,.top .who{display:none}
+  .top:not(.sans-cloche) + .wrap{padding-top:8px}
+  .cloche{color:var(--marine)}
+  .cloche:hover{background:var(--surface)}
+  .cloche .pastille-n{background:var(--marine);box-shadow:0 0 0 2px var(--fond)}
+  .cloche.neuve .pastille-n{background:var(--danger)}
+}
+
+/* Le panneau des alertes : sous la cloche, sans couvrir l'écran entier. Au
+   téléphone il prend la largeur, au bureau il pend sous la cloche. */
+.alertes-panneau{position:fixed;z-index:25;top:calc(64px + env(safe-area-inset-top));left:10px;right:10px;
+  max-width:500px;margin:0 auto;max-height:calc(100dvh - 160px);overflow-y:auto;overscroll-behavior:contain;
+  background:var(--surface);border:1px solid var(--ligne);border-radius:var(--radius);
+  box-shadow:0 18px 44px rgba(16,26,34,.24);animation:modal-entre .14s ease-out}
+@media (min-width:1024px){
+  .alertes-panneau{top:58px;right:26px;left:auto;width:420px;margin:0;max-height:calc(100vh - 90px)}
+}
+@media (prefers-reduced-motion:reduce){ .alertes-panneau{animation:none} }
+.alertes-tete{position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;
+  padding:11px 12px 10px 15px;border-bottom:1px solid var(--ligne);background:var(--surface);
+  font-size:16px;font-weight:700;color:var(--nuit)}
+.alertes-corps{padding:4px 12px 14px}
+.alertes-corps .lien{margin:8px 2px 4px}
+.alertes-liste{display:flex;flex-direction:column;gap:6px}
+/* « alerte-ligne » et non « alerte » : `.aide.alerte` existe déjà, pour les
+   avertissements en ligne, et ne doit pas hériter de la forme d'un bouton. */
+.alerte-ligne{display:flex;flex-direction:column;gap:3px;width:100%;margin:0;padding:9px 11px;text-align:left;
+  font:inherit;color:var(--txt);background:var(--surface);border:1px solid var(--ligne);
+  border-radius:10px;cursor:pointer}
+.alerte-ligne:hover{border-color:var(--marine-2)}
+/* Nouvelle : un point rouge devant le code, la carte reste blanche — les
+   pastilles de quantité gardent leur contraste. */
+.alerte-ligne.neuve{border-color:#E8B79B}
+.alerte-ligne.neuve .code-mp::before{content:'';display:inline-block;width:8px;height:8px;margin:0 7px 1px 0;
+  border-radius:50%;background:var(--danger);vertical-align:middle}
+.alerte-t{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.alerte-t .code-mp{font-size:14px}
+.alerte-t .etat{flex:none;font-variant-numeric:tabular-nums}
+.alerte-d{font-size:12.5px;line-height:1.4;color:var(--muted)}
+
+/* « Sous le seuil d'alerte » à l'accueil MP : toute la largeur, sous les deux
+   familles — le chiffre qui demande un geste. */
+.kpi-seuil{grid-column:1/-1}
+
+/* ============================================================================
+   Régler un emplacement MP, changer d'emplacement.
+   ========================================================================== */
+
+/* Les codes auxquels l'emplacement est réservé, sous son nom. */
+.mp-reserve{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:9px}
+.mp-reserve .l{font-size:12px;font-weight:700;color:var(--muted);margin-right:2px}
+
+/* Une ligne posée avant la réservation, et que l'emplacement n'accepte plus. */
+.mp-ligne.hors{border-style:dashed;border-color:var(--warn-tx)}
+.hors-txt{color:var(--warn-tx)}
+
+/* Choisir ce qui change d'emplacement : les lignes se cochent. */
+.mp-places.selection .mp-ligne{position:relative;padding-left:38px}
+.mp-places.selection .mp-ligne::before{content:'';position:absolute;left:11px;top:50%;width:17px;height:17px;
+  margin-top:-9px;border:2px solid var(--marine-2);border-radius:5px;background:var(--surface)}
+.mp-places.selection .mp-ligne[aria-pressed="true"]{border-color:var(--brique);background:var(--brique-tint);
+  box-shadow:0 0 0 2px var(--brique-tint)}
+.mp-places.selection .mp-ligne[aria-pressed="true"]::before{border-color:var(--brique);background:var(--brique)}
+.mp-places.selection .mp-ligne[aria-pressed="true"]::after{content:'✓';position:absolute;left:11px;top:50%;
+  width:17px;height:17px;margin-top:-9px;font-size:13px;font-weight:800;line-height:17px;text-align:center;
+  color:#fff}
+
+/* Le départ, quand l'arrivée est le même emplacement : une place éteinte. */
+.place.depart{opacity:.6;border-style:dashed}
+
+.dep-lignes{display:flex;flex-direction:column;gap:8px}
+.dep-ligne{padding:9px 11px;border:1px solid var(--ligne);border-radius:9px;background:var(--surface-2)}
+.dep-ligne .r{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;margin-bottom:6px}
+.dep-ligne .qte-mp input{font-size:18px;flex-basis:120px}
+.vers-mp{display:flex;gap:8px}
+.vers-mp input{flex:1;min-width:0}
+.vers-mp .btn{flex:none;width:52px;min-width:52px;margin:0;padding:0;display:grid;place-items:center}
+
+/* Une pastille qu'on garde ou qu'on retire d'une touche : les codes choisis. */
+.chip.fixe{cursor:default;padding-right:6px;background:var(--surface-2)}
+.chip.fixe:hover{background:var(--surface-2)}
+.chip-x{display:grid;place-items:center;width:24px;height:24px;margin:0;padding:0;border:none;
+  border-radius:50%;background:transparent;color:var(--muted);cursor:pointer}
+.chip-x:hover{background:var(--danger-tint);color:var(--danger)}
+
+/* Le Stock MP en réglage des seuils : les cartes se cochent. */
+.actions-stock{margin-top:14px}
+@media (min-width:1024px){ .actions-stock,#mSelbar{max-width:820px} }
+.list.a-cocher .article-mp{position:relative;padding-right:42px}
+.list.a-cocher .article-mp::after{content:'';position:absolute;right:12px;top:12px;width:18px;height:18px;
+  border:2px solid var(--marine-2);border-radius:5px;background:var(--surface)}
+.list.a-cocher .article-mp[aria-pressed="true"]{border-color:var(--brique);background:var(--brique-tint)}
+.list.a-cocher .article-mp[aria-pressed="true"]::after{background:var(--brique);border-color:var(--brique);
+  content:'✓';color:#fff;font-size:13px;font-weight:800;line-height:18px;text-align:center}
+.list.a-cocher .article-mp .total{margin-right:4px}
+.seuil-mp{color:var(--nuit);font-weight:700}
+
+/* Le journal : un changement d'emplacement n'est ni une entrée ni une sortie. */
+.etat.dep{background:var(--marine-tint);color:var(--marine)}
+
+/* Sur le plan : un emplacement réservé à certains codes porte un coin plein. */
+.case.mp.reserve{position:relative}
+.case.mp.reserve::before{content:'';position:absolute;top:0;left:0;width:0;height:0;
+  border-top:12px solid var(--nuit);border-right:12px solid transparent;border-top-left-radius:var(--radius-s)}
+.pastille.reserve{background:linear-gradient(135deg,var(--nuit) 50%,var(--surface) 50%);
+  box-shadow:inset 0 0 0 1px var(--ligne)}

@@ -40,8 +40,9 @@ class MoiTest(APITestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.data["username"], "op")
         self.assertEqual(r.data["role"], Utilisateur.ADMIN)
-        # Deux droits, pas un de plus : les cases qui ne commandaient rien sont parties.
-        self.assertEqual(r.data["droits"], {"cab": True, "ref": True})
+        # Trois droits, pas un de plus : les cases qui ne commandaient rien sont
+        # parties ; « matières premières » commande l'onglet MP.
+        self.assertEqual(r.data["droits"], {"cab": True, "ref": True, "mp": True})
 
     def test_droits_d_un_lecteur(self):
         lecteur = Utilisateur.objects.create_user(username="lect", password="secret123",

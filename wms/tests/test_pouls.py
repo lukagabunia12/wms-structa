@@ -29,9 +29,10 @@ class PoulsTest(TestCase):
         self.assertEqual(r.status_code, 200, r.data)
         return r.data
 
-    def test_les_quatre_compteurs_sont_la(self):
+    def test_les_compteurs_sont_la(self):
         self.assertEqual(sorted(self.pouls()),
-                         ["cabines", "dernier", "emplacements", "mouvements"])
+                         ["alertes", "alertes_empreinte", "cabines", "dernier", "dernier_mp",
+                          "emplacements", "mouvements", "mouvements_mp"])
 
     def test_sans_compte_la_porte_est_fermee(self):
         self.assertEqual(APIClient().get("/api/pouls/").status_code, 401)
@@ -58,10 +59,12 @@ class PoulsTest(TestCase):
         self.assertEqual(self.pouls(), self.pouls())
 
     def test_l_empreinte_coute_peu(self):
-        """Quatre agrégats, pas une requête par cabine : c'est appelé en boucle."""
+        """Quelques agrégats, pas une requête par cabine : c'est appelé en boucle."""
         for i in range(20):
             Cabine.objects.create(numero=f"27_00_{i:02d}", chantier="270000")
-        # Trois requêtes, quel que soit le nombre de cabines : le MAX et le COUNT
-        # des mouvements tiennent dans la même, puis un COUNT par table.
-        with self.assertNumQueries(3):
+        # Six requêtes, quel que soit le nombre de cabines : le MAX et le COUNT
+        # des mouvements tiennent dans la même, de même pour le journal MP, un
+        # COUNT par table, et deux pour la cloche — les codes sous leur seuil
+        # (un agrégat) et les lignes hors réservation (un EXISTS).
+        with self.assertNumQueries(6):
             self.c.get("/api/pouls/")

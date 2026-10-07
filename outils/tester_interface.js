@@ -202,5 +202,145 @@ for (const [nom, cas, attendu] of [
   verifier(nom, plateformeRaccourci(cas), attendu);
 }
 
+/* --- Matières premières ---------------------------------------------------------
+   Ce qu'on tape au poste ne ressemble jamais tout à fait au code de la base : la
+   clé de comparaison est la même des deux côtés (`normaliser_code_mp`). Et une
+   quantité se compte en pièces : pas de virgule, pas de zéro. */
+const { cleMP, lireQuantite, quantiteMP } = extraire('const FAMILLES_MP = {', 'const badgeAncienne',
+                                                     'cleMP, lireQuantite, quantiteMP');
+console.log('\nMatières premières : saisie');
+for (const [saisi, attendu] of [['vitr.445', 'VITR445'], [' VITR 445 ', 'VITR445'],
+                                ['c8.fd.2115x1015×90', 'C8FD2115X1015X90'],
+                                ['ESS 1 F', 'ESS1F'], ['Écran-2', 'ECRAN2'], ['', '']]) {
+  verifier(`clé de « ${saisi} » → ${attendu || '(vide)'}`, cleMP(saisi), attendu);
+}
+for (const [saisi, attendu] of [['19', 19], ['1 600', 1600], [' 160 ', 160], ['2,5', null],
+                                ['0', null], ['-3', null], ['', null], ['19 pcs', null]]) {
+  verifier(`quantité « ${saisi} » → ${attendu}`, lireQuantite(saisi), attendu);
+}
+verifier('une pièce au singulier', quantiteMP(1, 'vitrage'), '1 vitrage');
+verifier('des cartons au pluriel', quantiteMP(160, 'carton'), '160 cartons');
+
+/* Ce que range un emplacement : une seule question à l'écran, deux champs en
+   base. Le mode d'un emplacement MP ne décrit rien : il est gardé tel quel. */
+const { usageDeChoix, choixUsageDe, CHOIX_USAGE } = extraire('const MODES_EMP = [', 'const optionsUsage',
+                                                             'usageDeChoix, choixUsageDe, CHOIX_USAGE');
+console.log('\nCe que range un emplacement');
+verifier('quatre choix, cabines d’abord', CHOIX_USAGE.map(c => c[0]).join(' '),
+         'cabines-gd cabines-illimite carton vitrage');
+verifier('cabines en capacité illimitée', JSON.stringify(usageDeChoix('cabines-illimite')),
+         '{"usage":"cabines","mode_places":"illimite"}');
+verifier('vitrages : le mode d’avant est gardé',
+         JSON.stringify(usageDeChoix('vitrage', { mode_places: 'illimite' })),
+         '{"usage":"vitrage","mode_places":"illimite"}');
+verifier('un emplacement MP se lit par sa famille', choixUsageDe({ est_mp: true, usage: 'carton' }), 'carton');
+verifier('un emplacement de cabines par son mode', choixUsageDe({ est_mp: false, mode_places: 'gd' }), 'cabines-gd');
+
+const { contenuMPCourt } = extraire('function contenuMPCourt', 'function etiquetteEtat', 'contenuMPCourt');
+verifier('case MP vide', contenuMPCourt({ mp: { codes: 0 } }), 'vide');
+verifier('case MP chargée', contenuMPCourt({ mp: { codes: 2, lignes: 3 } }), '2 codes');
+
+/* --- La cloche, les seuils, le changement d'emplacement ---------------------
+   Les phrases et les règles que l'écran dit AVANT le geste : elles doivent
+   dire la même chose que le serveur, qui les redit au besoin. Les morceaux du
+   fichier sont assemblés dans une même portée — ces fonctions s'appellent
+   entre elles, comme dans `app.js`. */
+function extraireEnsemble(morceaux, noms) {
+  const code = morceaux.map(([debut, fin]) => {
+    const i = source.indexOf(debut);
+    const j = source.indexOf(fin, i);
+    if (i < 0 || j < 0) {
+      throw new Error(`Repère introuvable dans app.js : « ${i < 0 ? debut : fin} ». `
+        + 'Le code a été réorganisé : mettez ces repères à jour plutôt que de retirer le test.');
+    }
+    return source.slice(i, j);
+  }).join('\n');
+  return eval(`(function(){const esc = (s) => String(s); ${code}; return {${noms}};})()`);
+}
+
+const mp = extraireEnsemble([
+  ['const FAMILLES_MP = {', 'const badgeAncienne'],
+  ['const CLE_ALERTES_VUES', 'function clocheHTML'],
+  ['/** Un seuil tapé', '/** Le seuil d\'alerte d\'un ou de plusieurs codes'],
+  ['const libelleSeuil', '/** Une carte par code'],
+  ['/** La phrase qui suit une sortie', '/** Sortir une ligne'],
+  ['/** Pourquoi ces lignes ne peuvent pas aller', '/** Changer d\'emplacement : combien'],
+  ['/** Ce que fera le réglage, en une phrase', 'function bilanCodesHTML'],
+], 'listeCodes, nonVues, clesAlertes, libelleCloche, lireSeuil, libelleSeuil, phraseSeuil, '
+   + 'refusArrivee, phraseDeplacement, phraseDeplace, phraseCodes, phraseDejaCodes');
+
+console.log('\nLa cloche');
+verifier('un code', mp.listeCodes(['VITR.445']), 'VITR.445');
+verifier('deux codes', mp.listeCodes(['A', 'B']), 'A et B');
+verifier('trois codes', mp.listeCodes(['A', 'B', 'C']), 'A, B et C');
+verifier('au-delà, on compte', mp.listeCodes(['A', 'B', 'C', 'D', 'E']), 'A, B, C et 2 autres');
+verifier('rien', mp.listeCodes([]), '');
+const groupes = [{ type: 'seuil', items: [{ cle: 'seuil:1' }, { cle: 'seuil:2' }] },
+                 { type: 'hors_reservation', items: [{ cle: 'hors:9' }] }];
+verifier('les clés de toutes les sortes', mp.clesAlertes(groupes).join(' '), 'seuil:1 seuil:2 hors:9');
+verifier('les nouvelles : celles jamais vues ici',
+         mp.nonVues(mp.clesAlertes(groupes), new Set(['seuil:1'])), 2);
+verifier('rien de nouveau', mp.nonVues(['seuil:1'], new Set(['seuil:1'])), 0);
+verifier('ce que lit un lecteur d’écran', mp.libelleCloche(3, 1), 'Alertes : 3, dont 1 nouvelle');
+verifier('plusieurs nouvelles', mp.libelleCloche(4, 2), 'Alertes : 4, dont 2 nouvelles');
+verifier('aucune alerte', mp.libelleCloche(0, 0), 'Alertes : aucune');
+
+console.log('\nSeuils d’alerte');
+for (const [saisi, attendu] of [['20', 20], [' 1 600 ', 1600], ['', null], ['0', null],
+                                ['2,5', undefined], ['-3', undefined], ['vingt', undefined]]) {
+  verifier(`seuil « ${saisi} » → ${attendu}`, mp.lireSeuil(saisi), attendu);
+}
+verifier('le seuil dans une liste', mp.libelleSeuil({ seuil_reappro: 50 }), 'seuil d’alerte 50');
+verifier('pas de seuil, rien à dire', mp.libelleSeuil({ seuil_reappro: null }), '');
+verifier('après une sortie : sous le seuil',
+         mp.phraseSeuil({ sous_seuil: true, code: 'VITR.470', en_stock: 8, famille: 'vitrage', seuil: 50 }),
+         'VITR.470 est sous son seuil d’alerte : plus que 8 vitrages en stock, pour un seuil de 50.');
+verifier('au-dessus du seuil : rien', mp.phraseSeuil({ sous_seuil: false }), '');
+
+console.log('\nChanger d’emplacement');
+const lignes = [{ code: 'VITR.470', famille: 'vitrage', place: 'G' },
+                { code: 'VITR.927', famille: 'vitrage', place: 'M' }];
+const arrivee = (extra) => Object.assign({ code: 'AH510', est_mp: true, actif: true, usage: 'vitrage',
+                                           codes_acceptes: [] }, extra);
+verifier('une arrivée ouverte', mp.refusArrivee(arrivee(), lignes), '');
+verifier('un emplacement de cabines', mp.refusArrivee(arrivee({ est_mp: false }), lignes),
+         'AH510 range des cabines.');
+verifier('hors service', mp.refusArrivee(arrivee({ actif: false }), lignes), 'AH510 est hors service.');
+verifier('une autre famille', mp.refusArrivee(arrivee({ usage: 'carton' }), lignes),
+         'AH510 range des cartons.');
+verifier('réservé à un des deux codes',
+         mp.refusArrivee(arrivee({ codes_acceptes: [{ code: 'VITR.470' }] }), lignes),
+         'AH510 est réservé à VITR.470 : VITR.927 n’y va pas.');
+verifier('réservé aux deux', mp.refusArrivee(arrivee({
+  codes_acceptes: [{ code: 'VITR.470' }, { code: 'VITR.927' }] }), lignes), '');
+verifier('le bouton, une ligne',
+         mp.phraseDeplacement([{ code: 'VITR.470', quantite: 19, famille: 'vitrage' }], 'AH510·D'),
+         'Déplacer 19 VITR.470 vers AH510·D');
+verifier('le bouton, plusieurs lignes', mp.phraseDeplacement([
+  { code: 'VITR.470', quantite: 19, famille: 'vitrage' },
+  { code: 'VITR.927', quantite: 7, famille: 'vitrage' }], 'AH510·D'),
+  'Déplacer 2 lignes — 26 vitrages — vers AH510·D');
+verifier('après le geste', mp.phraseDeplace([
+  { code: 'VITR.470', quantite: 19, destination: 'AH510·D' },
+  { code: 'VITR.927', quantite: 7, destination: 'AH510·D' }]),
+  'Déplacé : 19 VITR.470 et 7 VITR.927 vers AH510·D.');
+
+console.log('\nCodes acceptés');
+verifier('réserver', mp.phraseCodes({ mode: 'remplacer', changes: ['AH500', 'AH510'], codes: ['VITR.470'] }),
+         '2 emplacements seront réservés à VITR.470.');
+verifier('réserver un seul', mp.phraseCodes({ mode: 'remplacer', changes: ['AH500'], codes: ['A', 'B'] }),
+         '1 emplacement sera réservé à A et B.');
+verifier('ajouter', mp.phraseCodes({ mode: 'ajouter', changes: ['AH500'], codes: ['VITR.927'] }),
+         'VITR.927 s’ajoute à la réservation de 1 emplacement.');
+verifier('tout rouvrir', mp.phraseCodes({ mode: 'tous', changes: ['AH500', 'AH501'], codes: [] }),
+         '2 emplacements accepteront de nouveau tous les codes de leur famille.');
+verifier('rien ne change', mp.phraseCodes({ mode: 'tous', changes: [], codes: [] }), '');
+verifier('ajouter à un emplacement ouvert : il les accepte déjà',
+         mp.phraseDejaCodes({ mode: 'ajouter', deja: ['AH500'] }), '1 les accepte déjà : AH500');
+verifier('déjà réservés ainsi', mp.phraseDejaCodes({ mode: 'remplacer', deja: ['AH500', 'AH510'] }),
+         '2 le sont déjà : AH500, AH510');
+verifier('déjà ouverts', mp.phraseDejaCodes({ mode: 'tous', deja: ['AH500'] }),
+         '1 accepte déjà tous les codes : AH500');
+
 console.log(echecs ? `\n${echecs} test(s) en échec.` : '\nInterface OK — tous les tests passent.');
 process.exit(echecs ? 1 : 0);

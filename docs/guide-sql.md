@@ -31,11 +31,14 @@ Les tables du WMS commencent toutes par `wms_` : `wms_cabine`,
 `wms_occupation` (où se trouve chaque cabine), `wms_mouvementcabine` (le
 journal), `wms_emplacement`, `wms_placecondamnee`, `wms_zone`,
 `wms_modelecabine`, `wms_cabineattendue` (le fichier de production),
-`wms_utilisateur`.
+`wms_utilisateur` — et, pour les matières premières, `wms_articlemp` (la base
+des codes et leur seuil d'alerte), `wms_stockmp`, `wms_mouvementmp` (le journal
+MP) et `wms_emplacement_codes_acceptes` (les emplacements réservés à certains
+codes).
 
 ## Les requêtes déjà écrites
 
-**`docs/requetes-sql.sql`** — 20 requêtes prêtes à l'emploi, écrites sur votre
+**`docs/requetes-sql.sql`** — 26 requêtes prêtes à l'emploi, écrites sur votre
 schéma réel et vérifiées. Ouvrir ce fichier dans l'onglet « Exécuter le SQL »,
 sélectionner une requête, `F5`.
 
@@ -46,6 +49,10 @@ Elles couvrent trois usages :
   hors service.
 - **Suivre les cabines** — celles qui sont présentes, par chantier, en
   quarantaine, et leur journal (qui a fait quoi, quand).
+- **Suivre les matières premières** — le stock de vitrages et de cartons par
+  code ou place par place, le journal d'un code, les codes sous leur seuil
+  d'alerte, les emplacements réservés à certains codes, les changements
+  d'emplacement (section 3 ter).
 - **Extraire** — inventaire des cabines, journal sur une période, cabines d'un
   chantier, ordre d'impression des étiquettes d'un rack.
 
@@ -88,6 +95,9 @@ s'appuie :
 |---|---|
 | `wms_occupation` | La **position** des cabines. La changer ici ne laisse aucune trace au journal : passer par le WMS (ranger, déplacer, envoyer), qui l'écrit. |
 | `wms_mouvementcabine` | Le **journal des cabines**. On n'efface pas une ligne d'historique ; l'application elle-même s'interdit de le modifier. |
+| `wms_stockmp` | Le **stock des vitrages et des cartons**. Le corriger ici fait mentir le journal MP : faire une entrée ou une sortie dans le WMS (motif « Inventaire »). |
+| `wms_mouvementmp` | Le **journal MP**. Même règle que celui des cabines. |
+| `wms_emplacement_codes_acceptes` | Les **codes qu'accepte** un emplacement MP. Ils se règlent dans le WMS, qui vérifie la famille : un vitrage accepté ici sur un emplacement de cartons le fermerait à tout code. |
 | `wms_utilisateur.password` | Mot de passe **chiffré**. Le remplacer par du texte rend le compte inutilisable. Passer par `/admin/`, ou `manage.py changepassword`. |
 
 ## Et l'écran `/admin/` du WMS ?

@@ -107,6 +107,11 @@ const ICON = {
   edit:'<path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17z"/><line x1="14.5" y1="7.5" x2="17.5" y2="10.5"/>',
   // Appareil photo : le geste du cariste, pas un pictogramme d'ordinateur.
   camera:'<path d="M3 8.5h3.5L8 6h8l1.5 2.5H21v10H3z"/><circle cx="12" cy="13" r="3.4"/>',
+  // Matières premières : des feuilles empilées — le verre comme le carton
+  // arrivent en paquets de plaques.
+  couches:'<path d="M12 3.5l8.5 4.3-8.5 4.3-8.5-4.3z"/><path d="M3.5 12.1l8.5 4.3 8.5-4.3"/><path d="M3.5 16.3l8.5 4.2 8.5-4.2"/>',
+  // La cloche des alertes, en haut à droite.
+  cloche:'<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.6 2.1H4.4z"/><path d="M10 20.4a2.1 2.1 0 0 0 4 0"/>',
   // Fiche papier : le tableau a deux colonnes de la fiche cabine.
   fiche:'<rect x="4" y="3" width="16" height="18" rx="1.5"/><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="13" x2="20" y2="13"/><line x1="4" y1="18" x2="20" y2="18"/><line x1="11" y1="3" x2="11" y2="21"/>'
 };
@@ -309,7 +314,16 @@ async function apiAll(path) {
   return tout;
 }
 
-function logout() { token = ''; USER = ''; localStorage.removeItem('wms_token'); localStorage.removeItem('wms_user'); renderLogin(); }
+function logout() {
+  token = ''; USER = '';
+  localStorage.removeItem('wms_token'); localStorage.removeItem('wms_user');
+  // Le compte suivant n'a peut-être ni la cloche ni le droit de régler les
+  // seuils : rien ne doit en rester.
+  fermerAlertes();
+  ALERTES = { total: 0, empreinte: null, groupes: null, vues: lireAlertesVues() };
+  quitterReglageSeuils(false);
+  renderLogin();
+}
 
 /* Toute réponse non-200 disait « Identifiants incorrects ». C'est faux dans la
    moitié des cas : un serveur arrêté, une adresse erronée ou une erreur 500
@@ -385,8 +399,19 @@ function profil() {
    Le point de départ est le numéro. « Scanner » le lit — photo de la fiche, QR
    ou saisie — et l'écran suivant propose ce qui est possible. Il est donc aussi
    l'écran d'accueil : c'est là que chaque geste commence, autant y être déjà.  */
-const ONGLETS_COMMUNS = [['scanner', 'Scanner', 'scan'],
-                         ['cabines', 'Parc', 'build'],
+/* « MP » s'ajoute pour les matières premières — vitrages et cartons. Un
+   quatrième onglet et non un geste de plus dans le Scanner : on y arrive avec
+   une palette ou un chevalet, pas avec une cabine, et le parcours est autre.
+
+   Les onglets portent désormais le nom de ce qu'on y trouve, comme « MP » :
+   l'ancien « Scanner » s'appelle « Cabines » — tout geste sur une cabine y
+   commence —, et l'ancien « Parc » s'appelle « Stock » : on y cherche les
+   cabines ET les matières premières, et « parc » ne se dit pas d'une palette
+   de verre. Les clés d'écran (`scanner`, `cabines`) ne changent pas : ce sont
+   elles que retiennent l'historique du navigateur et les liens déjà posés. */
+const ONGLETS_COMMUNS = [['scanner', 'Cabines', 'build'],
+                         ['cabines', 'Stock', 'search'],
+                         ['mp', 'MP', 'couches'],
                          ['more', 'Plus', 'menu']];
 const ONGLETS = { cariste: ONGLETS_COMMUNS, gestion: ONGLETS_COMMUNS,
                   lecture: ONGLETS_COMMUNS };
@@ -415,10 +440,13 @@ let ECRAN = 'home';
      et « Envoyées » y est un filtre rapide.
    - « Zones » : elles se règlent dans l'administration, pas au poste.     */
 const MENU_CABINES = [
-  ['Parc', [['scanner','Scanner une cabine','scan'],
-            ['cabines','Toutes les cabines','build'],
-            ['home','Tableau de bord','chart']]],
+  ['Cabines', [['scanner','Scanner une cabine','scan'],
+               ['cabines','Stock des cabines','build'],
+               ['home','Tableau de bord','chart']]],
   ['Suivi', [['journal','Journal','history']]],
+  ['Matières premières', [['mp','Entrer, sortir','couches'],
+                          ['stockmp','Stock MP','search'],
+                          ['journalmp','Journal MP','history']]],
   // « Emplacements » ouvre l'écran unique : occupation, création, réglages et
   // suppression au même endroit. Il est ici, dans le référentiel, parce que
   // c'est là qu'on vient quand on cherche à ajouter ou corriger un emplacement.
@@ -437,8 +465,8 @@ const MENU_CABINES = [
    une cabine ; il n'a pas à naviguer dans le référentiel, qu'il ne peut pas
    modifier de toute façon — le serveur refuserait. */
 const MENU_PAR_PROFIL = {
-  cariste: ['scanner', 'cabines'],
-  lecture: ['scanner', 'cabines', 'emplacements'],
+  cariste: ['scanner', 'cabines', 'mp', 'stockmp', 'journalmp'],
+  lecture: ['scanner', 'cabines', 'emplacements', 'mp', 'stockmp', 'journalmp'],
 };
 
 function menuLateral() {
@@ -455,10 +483,19 @@ function menuLateral() {
     .filter(([, liens]) => liens.length);
 }
 
+/** L'entrée du menu à surligner : celle de ce qui est À L'ÉCRAN. Le Stock côté
+    MP, c'est « Stock MP » ; une fiche, c'est l'écran dont elle dépend. */
+function entreeMenuActive() {
+  if (ECRAN === 'cabines' && PARC_MODE === 'mp') return 'stockmp';
+  return { 'fiche-emplacement': 'emplacements', 'mp-emplacement': 'mp',
+           'fiche-mp': 'stockmp' }[ECRAN] || ECRAN;
+}
+
 function sideBar() {
+  const active = entreeMenuActive();
   const groupes = menuLateral().map(([titre, liens]) =>
     `<span class="grp">${esc(titre)}</span>` + liens.map(([cle, libelle, ic]) =>
-      `<button data-go="${cle}" class="${ECRAN === cle ? 'on' : ''}">${icon(ic, 18)}${esc(libelle)}</button>`).join('')
+      `<button data-go="${cle}" class="${active === cle ? 'on' : ''}">${icon(ic, 18)}${esc(libelle)}</button>`).join('')
   ).join('');
   return `<aside class="side">
     <div class="marque"><span class="sceau">${icon('box', 19)}</span>
@@ -473,11 +510,16 @@ function sideBar() {
 }
 
 function layout(body, active) {
+  // La cloche vit dans la barre du haut, à droite, sur tous les écrans : au
+  // téléphone dans la barre marine, au bureau dans une barre à elle — la
+  // marque et le compte y sont déjà, dans la barre latérale.
   el().innerHTML = `<div class="shell">${sideBar()}<main class="main">`
-    + `<div class="top"><span class="brand">WMS Structa</span><span class="who">${esc((USER || '?').slice(0, 2).toUpperCase())}</span></div>`
+    + `<div class="top${voitAlertes() ? '' : ' sans-cloche'}"><span class="brand">WMS Structa</span>`
+    + `<span class="top-droite">${clocheHTML()}<span class="who">${esc((USER || '?').slice(0, 2).toUpperCase())}</span></span></div>`
     + `<div class="wrap">${body}</div></main></div>${navBar(active)}`;
   el().querySelectorAll('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
   el().querySelectorAll('[data-logout]').forEach(b => b.onclick = logout);
+  brancherCloche();
 }
 
 function go(name) {
@@ -495,9 +537,22 @@ function go(name) {
     rack: renderEmplacements,
     cabines: renderCabines, emplacements: renderEmplacements,
     journal: renderJournal, etiquettes: renderEtiquettes, more: renderMore,
-    import: renderImport, modeles: renderModeles };
+    import: renderImport, modeles: renderModeles,
+    // Matières premières : l'onglet, le stock (le Stock côté MP), le journal.
+    mp: renderMP, stockmp: renderCabines, journalmp: renderJournalMP };
+  // « Stock MP » du menu, c'est le Stock, ouvert côté MP. Le côté se choisit ICI,
+  // une fois, et non dans le rendu : rejoué par le retour ou le rafraîchissement,
+  // l'écran doit garder le côté que l'utilisateur a choisi depuis — il peut
+  // avoir touché « Cabines » entre-temps.
+  if (name === 'stockmp') { choisirParc('mp'); name = 'cabines'; }
+  // Le réglage des seuils est un mode du Stock MP : partir ailleurs le termine.
+  if (name !== 'cabines') quitterReglageSeuils(false);
   // Écran inconnu : on retombe sur le Scanner, qui est l'accueil.
   const cle = ecrans[name] ? name : 'scanner';
+  // Venir aux emplacements par le menu, c'est repartir de la liste des racks.
+  // Le rafraîchissement automatique, lui, ne passe pas par ici : il garde le
+  // rack ouvert sous les yeux de qui le regarde.
+  if (cle === 'emplacements' || cle === 'rack') RACK_OUVERT = null;
   // Le rendu est empilé plutôt qu'exécuté : c'est lui que rejoueront le bouton
   // « retour » du navigateur et le rafraîchissement automatique.
   ouvrirEcran(() => { ECRAN = cle; (ecrans[cle])(); }, cle);
@@ -561,8 +616,27 @@ window.addEventListener('popstate', (ev) => {
    Seuls les écrans qui se lisent sont concernés. Une fiche, un formulaire, un
    rangement en cours ne se redessinent jamais tout seuls.                    */
 const POULS_MS = 10000;
-const ECRANS_TEMPS_REEL = ['home', 'cabines', 'emplacements', 'rack', 'journal'];
-let EMPREINTE = null;
+const ECRANS_TEMPS_REEL = ['home', 'cabines', 'emplacements', 'rack', 'journal',
+                           'mp', 'journalmp'];
+//: Une empreinte par famille d'écrans : une palette de verre posée ne doit pas
+//: redessiner la liste des cabines — on y perdrait la page chargée et le
+//: défilement pour rien. Le plan d'un rack, lui, montre les deux.
+let EMPREINTES = {};
+
+/** Ce que l'écran courant regarde dans le pouls : `[famille, empreinte]`. */
+function empreinteDeLEcran(p) {
+  const cabines = [p.mouvements, p.dernier, p.cabines, p.emplacements];
+  // Les alertes aussi : un seuil réglé ailleurs change les pastilles « sous
+  // le seuil » de la liste sans qu'aucun mouvement ne s'écrive.
+  const mp = [p.mouvements_mp, p.dernier_mp, p.emplacements, p.alertes_empreinte];
+  if (ECRAN === 'mp' || ECRAN === 'journalmp' || (ECRAN === 'cabines' && PARC_MODE === 'mp')) {
+    return ['mp', mp.join('·')];
+  }
+  if (ECRAN === 'emplacements' || ECRAN === 'rack') {
+    return ['tout', cabines.concat(mp).join('·')];
+  }
+  return ['cabines', cabines.join('·')];
+}
 
 function rafraichissementPossible() {
   if (!token || document.visibilityState !== 'visible') return false;
@@ -570,6 +644,7 @@ function rafraichissementPossible() {
   const actif = document.activeElement;
   if (actif && /^(INPUT|SELECT|TEXTAREA)$/.test(actif.tagName)) return false;
   if (document.querySelector('.modal')) return false;   // une fenêtre est ouverte
+  if (document.querySelector('.alertes-panneau')) return false;   // on lit les alertes
   if (CAMERA) return false;                             // la caméra tourne
   if (RANGEMENT && RANGEMENT.cabine) return false;      // un rangement est commencé
   return true;
@@ -579,10 +654,13 @@ async function battement() {
   if (!token) return;
   let p;
   try { p = await api('/pouls/'); } catch (_) { return; }   // hors réseau : on réessaiera
-  const vue = [p.mouvements, p.dernier, p.cabines, p.emplacements].join('·');
-  if (EMPREINTE === null) { EMPREINTE = vue; return; }
-  if (vue === EMPREINTE || !rafraichissementPossible()) return;
-  EMPREINTE = vue;
+  // La cloche suit le pouls sur TOUS les écrans, saisie en cours comprise :
+  // elle ne redessine qu'elle-même.
+  suivreAlertes(p);
+  const [famille, vue] = empreinteDeLEcran(p);
+  if (EMPREINTES[famille] === undefined) { EMPREINTES[famille] = vue; return; }
+  if (vue === EMPREINTES[famille] || !rafraichissementPossible()) return;
+  EMPREINTES[famille] = vue;
   rejouerEcran();
 }
 
@@ -592,6 +670,226 @@ setInterval(battement, POULS_MS);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') battement();
 });
+
+/* --- La cloche : les alertes, en haut à droite -----------------------------
+   Ce qui demande un geste sans que personne soit venu le chercher : un code
+   passé sous son seuil d'alerte, une palette posée là où son code n'est plus
+   accepté. Le pouls en porte le nombre et une empreinte ; la liste n'est
+   relue que lorsque l'empreinte bouge — pas toutes les dix secondes.
+
+   La pastille est ROUGE tant qu'une alerte n'a pas été vue sur ce poste, puis
+   marine. Une alerte vue reste une alerte — elle ne s'éteint qu'une fois le
+   stock refait, le seuil changé ou la palette déplacée —, mais elle n'a plus
+   à crier. Une alerte qui se règle puis revient redevient rouge : elle est
+   oubliée dès qu'elle disparaît de la liste.
+
+   La cloche n'est montrée qu'à ceux qui peuvent agir sur ce qu'elle dit — la
+   case « matières premières » ou le référentiel. À un cariste des cabines,
+   une pastille rouge sur le verre n'apprendrait qu'à ignorer les pastilles. */
+const CLE_ALERTES_VUES = 'wms_alertes_vues';
+
+/** Les alertes déjà vues sur CE poste. Le stockage peut manquer (navigation
+    privée, données effacées) : la cloche marche alors sans mémoire. */
+function lireAlertesVues() {
+  try { return new Set(JSON.parse(localStorage.getItem(CLE_ALERTES_VUES) || '[]')); }
+  catch (_) { return new Set(); }
+}
+function ecrireAlertesVues(vues) {
+  try { localStorage.setItem(CLE_ALERTES_VUES, JSON.stringify([...vues])); } catch (_) {}
+}
+
+let ALERTES = { total: 0, empreinte: null, groupes: null, vues: lireAlertesVues() };
+let ALERTES_EN_LECTURE = false;
+//: Une relecture demandée pendant une autre : faite dès que la première rend
+//: la main. Ignorée, elle laissait la cloche en retard sur le geste qu'on
+//: venait de faire, le temps du battement suivant.
+let ALERTES_A_RELIRE = false;
+//: Les alertes nouvelles au moment où l'on ouvre la cloche. Ouvrir les marque
+//: vues — la pastille se calme —, mais elles restent signalées dans la liste
+//: le temps de la lire, relecture comprise.
+let NEUVES_A_L_OUVERTURE = new Set();
+
+const voitAlertes = () => peut('mp') || peut('ref');
+
+/** Les clés d'une réponse `/alertes/`, toutes sortes confondues. */
+const clesAlertes = (groupes) => (groupes || []).flatMap(g => (g.items || []).map(x => x.cle));
+
+/** Combien d'alertes n'ont pas encore été vues ici. */
+const nonVues = (cles, vues) => cles.filter(c => !vues.has(c)).length;
+
+/** « VITR.445, VITR.470 et 2 autres » — la même phrase que le serveur. */
+function listeCodes(codes, combien = 3) {
+  const l = (codes || []).slice();
+  if (l.length <= 1) return l.join('');
+  if (l.length <= combien) return `${l.slice(0, -1).join(', ')} et ${l[l.length - 1]}`;
+  const reste = l.length - combien;
+  return `${l.slice(0, combien).join(', ')} et ${reste} autre${reste > 1 ? 's' : ''}`;
+}
+
+/** La phrase que lit un lecteur d'écran, et l'infobulle. */
+function libelleCloche(total, neuves) {
+  if (!total) return 'Alertes : aucune';
+  return `Alertes : ${total}${neuves ? `, dont ${neuves} nouvelle${neuves > 1 ? 's' : ''}` : ''}`;
+}
+
+function clocheHTML() {
+  if (!voitAlertes()) return '';
+  const n = ALERTES.total || 0;
+  const neuves = ALERTES.groupes ? nonVues(clesAlertes(ALERTES.groupes), ALERTES.vues) : 0;
+  const titre = libelleCloche(n, neuves);
+  return `<button type="button" class="cloche${neuves ? ' neuve' : ''}" id="cloche"
+      aria-label="${esc(titre)}" title="${esc(titre)}" aria-haspopup="dialog" aria-expanded="false">${
+      icon('cloche', 22)}${n ? `<span class="pastille-n">${n > 99 ? '99+' : n}</span>` : ''}</button>`;
+}
+
+function brancherCloche() {
+  const b = document.getElementById('cloche');
+  if (b) b.onclick = () => (document.querySelector('.alertes-panneau') ? fermerAlertes() : ouvrirAlertes());
+}
+
+/** Redessine la cloche, et elle seule : elle change pendant qu'on saisit, et
+    ne doit rien prendre à l'écran. `sonner` : une alerte nouvelle vient
+    d'arriver — la cloche bat une fois, sans bruit. */
+function majCloche(sonner) {
+  const b = document.getElementById('cloche');
+  if (!b) return;
+  const modele = document.createElement('div');
+  modele.innerHTML = clocheHTML();
+  const neuf = modele.firstElementChild;
+  if (!neuf) return;
+  b.className = neuf.className;
+  b.title = neuf.title;
+  b.setAttribute('aria-label', neuf.getAttribute('aria-label'));
+  b.innerHTML = neuf.innerHTML;
+  if (sonner) {
+    b.classList.add('sonne');
+    setTimeout(() => b.classList.remove('sonne'), 1300);
+  }
+}
+
+/** Relit la liste des alertes. Appelée quand le pouls dit qu'elle a changé,
+    à l'ouverture de la cloche, et juste après un geste qui peut la changer. */
+async function chargerAlertes() {
+  if (!token || !voitAlertes()) return;
+  if (ALERTES_EN_LECTURE) { ALERTES_A_RELIRE = true; return; }
+  ALERTES_EN_LECTURE = true;
+  let r;
+  try { r = await api('/alertes/'); }
+  catch (_) { return; }                       // hors réseau : le pouls redemandera
+  finally {
+    ALERTES_EN_LECTURE = false;
+    if (ALERTES_A_RELIRE) { ALERTES_A_RELIRE = false; setTimeout(chargerAlertes, 0); }
+  }
+  // Ce qui n'était pas vu avant cette lecture : la cloche ne bat que pour une
+  // alerte qui n'y figurait pas — compter ne suffit pas, une alerte peut se
+  // régler pendant qu'une autre naît.
+  const neuvesAvant = new Set(clesAlertes(ALERTES.groupes).filter(c => !ALERTES.vues.has(c)));
+  const cles = clesAlertes(r.groupes);
+  // Une alerte réglée sort de la mémoire : si elle revient, elle est nouvelle.
+  ALERTES.vues = new Set(cles.filter(c => ALERTES.vues.has(c)));
+  ALERTES.total = r.total;
+  ALERTES.empreinte = r.empreinte;
+  ALERTES.groupes = r.groupes || [];
+  const panneau = document.querySelector('.alertes-panneau');
+  if (panneau) {
+    // Sous les yeux : ce qui arrive pendant qu'on lit est vu aussitôt — et
+    // signalé comme nouveau tant que la liste reste ouverte.
+    cles.filter(c => !ALERTES.vues.has(c)).forEach(c => NEUVES_A_L_OUVERTURE.add(c));
+    remplirAlertes(panneau);
+    cles.forEach(c => ALERTES.vues.add(c));
+  }
+  ecrireAlertesVues(ALERTES.vues);
+  majCloche(cles.some(c => !ALERTES.vues.has(c) && !neuvesAvant.has(c)));
+}
+
+/** Ce que le pouls apprend à la cloche : relire seulement si l'ensemble a bougé. */
+function suivreAlertes(p) {
+  if (!p || !voitAlertes()) return;
+  if (ALERTES.groupes === null || p.alertes_empreinte !== ALERTES.empreinte) chargerAlertes();
+}
+
+function ouvrirAlertes() {
+  fermerAlertes();
+  const panneau = document.createElement('div');
+  panneau.className = 'alertes-panneau';
+  panneau.setAttribute('role', 'dialog');
+  panneau.setAttribute('aria-label', 'Alertes');
+  el().appendChild(panneau);
+  // Les nouvelles le restent à l'écran le temps de cette lecture, même une
+  // fois marquées vues — et même quand la relecture redessine la liste.
+  NEUVES_A_L_OUVERTURE = new Set(clesAlertes(ALERTES.groupes).filter(c => !ALERTES.vues.has(c)));
+  remplirAlertes(panneau);
+  clesAlertes(ALERTES.groupes).forEach(c => ALERTES.vues.add(c));
+  ecrireAlertesVues(ALERTES.vues);
+  majCloche(false);
+  const b = document.getElementById('cloche');
+  if (b) b.setAttribute('aria-expanded', 'true');
+  setTimeout(() => document.addEventListener('click', clicHorsAlertes), 0);
+  document.addEventListener('keydown', echapAlertes);
+  // Ce qui est montré tout de suite est la dernière lecture ; on relit dans la
+  // foulée : un « réservé à » ou un total a pu changer sans que l'ensemble
+  // des alertes bouge.
+  chargerAlertes();
+}
+
+function fermerAlertes() {
+  const panneau = document.querySelector('.alertes-panneau');
+  if (panneau) panneau.remove();
+  NEUVES_A_L_OUVERTURE = new Set();
+  document.removeEventListener('click', clicHorsAlertes);
+  document.removeEventListener('keydown', echapAlertes);
+  const b = document.getElementById('cloche');
+  if (b) b.setAttribute('aria-expanded', 'false');
+}
+
+function clicHorsAlertes(ev) {
+  if (!ev.target.closest('.alertes-panneau, #cloche')) fermerAlertes();
+}
+
+function echapAlertes(ev) {
+  if (ev.key === 'Escape') fermerAlertes();
+}
+
+/** Une alerte, et le geste qu'elle demande : ouvrir le code, ou l'emplacement. */
+function alerteHTML(type, x) {
+  const neuve = (!ALERTES.vues.has(x.cle) || NEUVES_A_L_OUVERTURE.has(x.cle)) ? ' neuve' : '';
+  if (type === 'seuil') {
+    return `<button type="button" class="alerte-ligne${neuve}" data-article="${x.article}">
+      <span class="alerte-t"><span class="code-mp">${esc(x.code)}</span>
+        <span class="etat ${x.en_stock ? 'att' : 'crit'}">${x.en_stock} / ${x.seuil}</span></span>
+      <span class="alerte-d">${x.en_stock ? `Plus que ${esc(quantiteMP(x.en_stock, x.famille))}`
+        : 'Plus aucun en stock'} — seuil d’alerte ${x.seuil}</span></button>`;
+  }
+  return `<button type="button" class="alerte-ligne${neuve}" data-emp="${x.emplacement}" data-code="${esc(x.code_emplacement)}">
+      <span class="alerte-t"><span class="code-mp">${esc(x.code)}</span>
+        <span class="etat att">${esc(x.position)}</span></span>
+      <span class="alerte-d">${esc(quantiteMP(x.quantite, x.famille))} posé${x.quantite > 1 ? 's' : ''} sur
+        ${esc(x.code_emplacement)}, réservé à ${esc(listeCodes(x.acceptes))} : à changer d’emplacement.</span></button>`;
+}
+
+function remplirAlertes(panneau) {
+  const groupes = ALERTES.groupes;
+  const corps = groupes === null ? '<div class="empty">Chargement…</div>'
+    : !groupes.length ? `<div class="empty">Aucune alerte : chaque code est au-dessus de son seuil,
+        et chaque palette est là où elle est acceptée.</div>`
+    : groupes.map(g => `<div class="sec">${esc(g.titre)} · ${g.items.length}</div>
+        <div class="alertes-liste">${g.items.map(x => alerteHTML(g.type, x)).join('')}</div>
+        ${g.type === 'seuil' ? '<button type="button" class="lien" data-stock>Voir ces codes dans le stock</button>' : ''}`).join('');
+  panneau.innerHTML = `<div class="alertes-tete"><span>Alertes</span>
+      <button type="button" class="modal-x" data-fermer aria-label="Fermer">${icon('close', 20)}</button></div>
+    <div class="alertes-corps">${corps}</div>`;
+  panneau.querySelector('[data-fermer]').onclick = fermerAlertes;
+  panneau.querySelectorAll('[data-article]').forEach(n => n.onclick = () => {
+    fermerAlertes();
+    ouvrirFicheArticleMP({ id: n.dataset.article });
+  });
+  panneau.querySelectorAll('[data-emp]').forEach(n => n.onclick = () => {
+    fermerAlertes();
+    ouvrirEmplacementMP({ id: n.dataset.emp, code: n.dataset.code });
+  });
+  const stock = panneau.querySelector('[data-stock]');
+  if (stock) stock.onclick = () => { fermerAlertes(); ouvrirStockMP({ sous_seuil: '1' }); };
+}
 
 
 const tile = (ic, title, sub, goName) =>
@@ -631,7 +929,7 @@ function brancherRappelEnCours() {
    Parc. Une vignette qui mène à un écran supprimé ne mène nulle part. */
 function vignettesAccueil() {
   const v = [];
-  // Ni « Scanner » ni « Parc » : les deux sont des onglets de la barre du bas,
+  // Ni « Cabines » ni « Stock » : les deux sont des onglets de la barre du bas,
   // visible en permanence à trois centimètres de ces vignettes. Une vignette
   // qui double un onglet fait chercher lequel des deux est le bon.
   v.push(tile('box', 'Emplacements', peut('ref')
@@ -1389,11 +1687,11 @@ const ligneCabine = (c) => `<div class="item" data-id="${c.id}" data-cle="${c.id
     faisait rien du tout. D'où ce passage obligé, contrôlé par
     `verifier_interface.js` : la troisième fois n'arrivera pas.
 
-    L'onglet reste « Scanner » : une fiche ouverte depuis un scan est une étape
+    L'onglet reste « Cabines » : une fiche ouverte depuis un scan est une étape
     du parcours, pas une destination du menu. */
 function zoneEcran(options = {}) {
   // `neuf` : l'écran est reposé même s'il existe déjà un `#zone`. C'est le cas
-  // des fiches, qui sont des écrans entiers. Écrite dans le `#zone` du Parc, la
+  // des fiches, qui sont des écrans entiers. Écrite dans le `#zone` du Stock, la
   // fiche d'une cabine s'affichait SOUS le titre, la recherche, les cinq
   // pastilles, le panneau de filtres et le bouton d'export — il fallait
   // dérouler tout cela pour la voir, et toucher une cabine dans la liste
@@ -1404,7 +1702,7 @@ function zoneEcran(options = {}) {
 
 /** L'onglet à garder allumé quand un écran se pose de lui-même : celui d'où
     l'on vient, s'il fait partie de la barre du bas. Une fiche ouverte depuis le
-    Parc laisse « Parc » allumé ; ouverte depuis un scan, « Scanner ». */
+    Stock laisse « Stock » allumé ; ouverte depuis un scan, « Cabines ». */
 const ongletCourant = () =>
   (ONGLETS_COMMUNS.some(([cle]) => cle === ECRAN) ? ECRAN : 'scanner');
 
@@ -1415,6 +1713,10 @@ async function montrerEmplacement(emp, opts = {}) {
   // de réglage au milieu de la fiche, qui en porte déjà un.
   const redessiner = () => montrerEmplacement(emp, opts);
   if (!zone) return;
+  // Un emplacement de matières premières ne porte pas de cabine : il a son
+  // propre écran, avec ses trois places. Toutes les portes y mènent — scan,
+  // fiche d'emplacement, recherche —, sans que chacune ait à le savoir.
+  if (emp.est_mp) return montrerEmplacementMP(emp, opts);
   zone.innerHTML = '<div class="empty">Chargement…</div>';
   await refsCabine();   // sinon les places s'affichent « G — G » au lieu de « G — Gauche »
   try {
@@ -1422,6 +1724,7 @@ async function montrerEmplacement(emp, opts = {}) {
     // et l'écran proposerait « Gauche » à un grand modèle.
     const d = await api(`/emplacements/${emp.id}/places/`
       + (CABINE_A_RANGER ? '?pour_cabine=' + CABINE_A_RANGER.id : ''));
+    if (d.est_mp) return montrerEmplacementMP(emp, opts);
     // Deux modes : deux places nommées, ou capacité illimitée sans place.
     const occupants = d.illimite
       ? (d.cabines || []).map(c => ({ code: '—', cabine: c }))
@@ -2713,6 +3016,10 @@ async function retenirEmplacement(texte) {
     const e = res.find(x => (x.code || '').toUpperCase() === code.toUpperCase())
            || (res.length === 1 ? res[0] : null);
     if (!e) return `Aucun emplacement ne correspond à « ${code} ».`;
+    if (e.est_mp) {
+      return `${e.code} range des matières premières (${e.usage_libelle}) : on n’y pose `
+           + 'pas de cabine. Scanne un emplacement de cabines.';
+    }
     const d = await api(`/emplacements/${e.id}/places/`
       + (RANGEMENT.cabine ? '?pour_cabine=' + RANGEMENT.cabine.id : ''));
     // On reste à l'étape 2 : la cabine reste en main, il suffit de scanner un
@@ -3307,6 +3614,7 @@ const CHIPS_CAB = () => [
     de l'accueil et le bandeau du cariste, qui annonçaient un chiffre sans y mener. */
 function ouvrirCabines(preset) {
   FILTRES_CAB = Object.assign(FILTRES_CAB_VIDE(), preset || {});
+  choisirParc('cabines');
   go('cabines');
 }
 
@@ -3319,6 +3627,9 @@ function nbFiltresCab() {
 }
 
 async function renderCabines() {
+  // Le Stock a deux faces : les cabines, et les matières premières. Le choix se
+  // fait par les deux boutons du haut, et le téléphone s'en souvient.
+  if (PARC_MODE === 'mp') return renderStockMP();
   await refsCabine();
   const options = await api('/cabines/filtres/').catch(() => null);
   if (options) OPTIONS_CAB = options;
@@ -3337,7 +3648,8 @@ async function renderCabines() {
   const deplie = PANNEAU_CAB !== null ? PANNEAU_CAB
     : Boolean(window.matchMedia && window.matchMedia('(min-width:1024px)').matches);
 
-  layout(`<h2 class="title">Parc des cabines</h2>
+  layout(`<h2 class="title">Stock</h2>
+    ${basculeParc()}
     <input id="fQ" class="recherche" type="search" autocomplete="off"
            placeholder="Chercher un n°, un chantier, un modèle…" value="${esc(FILTRES_CAB.search)}">
     <div class="chips" id="chips"></div>
@@ -3367,6 +3679,7 @@ async function renderCabines() {
     <div id="actifs"></div>
     <button class="btn ghost" id="fExport">${icon('in', 17)} Télécharger l'inventaire (Excel)</button>
     <div id="zone"><div class="empty">Chargement…</div></div>`, 'cabines');
+  brancherBasculeParc();
   const boutonExport = $('#fExport');
   if (boutonExport) boutonExport.onclick = exporterInventaire;
 
@@ -3557,12 +3870,39 @@ async function listerCabines() {
 //: est restée en arrière : chaque création d'emplacement était refusée.
 const MODES_EMP = [['gd', '2 places (gauche, droite)'], ['illimite', 'Capacité illimitée']];
 
-const optionsModes = (choisi) => MODES_EMP.map(([c, l]) =>
+/* Ce que range un emplacement, en UNE question : des cabines — sur deux places
+   ou en capacité illimitée — ou une famille de matières premières, sur trois
+   places. Les modes des cabines viennent de MODES_EMP, qui reste la source. */
+const AIDE_CHOIX_CABINES = {
+  gd: 'Gauche et droite, une cabine chacune — une seule si c’est un grand modèle.',
+  illimite: 'Aire tampon — à ranger, sortie de production : autant de cabines que nécessaire.',
+};
+const CHOIX_USAGE = [
+  ...MODES_EMP.map(([mode, libelle]) => [`cabines-${mode}`,
+    `Cabines — ${libelle.charAt(0).toLowerCase()}${libelle.slice(1)}`, AIDE_CHOIX_CABINES[mode] || '']),
+  ['carton', 'MP — cartons', 'Palettes de cartons, sur trois places : gauche, milieu, droite.'],
+  ['vitrage', 'MP — vitrages', 'Chevalets de vitrages, sur trois places : gauche, milieu, droite.'],
+];
+
+/** Le choix qui décrit un emplacement tel qu'il est. */
+const choixUsageDe = (e) => (e && e.est_mp ? e.usage : `cabines-${(e && e.mode_places) || 'gd'}`);
+
+/** Un choix → ce qu'on écrit : `{ usage, mode_places }`. Le mode d'un
+    emplacement MP ne décrit rien : on garde celui qu'il avait. */
+function usageDeChoix(choix, avant) {
+  if (String(choix).startsWith('cabines-')) {
+    return { usage: 'cabines', mode_places: choix.slice('cabines-'.length) };
+  }
+  return { usage: choix, mode_places: (avant && avant.mode_places) || 'gd' };
+}
+
+const optionsUsage = (choisi) => CHOIX_USAGE.map(([c, l]) =>
   `<option value="${c}"${c === choisi ? ' selected' : ''}>${esc(l)}</option>`).join('');
 
 const AIDE_MODE = '« 2 places » pour un emplacement où chaque cabine a sa place, à gauche ou à droite. '
   + '« Capacité illimitée » pour une aire tampon — à ranger, sortie de production — '
-  + 'qui accueille autant de cabines que nécessaire.';
+  + 'qui accueille autant de cabines que nécessaire. « MP » pour des vitrages ou des cartons, '
+  + 'posés sur trois places : gauche, milieu, droite.';
 
 /* --- Création : en haut de l'écran, dans une fenêtre ----------------------- */
 function ouvrirNouvelEmplacement(apres) {
@@ -3570,7 +3910,7 @@ function ouvrirNouvelEmplacement(apres) {
     <label for="nCode">Code de l'emplacement *</label>
     <input id="nCode" placeholder="Ex. C004, D012 ou ARANGER" autocomplete="off" autocapitalize="characters">
     <div class="aide">C'est ce code qui sera imprimé sur l'étiquette QR collée sur l’emplacement.</div>
-    <label for="nMode">Mode de rangement</label><select id="nMode">${optionsModes('gd')}</select>
+    <label for="nMode">Ce qu’il range</label><select id="nMode">${optionsUsage('cabines-gd')}</select>
     <div class="aide">${AIDE_MODE}</div>
     <label for="nDesc">Description</label><input id="nDesc" placeholder="facultatif — ex. rack du fond, allée B">
     <label class="case"><input type="checkbox" id="nStaging"> Zone de réception (« à ranger »)</label>
@@ -3591,7 +3931,7 @@ function ouvrirNouvelEmplacement(apres) {
     try {
       const e = await api('/emplacements/', { method: 'POST', body: {
         code,
-        mode_places: corps.querySelector('#nMode').value,
+        ...usageDeChoix(corps.querySelector('#nMode').value),
         description: corps.querySelector('#nDesc').value.trim(),
         staging: corps.querySelector('#nStaging').checked,
       } });
@@ -3641,7 +3981,7 @@ function ouvrirNouveauRack(apres) {
     <div id="rApercu" class="apercu-rack"><span class="muted small">Saisissez le nom du rack.</span></div>
 
     <div class="sec" style="margin-top:16px">Réglages appliqués à tout le rack</div>
-    <label for="rMode">Mode de rangement</label><select id="rMode">${optionsModes('gd')}</select>
+    <label for="rMode">Ce qu’il range</label><select id="rMode">${optionsUsage('cabines-gd')}</select>
     <label for="rDesc">Description</label><input id="rDesc" placeholder="facultatif — ex. allée centrale">
 
     <div class="row modal-actions">
@@ -3696,7 +4036,7 @@ function ouvrirNouveauRack(apres) {
     try {
       const d = await api('/emplacements/generer/', { method: 'POST', body: {
         ...parametres(),
-        mode_places: corps.querySelector('#rMode').value,
+        ...usageDeChoix(corps.querySelector('#rMode').value),
         description: v('#rDesc'),
       } });
       toast(`Rack ${d.rack} : ${d.crees.length} emplacement(s) créé(s)`
@@ -3757,6 +4097,9 @@ function grouperParRack(emps) {
     deuxième cabine ferait chercher de la place ailleurs sans raison. */
 function etatEmplacement(e) {
   if (e.actif === false) return 'inactif';
+  // Un emplacement de matières premières n'est ni libre ni plein POUR UNE
+  // CABINE : il ne les prend pas. Il sort de l'échelle, qui parle de cabines.
+  if (e.est_mp) return 'mp';
   const n = e.nb_cabines || 0;
   if (n === 0) return 'vide';
   if (e.illimite) return 'une';
@@ -3764,7 +4107,7 @@ function etatEmplacement(e) {
   return n === 1 ? 'une' : 'deux';
 }
 
-const CLASSE_ETAT = { vide: 'ok', une: 'att', deux: 'crit', complet: 'plein', inactif: '' };
+const CLASSE_ETAT = { vide: 'ok', une: 'att', deux: 'crit', complet: 'plein', inactif: '', mp: 'mp' };
 
 /* Ce qu'on affiche, et ce qu'on n'affiche plus.
 
@@ -3776,12 +4119,30 @@ const CLASSE_ETAT = { vide: 'ok', une: 'att', deux: 'crit', complet: 'plein', in
    Pour le reste on annonce ce qu'on sait de sûr — le nombre de cabines
    présentes — et « complet » quand le WMS refusera d'y ranger quoi que ce soit. */
 const LIBELLE_ETAT = { vide: 'libre', une: '1 cabine', deux: '2 cabines',
-                       complet: 'complet', inactif: 'inactif' };
+                       complet: 'complet', inactif: 'inactif', mp: 'MP' };
+
+/** Ce que porte un emplacement MP, en deux mots : « vide », « 2 codes ». */
+function contenuMPCourt(e) {
+  const m = e.mp || {};
+  if (!m.codes) return 'vide';
+  return `${m.codes} code${m.codes > 1 ? 's' : ''}`;
+}
+
+/** La pastille d'état d'un emplacement dans une liste : l'occupation pour les
+    cabines, la matière et le contenu pour un emplacement MP. */
+function etiquetteEtat(e) {
+  const etat = etatEmplacement(e);
+  if (etat === 'mp') {
+    return `<span class="etat mp ${esc(e.usage)}">${esc(e.usage_libelle || 'MP')} · ${contenuMPCourt(e)}</span>`;
+  }
+  return `<span class="etat ${CLASSE_ETAT[etat]}">${LIBELLE_ETAT[etat]}</span>`;
+}
 
 /** Ce qu'on inscrit dans une case du plan : jamais un décompte de places. */
 function occupationCourte(e) {
   const etat = etatEmplacement(e);
   if (etat === 'inactif') return 'hors service';
+  if (etat === 'mp') return contenuMPCourt(e);
   if (etat === 'vide') return 'libre';
   if (etat === 'complet') return 'complet';
   const n = e.nb_cabines || 0;
@@ -3789,6 +4150,9 @@ function occupationCourte(e) {
 }
 
 async function renderEmplacements() {
+  // Rappelé directement au retour d'une fiche, sans passer par `go()` : il
+  // reprend son nom d'écran, et avec lui le rafraîchissement automatique.
+  if (ECRAN !== 'rack') ECRAN = 'emplacements';
   await refsCabine();
   const gerer = peut('ref');
 
@@ -3823,7 +4187,7 @@ async function renderEmplacements() {
       const res = await api('/emplacements/?search=' + encodeURIComponent(t)).then(d => d.results || []);
       boite.innerHTML = res.length
         ? res.slice(0, 8).map(e => `<div class="item" data-emp="${e.id}">
-            <div class="r">${esc(e.code)} <span class="etat ${CLASSE_ETAT[etatEmplacement(e)]}">${LIBELLE_ETAT[etatEmplacement(e)]}</span></div>
+            <div class="r">${esc(e.code)} ${etiquetteEtat(e)}</div>
             <div class="d">${esc(e.zone_cabine_nom || e.zone || 'sans zone')}</div></div>`).join('')
         : '<div class="empty">Aucun emplacement ne correspond</div>';
       boite.querySelectorAll('[data-emp]').forEach(it => it.onclick = () => {
@@ -3851,16 +4215,21 @@ async function listerRacks() {
       <div class="racks">${groupes.map(([nom, liste]) => {
         const cabines = liste.reduce((n, e) => n + (e.nb_cabines || 0), 0);
         const libres = liste.filter(e => etatEmplacement(e) === 'vide').length;
+        const mp = liste.filter(e => e.est_mp).length;
         // La jauge montre ce qui reste : c'est la question posée devant le rack.
         const part = liste.length ? Math.round((libres / liste.length) * 100) : 0;
         return `<button class="rack" data-rack="${esc(nom)}">
           <span class="nom">${esc(nom === '(hors rack)' ? 'Hors rack' : nom)}</span>
           <span class="jauge ${libres ? '' : 'sature'}"><span style="width:${part}%"></span></span>
           <span class="chiffres"><b>${libres}</b> emplacement${libres > 1 ? 's' : ''} entièrement libre${libres > 1 ? 's' : ''}</span>
-          <span class="detail">sur ${liste.length} · ${cabines} cabine${cabines === 1 ? '' : 's'} rangée${cabines === 1 ? '' : 's'}</span>
+          <span class="detail">sur ${liste.length} · ${cabines} cabine${cabines === 1 ? '' : 's'} rangée${cabines === 1 ? '' : 's'}${
+            mp ? ` · ${mp} pour les MP` : ''}</span>
         </button>`;
       }).join('')}</div>`;
     zone.querySelectorAll('[data-rack]').forEach(b => b.onclick = () => ouvrirRack(b.dataset.rack, emps));
+    // Après une modification — ou un rafraîchissement automatique —, on revient
+    // sur le rack qu'on regardait : c'est la raison d'être de RACK_OUVERT.
+    if (RACK_OUVERT && groupes.some(([nom]) => nom === RACK_OUVERT)) ouvrirRack(RACK_OUVERT, emps);
   } catch (e) {
     zone.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
@@ -3902,21 +4271,38 @@ function ouvrirRack(nom, emps) {
     if (!e) return '<span class="case vide-trou"></span>';
     const coche = SELECTION_RACK.actif
       ? ` aria-pressed="${String(SELECTION_RACK.ids.has(e.id))}"` : '';
-    return `<button class="case ${etatEmplacement(e)}" data-emp="${e.id}" title="${esc(e.code)}"${coche}>
+    // Un emplacement MP porte la texture de sa matière — verre ou carton — et
+    // se lit « vide » ou « 2 codes » : l'échelle des cabines ne le concerne pas.
+    // Réservé à certains codes : un coin marqué, et les codes dans l'infobulle.
+    const reserves = e.est_mp ? (e.codes_acceptes || []).map(a => a.code) : [];
+    const matiere = e.est_mp ? ` ${esc(e.usage)}${e.mp && e.mp.lignes ? ' charge' : ''}${
+      reserves.length ? ' reserve' : ''}` : '';
+    return `<button class="case ${etatEmplacement(e)}${matiere}" data-emp="${e.id}" title="${
+        esc(e.code + (e.est_mp ? ' — ' + (e.usage_libelle || '') : '')
+            + (reserves.length ? ' — réservé à ' + listeCodes(reserves) : ''))}"${coche}>
       <span class="c">${esc(e.code)}</span>
       <span class="o">${occupationCourte(e)}</span>
     </button>`;
   };
 
+  // En sélection, le n° de colonne et le niveau se touchent : ils cochent toute
+  // la colonne, tout le niveau — le sol d'un rack où se posent les chevalets.
+  const enTete = (c) => (SELECTION_RACK.actif
+    ? `<button type="button" class="col sel" data-col="${c}" title="Toute la colonne ${c}">${c}</button>`
+    : `<span class="col">${c}</span>`);
+  const etage = (niv) => (SELECTION_RACK.actif
+    ? `<button type="button" class="niv sel" data-niv="${niv}" title="Tout le niveau ${niv}">N${niv}</button>`
+    : `<span class="niv">N${niv}</span>`);
   const plan = (colonnes.length && niveaux.length)
     ? `<div class="plan" style="--colonnes:${colonnes.length}">
-         <div class="plan-entete"><span class="coin"></span>${colonnes.map(c => `<span class="col">${c}</span>`).join('')}</div>
+         <div class="plan-entete"><span class="coin"></span>${colonnes.map(enTete).join('')}</div>
          ${niveaux.map(niv => `<div class="plan-ligne">
-            <span class="niv">N${niv}</span>
+            ${etage(niv)}
             ${colonnes.map(c => cellule(parPosition.get(c + '/' + niv))).join('')}
           </div>`).join('')}
        </div>`
     : '';
+  const familles = [...new Set(liste.filter(e => e.est_mp).map(e => e.usage))];
 
   zone.innerHTML = `
     <button class="btn ghost" id="rRetour">&#8592; Tous les racks</button>
@@ -3927,7 +4313,13 @@ function ouvrirRack(nom, emps) {
       <span><i class="pastille att"></i>1 cabine</span>
       <span><i class="pastille crit"></i>2 cabines</span>
       <span><i class="pastille plein"></i>complet — le WMS refusera d’y ranger</span>
+      ${familles.includes('vitrage') ? '<span><i class="pastille vitrage"></i>MP · vitrages</span>' : ''}
+      ${familles.includes('carton') ? '<span><i class="pastille carton"></i>MP · cartons</span>' : ''}
+      ${liste.some(e => e.est_mp && (e.codes_acceptes || []).length)
+        ? '<span><i class="pastille reserve"></i>réservé à certains codes</span>' : ''}
     </div>
+    ${SELECTION_RACK.actif ? `<div class="aide" style="margin:-2px 2px 10px">Touchez une case — ou un
+      n° de colonne, un niveau (N0, N1…) pour cocher toute la ligne d’un coup.</div>` : ''}
     ${plan}
     ${orphelins.length ? `<div class="sec">Sans position dans le rack</div>
       <div class="cases-libres">${orphelins.map(cellule).join('')}</div>` : ''}
@@ -3936,7 +4328,8 @@ function ouvrirRack(nom, emps) {
           : icon('grille', 17) + ' Sélectionner plusieurs emplacements'}</button>` : ''}
     ${(peut('ref') && !SELECTION_RACK.actif && nom !== '(hors rack)') ? `<button class="btn danger" id="rSupp"
         style="margin-top:10px">${icon('trash', 17)} Supprimer le rack ${esc(nom)}</button>` : ''}
-    ${SELECTION_RACK.actif ? barreSelection() : ''}`;
+    ${SELECTION_RACK.actif ? barreSelection(liste.length,
+      liste.filter(e => e.est_mp && SELECTION_RACK.ids.has(e.id)).length) : ''}`;
 
   const retour = $('#rRetour');
   if (retour) retour.onclick = () => { RACK_OUVERT = null; listerRacks(); };
@@ -3960,23 +4353,428 @@ function ouvrirRack(nom, emps) {
   if (bSupp) bSupp.onclick = () => ouvrirSuppressionSelection(nom, emps);
   const bVider = $('#selVider');
   if (bVider) bVider.onclick = () => { SELECTION_RACK.ids = new Set(); ouvrirRack(nom, emps); };
+  const bTout = $('#selTout');
+  if (bTout) bTout.onclick = () => { liste.forEach(e => SELECTION_RACK.ids.add(e.id)); ouvrirRack(nom, emps); };
+  const bUsage = $('#selUsage');
+  if (bUsage) bUsage.onclick = () => ouvrirUsageSelection(nom);
+  const bCodes = $('#selCodes');
+  if (bCodes) bCodes.onclick = () => ouvrirCodesSelection(nom, liste);
+  // Une colonne, un niveau : cochés d'un coup — ou décochés, s'ils l'étaient tous.
+  const basculer = (cible) => {
+    if (!cible.length) return;
+    const tous = cible.every(e => SELECTION_RACK.ids.has(e.id));
+    cible.forEach(e => (tous ? SELECTION_RACK.ids.delete(e.id) : SELECTION_RACK.ids.add(e.id)));
+    ouvrirRack(nom, emps);
+  };
+  zone.querySelectorAll('[data-col]').forEach(b => b.onclick = () =>
+    basculer(liste.filter(e => String(e.colonne) === b.dataset.col)));
+  zone.querySelectorAll('[data-niv]').forEach(b => b.onclick = () =>
+    basculer(liste.filter(e => String(e.niveau) === b.dataset.niv)));
   const supp = $('#rSupp');
   if (supp) supp.onclick = () => ouvrirSuppressionRack(nom);
 }
 
-/** La barre qui compte les cases cochées et porte leur suppression. */
-function barreSelection() {
+/** La barre qui compte les cases cochées, et ce qu'on peut en faire : régler
+    ce qu'elles rangent, ou les supprimer. */
+function barreSelection(total, nbMP = 0) {
   const n = SELECTION_RACK.ids.size;
+  // « Codes acceptés » ne concerne que les emplacements MP : éteint tant
+  // qu'aucun n'est coché, et il le dit.
   return `<div class="selbar">
     <div class="sel-n">${n === 0 ? 'Touchez les emplacements à sélectionner'
-      : `${n} emplacement${n > 1 ? 's' : ''} sélectionné${n > 1 ? 's' : ''}`}</div>
+      : `${n} emplacement${n > 1 ? 's' : ''} sélectionné${n > 1 ? 's' : ''}${
+        nbMP && nbMP < n ? ` · dont ${nbMP} MP` : ''}`}</div>
     <div class="row">
-      <button class="btn danger" id="selSupp" style="margin-top:0"${n ? '' : ' disabled'}
-        >${icon('trash', 17)} Supprimer la sélection</button>
+      <button class="btn" id="selUsage" style="margin-top:0"${n ? '' : ' disabled'}
+        >${icon('cog', 17)} Ce qu’ils rangent</button>
+      <button class="btn" id="selCodes" style="margin-top:0"${nbMP ? '' : ' disabled'}
+        title="${nbMP ? 'Réserver ces emplacements à certains codes' : 'Pour les emplacements MP seulement'}"
+        >${icon('couches', 17)} Codes acceptés</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn ghost" id="selTout" style="margin-top:0"${n >= total ? ' disabled' : ''}
+        >Tout le rack</button>
       <button class="btn ghost" id="selVider" style="margin-top:0"${n ? '' : ' disabled'}
         >Tout décocher</button>
     </div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn danger" id="selSupp" style="margin-top:0"${n ? '' : ' disabled'}
+        >${icon('trash', 17)} Supprimer</button>
+    </div>
   </div>`;
+}
+
+/* --- Ce que rangent les emplacements : cabines, cartons, vitrages ----------
+   Le geste se fait en nombre — une colonne, un niveau, le rack — parce que
+   c'est ainsi qu'on organise un entrepôt : « le sol de AH prend les chevalets
+   de verre ». Le serveur dit d'abord ce qui changera, ce qui l'est déjà, et ce
+   qui résiste — une cabine ou une palette encore posée — en le nommant.
+   L'application ne déplace rien : elle applique aux emplacements libres, et
+   laisse les autres tels quels, sous les yeux de l'opérateur.               */
+async function ouvrirUsageSelection(nom) {
+  const ids = [...SELECTION_RACK.ids];
+  if (!ids.length) return;
+  const n = ids.length;
+  const corps = modale(`Ce que range${n > 1 ? 'nt' : ''} ${n} emplacement${n > 1 ? 's' : ''}`, `
+    <div class="statuts">${CHOIX_USAGE.map(([c, titre, aide]) => `<button type="button" class="statut"
+        data-choix="${c}" aria-pressed="false"><span class="n">${esc(titre)}</span>
+        <span class="a">${esc(aide)}</span></button>`).join('')}</div>
+    <div id="uBilan" style="margin-top:12px"></div>
+    <div class="modal-actions">
+      <button class="btn orange" id="uGo" type="button" disabled>Choisis ce qu’ils rangent</button>
+      <button class="btn ghost" id="uNon" type="button">Annuler</button>
+    </div>`);
+  let choix = null;
+  const appliquer = corps.querySelector('#uGo');
+  const zoneBilan = corps.querySelector('#uBilan');
+  corps.querySelector('#uNon').onclick = fermerModale;
+  corps.querySelectorAll('[data-choix]').forEach(b => b.onclick = async () => {
+    choix = b.dataset.choix;
+    corps.querySelectorAll('[data-choix]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    appliquer.disabled = true;
+    appliquer.textContent = 'Analyse…';
+    try {
+      const bilan = await api('/emplacements/usage/', { method: 'POST', body: { ids, choix, apercu: true } });
+      if (choix !== b.dataset.choix) return;           // un autre choix entre-temps
+      zoneBilan.innerHTML = bilanUsageHTML(bilan);
+      const k = bilan.changes.length;
+      appliquer.disabled = !k;
+      appliquer.textContent = k ? `Appliquer à ${k} emplacement${k > 1 ? 's' : ''}` : 'Rien à changer';
+    } catch (e) {
+      zoneBilan.innerHTML = `<div class="aide alerte">${esc(e.message)}</div>`;
+      appliquer.textContent = 'Choisis ce qu’ils rangent';
+    }
+  });
+  appliquer.onclick = async () => {
+    if (!choix) return;
+    appliquer.disabled = true;
+    try {
+      const r = await api('/emplacements/usage/', { method: 'POST', body: { ids, choix } });
+      fermerModale();
+      const k = r.changes.length, b = r.bloques.length;
+      toast(`${k} emplacement${k > 1 ? 's' : ''} : ${r.libelle}`
+            + (b ? ` — ${b} laissé${b > 1 ? 's' : ''} tel${b > 1 ? 's' : ''} quel${b > 1 ? 's' : ''}` : ''), 'ok');
+      // La sélection est consommée, comme après une suppression.
+      SELECTION_RACK = { rack: nom, actif: false, ids: new Set() };
+      await rafraichirEmplacements();
+      renderEmplacements();
+    } catch (e) { appliquer.disabled = false; toast(e.message, 'err'); }
+  };
+}
+
+function bilanUsageHTML(b) {
+  const morceaux = [];
+  if (b.changes.length) {
+    morceaux.push(`<div class="banner fait" style="margin:0 0 8px">${b.changes.length} emplacement${
+      b.changes.length > 1 ? 's passeront' : ' passera'} en « ${esc(b.libelle)} ».</div>`);
+  }
+  if (b.deja.length) {
+    morceaux.push(`<div class="meta">${b.deja.length} ${b.deja.length > 1 ? 'le sont' : 'l’est'} déjà :
+      ${esc(b.deja.slice(0, 10).join(', '))}${b.deja.length > 10 ? '…' : ''}</div>`);
+  }
+  if (b.bloques.length) {
+    morceaux.push(`<div class="banner" style="margin:10px 0 0">${b.bloques.length} ne
+        ${b.bloques.length > 1 ? 'peuvent' : 'peut'} pas changer — ${b.bloques.length > 1 ? 'ils restent' : 'il reste'} tel${
+        b.bloques.length > 1 ? 's' : ''} quel${b.bloques.length > 1 ? 's' : ''} :</div>
+      <div class="list">${b.bloques.slice(0, 6).map(x => `<div class="item" style="cursor:default">
+        <div class="r">${esc(x.code)}</div><div class="d">${esc(x.message)}</div></div>`).join('')}
+        ${b.bloques.length > 6 ? `<div class="meta">… et ${b.bloques.length - 6} autre(s).</div>` : ''}</div>`);
+  }
+  return morceaux.join('');
+}
+
+/* --- Codes acceptés : réserver des emplacements MP à certains codes --------
+   Un emplacement MP accepte toute sa famille, jusqu'à ce qu'on le réserve à
+   un ou plusieurs codes : « le sol de AH ne prend que les VITR.445 ». À
+   l'unité, cela se règle dans la fiche de l'emplacement ; ici, en nombre,
+   pour une sélection — chaque emplacement prenant les codes de SA famille.
+   Comme pour l'usage, le serveur dit d'abord ce qui changera, ce qui l'est
+   déjà, ce qui résiste ; et ce qui est déjà posé reste où il est.          */
+const MODES_CODES = [
+  ['remplacer', 'Réserver à des codes précis',
+   'Seuls les codes choisis pourront y entrer. Une réservation existante est remplacée.'],
+  ['ajouter', 'Ajouter des codes à leur réservation',
+   'Les codes déjà acceptés le restent ; ceux-ci s’y ajoutent.'],
+  ['tous', 'Accepter de nouveau tous les codes',
+   'Retire la réservation : tout code de leur famille peut y entrer.'],
+];
+
+/** Ce que fera le réglage, en une phrase — d'après le bilan du serveur. */
+function phraseCodes(b) {
+  const k = b.changes.length;
+  if (!k) return '';
+  const emp = `${k} emplacement${k > 1 ? 's' : ''}`;
+  const codes = listeCodes(b.codes || [], 4);
+  if (b.mode === 'tous') return `${emp} accepter${k > 1 ? 'ont' : 'a'} de nouveau tous les codes de leur famille.`;
+  if (b.mode === 'ajouter') {
+    return `${codes} ${(b.codes || []).length > 1 ? 's’ajoutent' : 's’ajoute'} à la réservation de ${emp}.`;
+  }
+  return `${emp} ser${k > 1 ? 'ont réservés' : 'a réservé'} à ${codes}.`;
+}
+
+/** Ceux que le réglage ne change pas, dits selon le geste : « ajouter » à un
+    emplacement ouvert à toute sa famille ne change rien — il les accepte
+    déjà. */
+function phraseDejaCodes(b) {
+  const n = b.deja.length;
+  if (!n) return '';
+  const quoi = b.mode === 'tous' ? (n > 1 ? 'acceptent déjà tous les codes' : 'accepte déjà tous les codes')
+    : b.mode === 'ajouter' ? (n > 1 ? 'les acceptent déjà' : 'les accepte déjà')
+    : (n > 1 ? 'le sont déjà' : 'l’est déjà');
+  return `${n} ${quoi} : ${b.deja.slice(0, 10).join(', ')}${n > 10 ? '…' : ''}`;
+}
+
+function bilanCodesHTML(b) {
+  const morceaux = [];
+  if (b.changes.length) {
+    morceaux.push(`<div class="banner fait" style="margin:0 0 8px">${esc(phraseCodes(b))}</div>`);
+  }
+  if (b.deja.length) {
+    morceaux.push(`<div class="meta">${esc(phraseDejaCodes(b))}</div>`);
+  }
+  if (b.hors_reservation && b.hors_reservation.length) {
+    morceaux.push(`<div class="aide alerte" style="margin-top:10px">Déjà posés et plus acceptés après le
+        réglage — ils restent où ils sont, peuvent sortir ou changer d’emplacement, et la cloche les
+        signale : ${esc(b.hors_reservation.slice(0, 4).map(x => `${x.code} (${listeCodes(x.codes)})`).join(' · '))}${
+        b.hors_reservation.length > 4 ? '…' : ''}</div>`);
+  }
+  if (b.bloques.length) {
+    morceaux.push(`<div class="banner" style="margin:10px 0 0">${b.bloques.length} ne
+        ${b.bloques.length > 1 ? 'changent' : 'change'} pas :</div>
+      <div class="list">${b.bloques.slice(0, 6).map(x => `<div class="item" style="cursor:default">
+        <div class="r">${esc(x.code)}</div><div class="d">${esc(x.message)}</div></div>`).join('')}
+        ${b.bloques.length > 6 ? `<div class="meta">… et ${b.bloques.length - 6} autre(s).</div>` : ''}</div>`);
+  }
+  return morceaux.join('');
+}
+
+/** Le choix des codes : une saisie qui propose, et les codes retenus en
+    pastilles qu'on retire d'une touche. `familles` resserre la recherche. */
+function brancherChoixCodes(racine, familles, choisis, surChangement) {
+  const champ = racine.querySelector('[data-codes-saisie]');
+  const boite = racine.querySelector('[data-codes-sugg]');
+  const pastilles = racine.querySelector('[data-codes-choisis]');
+  let propositions = [];
+  const dessiner = () => {
+    pastilles.innerHTML = choisis.map(a => `<span class="chip fixe"><span class="code-mp">${esc(a.code)}</span>
+      <button type="button" class="chip-x" data-retirer="${a.id}" aria-label="Retirer ${esc(a.code)}">${icon('close', 14)}</button></span>`).join('');
+    pastilles.querySelectorAll('[data-retirer]').forEach(b => b.onclick = () => {
+      const i = choisis.findIndex(a => String(a.id) === b.dataset.retirer);
+      if (i >= 0) choisis.splice(i, 1);
+      dessiner();
+      surChangement();
+    });
+  };
+  champ.oninput = debounce(async () => {
+    const t = champ.value.trim();
+    if (!cleMP(t)) { boite.innerHTML = ''; propositions = []; return; }
+    try {
+      const famille = familles.length === 1 ? `famille=${encodeURIComponent(familles[0])}&` : '';
+      propositions = (await api(`/mp/suggestions/?${famille}q=${encodeURIComponent(t)}`))
+        .filter(a => !choisis.some(c => c.id === a.id));
+      if (champ.value.trim() !== t) return;
+      boite.innerHTML = propositions.slice(0, 6).map(a => `<div class="item sugg-mp" data-art="${a.id}">
+          <div class="r"><span class="code-mp">${esc(a.code)}</span>${badgeAncienne(a)}</div>
+          <div class="d">${sousTitreArticle(a)}</div></div>`).join('')
+        || `<div class="empty" style="padding:12px">Aucun code de la base ne ressemble à « ${esc(t)} ».</div>`;
+      boite.querySelectorAll('[data-art]').forEach(n => n.onclick = () => {
+        const a = propositions.find(x => String(x.id) === n.dataset.art);
+        if (!a) return;
+        choisis.push(a);
+        champ.value = '';
+        boite.innerHTML = '';
+        dessiner();
+        surChangement();
+        champ.focus();
+      });
+    } catch (e) { boite.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  }, 160);
+  dessiner();
+}
+
+async function ouvrirCodesSelection(nom, liste) {
+  const ids = [...SELECTION_RACK.ids];
+  if (!ids.length) return;
+  const familles = [...new Set(liste.filter(e => e.est_mp && SELECTION_RACK.ids.has(e.id)).map(e => e.usage))];
+  const n = ids.length;
+  const exemple = familles.length === 1 ? FAMILLES_MP[familles[0]].exemple : 'Ex. vitr.445 ou C8.FD';
+  const corps = modale(`Codes acceptés — ${n} emplacement${n > 1 ? 's' : ''}`, `
+    <div class="statuts">${MODES_CODES.map(([m, titre, aide]) => `<button type="button" class="statut"
+        data-mode="${m}" aria-pressed="false"><span class="n">${esc(titre)}</span>
+        <span class="a">${esc(aide)}</span></button>`).join('')}</div>
+    <div id="cCodes" hidden>
+      <label for="cSaisie">Les codes</label>
+      <div class="chips" data-codes-choisis></div>
+      <input id="cSaisie" data-codes-saisie placeholder="${esc(exemple)}" autocomplete="off"
+             autocapitalize="characters" spellcheck="false">
+      <div class="list" data-codes-sugg></div>
+      ${familles.length > 1 ? `<div class="aide">La sélection mêle vitrages et cartons : chaque
+        emplacement prendra les codes de sa famille.</div>` : ''}
+    </div>
+    <div id="cBilan" style="margin-top:12px"></div>
+    <div class="modal-actions">
+      <button class="btn orange" id="cGo" type="button" disabled>Choisis le réglage</button>
+      <button class="btn ghost" id="cNon" type="button">Annuler</button>
+    </div>`);
+  let mode = null;
+  const choisis = [];
+  const appliquer = corps.querySelector('#cGo');
+  const zoneBilan = corps.querySelector('#cBilan');
+  const zoneCodes = corps.querySelector('#cCodes');
+  corps.querySelector('#cNon').onclick = fermerModale;
+  let demande = 0;
+  const apercu = debounce(async () => {
+    if (!mode) return;
+    if (mode !== 'tous' && !choisis.length) {
+      zoneBilan.innerHTML = '';
+      appliquer.disabled = true;
+      appliquer.textContent = 'Choisis au moins un code';
+      return;
+    }
+    const ici = ++demande;
+    appliquer.disabled = true;
+    appliquer.textContent = 'Analyse…';
+    try {
+      const bilan = await api('/emplacements/codes/', { method: 'POST', body: {
+        ids, articles: choisis.map(a => a.id), mode, apercu: true } });
+      if (ici !== demande) return;                      // un autre réglage entre-temps
+      zoneBilan.innerHTML = bilanCodesHTML(bilan);
+      const k = bilan.changes.length;
+      appliquer.disabled = !k;
+      appliquer.textContent = k ? `Appliquer à ${k} emplacement${k > 1 ? 's' : ''}` : 'Rien à changer';
+    } catch (e) {
+      if (ici !== demande) return;
+      zoneBilan.innerHTML = `<div class="aide alerte">${esc(e.message)}</div>`;
+      appliquer.textContent = 'Choisis le réglage';
+    }
+  }, 200);
+  // Le bouton s'éteint DÈS que la demande change : pendant le délai de
+  // l'aperçu, il appliquerait sinon un réglage que personne n'a vu.
+  const changer = () => {
+    appliquer.disabled = true;
+    appliquer.textContent = 'Analyse…';
+    apercu();
+  };
+  brancherChoixCodes(zoneCodes, familles, choisis, changer);
+  corps.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
+    mode = b.dataset.mode;
+    corps.querySelectorAll('[data-mode]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    zoneCodes.hidden = mode === 'tous';
+    if (mode !== 'tous') corps.querySelector('#cSaisie').focus();
+    changer();
+  });
+  appliquer.onclick = async () => {
+    if (!mode) return;
+    appliquer.disabled = true;
+    try {
+      const r = await api('/emplacements/codes/', { method: 'POST', body: {
+        ids, articles: choisis.map(a => a.id), mode } });
+      fermerModale();
+      const k = r.changes.length, b = r.bloques.length;
+      toast(`${k} emplacement${k > 1 ? 's' : ''} : ${r.libelle}`
+            + (b ? ` — ${b} laissé${b > 1 ? 's' : ''} tel${b > 1 ? 's' : ''} quel${b > 1 ? 's' : ''}` : ''), 'ok');
+      chargerAlertes();
+      SELECTION_RACK = { rack: nom, actif: false, ids: new Set() };
+      await rafraichirEmplacements();
+      renderEmplacements();
+    } catch (e) { appliquer.disabled = false; toast(e.message, 'err'); }
+  };
+}
+
+/** Dans la fiche d'un emplacement MP : les codes qu'il accepte, et de quoi
+    en ajouter ou en retirer — chaque geste s'enregistre aussitôt. */
+function blocCodesAcceptes(e, gerer) {
+  if (!e.est_mp) return '';
+  const fam = FAMILLES_MP[e.usage] || FAMILLES_MP.vitrage;
+  const codes = e.codes_acceptes || [];
+  return `<div class="sec" style="margin-top:18px">Codes acceptés</div>
+    <div class="card" id="fCodes">
+      ${codes.length
+        ? `<div class="meta" style="margin-top:0">Seul${codes.length > 1 ? 's ces codes entrent' : ' ce code entre'}
+             en ${esc(e.code)} :</div>
+           <div class="chips" style="margin:8px 0 0">${codes.map(a => `<span class="chip fixe"><span class="code-mp">${
+             esc(a.code)}</span>${gerer ? `<button type="button" class="chip-x" data-retirer="${a.id}"
+             aria-label="Retirer ${esc(a.code)}">${icon('close', 14)}</button>` : ''}</span>`).join('')}</div>`
+        : `<div class="meta" style="margin-top:0">Tous les ${esc(fam.plusieurs)} de la base peuvent y entrer.</div>`}
+      ${gerer ? `<label for="fCodeAjout">${codes.length ? 'Ajouter un code' : 'Le réserver à un code'}</label>
+        <input id="fCodeAjout" placeholder="${esc(fam.exemple)}" autocomplete="off"
+               autocapitalize="characters" spellcheck="false">
+        <div class="list" id="fCodeSugg"></div>
+        <div class="aide">${codes.length ? '' : 'Réservé, il refusera les autres codes. '}Ce qui y est
+          déjà posé reste où il est : il peut toujours sortir ou changer d’emplacement.</div>
+        <div id="fCodesBilan"></div>
+        ${codes.length ? `<button type="button" class="btn ghost" id="fCodesTous">Accepter de nouveau
+          tous les ${esc(fam.plusieurs)}</button>` : ''}` : ''}
+    </div>`;
+}
+
+function brancherCodesAcceptes(e, redessiner) {
+  const carte = document.getElementById('fCodes');
+  if (!carte || !peut('ref')) return;
+  const codes = (e.codes_acceptes || []).slice();
+  // Un enregistrement à la fois : chaque geste envoie la liste ENTIÈRE, et
+  // deux retraits rapides partiraient chacun d'une liste où l'autre code est
+  // encore — le second remettrait le premier.
+  const figer = (oui) => carte.querySelectorAll('button, input').forEach(n => { n.disabled = oui; });
+  const enregistrer = async (articles, phrase) => {
+    figer(true);
+    try {
+      const r = await api('/emplacements/codes/', { method: 'POST', body: {
+        ids: [e.id], articles, mode: articles.length ? 'remplacer' : 'tous' } });
+      toast(phrase, 'ok');
+      chargerAlertes();
+      await rafraichirEmplacements();
+      await redessiner();
+      const restants = (r.hors_reservation || [])[0];
+      const zone = document.getElementById('fCodesBilan');
+      if (restants && zone) {
+        zone.innerHTML = `<div class="aide alerte">Encore posé${restants.codes.length > 1 ? 's' : ''} ici et
+          plus accepté${restants.codes.length > 1 ? 's' : ''} : ${esc(listeCodes(restants.codes))}. Il${
+          restants.codes.length > 1 ? 's restent' : ' reste'} là jusqu’à ce qu’on le${
+          restants.codes.length > 1 ? 's' : ''} sorte ou change d’emplacement ; la cloche le signale.</div>`;
+      }
+    } catch (err) { figer(false); toast(err.message, 'err'); }
+  };
+  carte.querySelectorAll('[data-retirer]').forEach(b => b.onclick = () => {
+    const retire = codes.find(a => String(a.id) === b.dataset.retirer);
+    const reste = codes.filter(a => a !== retire);
+    enregistrer(reste.map(a => a.id), reste.length
+      ? `${retire.code} retiré : ${e.code} accepte ${listeCodes(reste.map(a => a.code))}`
+      : `${e.code} accepte de nouveau tous les codes`);
+  });
+  const tous = carte.querySelector('#fCodesTous');
+  if (tous) {
+    tous.onclick = async () => {
+      const ok = await confirmer({
+        titre: `Ouvrir ${e.code} à tous les codes ?`,
+        texte: `La réservation est retirée : tout ${(FAMILLES_MP[e.usage] || {}).un || 'code'} de la base pourra y entrer.`,
+        ok: 'Accepter tous les codes',
+      });
+      if (ok) enregistrer([], `${e.code} accepte de nouveau tous les codes`);
+    };
+  }
+  const champ = carte.querySelector('#fCodeAjout');
+  const boite = carte.querySelector('#fCodeSugg');
+  let propositions = [];
+  champ.oninput = debounce(async () => {
+    const t = champ.value.trim();
+    if (!cleMP(t)) { boite.innerHTML = ''; propositions = []; return; }
+    try {
+      propositions = (await api(`/mp/suggestions/?famille=${encodeURIComponent(e.usage)}&q=${encodeURIComponent(t)}`))
+        .filter(a => !codes.some(c => c.id === a.id));
+      if (champ.value.trim() !== t) return;
+      boite.innerHTML = propositions.slice(0, 6).map(a => `<div class="item sugg-mp" data-art="${a.id}">
+          <div class="r"><span class="code-mp">${esc(a.code)}</span>${badgeAncienne(a)}</div>
+          <div class="d">${sousTitreArticle(a)}</div></div>`).join('')
+        || `<div class="empty" style="padding:12px">Aucun code de la base ne ressemble à « ${esc(t)} ».</div>`;
+      boite.querySelectorAll('[data-art]').forEach(n => n.onclick = () => {
+        const a = propositions.find(x => String(x.id) === n.dataset.art);
+        if (!a) return;
+        const apres = codes.concat([a]);
+        enregistrer(apres.map(x => x.id), `${e.code} réservé à ${listeCodes(apres.map(x => x.code))}`);
+      });
+    } catch (err) { boite.innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
+  }, 160);
 }
 
 /* --- Supprimer une sélection -----------------------------------------------
@@ -4121,6 +4919,11 @@ async function ouvrirSuppressionRack(rack) {
 /* --- Fiche d'un emplacement : occupation + réglages + suppression ----------
    C'est ici, et nulle part ailleurs, qu'un emplacement se modifie.           */
 async function ficheEmplacement(emp, retour) {
+  // Une fiche ne se redessine jamais toute seule : elle porte des formulaires —
+  // réglages, entrée de matières premières. Sans ce nom d'écran à elle, le
+  // rafraîchissement automatique rejouait l'écran des emplacements par-dessus,
+  // et renvoyait au plan du rack au milieu d'une saisie.
+  ECRAN = 'fiche-emplacement';
   // Toujours relire la fiche : `EMPS` est une photo prise au démarrage, et un
   // collègue a pu créer ou déplacer un emplacement depuis. Le formulaire
   // affichait alors « Sans zone » sur un emplacement zoné — et l'enregistrement
@@ -4134,7 +4937,7 @@ async function ficheEmplacement(emp, retour) {
 
   layout(`
     <button class="btn ghost retour" id="fRetour">← Retour aux emplacements</button>
-    <h2 class="title">${esc(e.code)} <span class="pill">${esc(e.mode_libelle)}</span>${e.actif === false ? '<span class="etat crit">inactif</span>' : ''}</h2>
+    <h2 class="title">${esc(e.code)} <span class="pill">${esc(e.est_mp ? e.usage_libelle : e.mode_libelle)}</span>${e.actif === false ? '<span class="etat crit">inactif</span>' : ''}</h2>
     <div id="zone"><div class="empty">Chargement…</div></div>
     <div class="sec" style="margin-top:18px">Réglages de l'emplacement</div>
     <div class="card">
@@ -4142,14 +4945,16 @@ async function ficheEmplacement(emp, retour) {
       <label for="fCode">Code</label>
       <input id="fCode" value="${esc(e.code)}" ${gerer ? '' : 'disabled'} autocomplete="off" autocapitalize="characters">
       <div class="aide">Renommer l'emplacement rend obsolètes les étiquettes QR déjà collées : réimprimez-la juste après.</div>
-      <label for="fMode">Mode de rangement</label>
-      <select id="fMode" ${gerer ? '' : 'disabled'}>${optionsModes(e.mode_places)}</select>
-      <div class="aide">${AIDE_MODE}${e.nb_cabines ? ' <b>Le mode ne peut changer que sur un emplacement vide.</b>' : ''}</div>
+      <label for="fMode">Ce qu’il range</label>
+      <select id="fMode" ${gerer ? '' : 'disabled'}>${optionsUsage(choixUsageDe(e))}</select>
+      <div class="aide">${AIDE_MODE}${(e.nb_cabines || (e.mp && e.mp.lignes))
+        ? ' <b>Ce réglage ne change que sur un emplacement vide.</b>' : ''}</div>
       <label for="fDesc">Description</label>
       <input id="fDesc" value="${esc(e.description || '')}" placeholder="facultatif" ${gerer ? '' : 'disabled'}>
-      <label class="case"><input type="checkbox" id="fStaging" ${e.staging ? 'checked' : ''} ${gerer ? '' : 'disabled'}> Zone de réception (« à ranger »)</label>
+      ${e.est_mp ? '' : `<label class="case"><input type="checkbox" id="fStaging" ${e.staging ? 'checked' : ''} ${gerer ? '' : 'disabled'}> Zone de réception (« à ranger »)</label>`}
       ${gerer ? '<button class="btn orange" id="fOk">Enregistrer les modifications</button>' : ''}
     </div>
+    ${blocCodesAcceptes(e, gerer)}
     ${blocMiseEnService(e, gerer)}
     <div class="row actions-fiche" style="margin-top:12px">
       <button class="btn ghost" id="fEtiq">${icon('print', 17)} Imprimer l'étiquette QR</button>
@@ -4161,6 +4966,7 @@ async function ficheEmplacement(emp, retour) {
   $('#fRetour').onclick = retour || renderEmplacements;
   $('#fEtiq').onclick = () => printLocationLabel(e.code);
   brancherMiseEnService(e, () => ficheEmplacement({ id: e.id }, retour));
+  brancherCodesAcceptes(e, () => ficheEmplacement({ id: e.id }, retour));
 
   // Occupation + opérations de rangement : l'écran partagé avec le scanner.
   montrerEmplacement(e, { sansReglages: true });
@@ -4173,11 +4979,14 @@ async function ficheEmplacement(emp, retour) {
     const bouton = $('#fOk');
     bouton.disabled = true;
     try {
+      // La case « à ranger » n'existe que pour les cabines : absente, on garde
+      // la valeur d'avant plutôt que de l'effacer.
+      const staging = $('#fStaging');
       await api(`/emplacements/${e.id}/`, { method: 'PATCH', body: {
         code,
-        mode_places: $('#fMode').value,
+        ...usageDeChoix($('#fMode').value, e),
         description: $('#fDesc').value.trim(),
-        staging: $('#fStaging').checked,
+        staging: staging ? staging.checked : Boolean(e.staging),
         // `actif` n'est PAS ici : il a ses règles et son propre geste, plus bas
         // dans l'écran. Le serveur le refuse d'ailleurs en lecture seule.
       } });
@@ -4206,13 +5015,18 @@ function blocMiseEnService(e, gerer) {
   const parPlace = Object.fromEntries(condamnees.map(p => [p.place, p]));
 
   /* Les places ne sont proposées que pour un emplacement à places nommées :
-     une aire à capacité illimitée n'en a pas, et le serveur le refuse. */
-  const places = e.illimite ? '' : `
-    <div class="sec">Les deux places</div>
-    <div class="meta" style="margin:-2px 0 8px">Une place condamnée ne prend plus
-      de cabine ; l'autre continue. Pour retirer l'emplacement entier, utilisez
-      « hors service » ci-dessus.</div>
-    <div class="list">${(REFS_CABINE.places || []).map(({ code, libelle }) => {
+     une aire à capacité illimitée n'en a pas, et le serveur le refuse. Un
+     emplacement de matières premières en a trois. */
+  const listePlaces = e.est_mp
+    ? [{ code: 'G', libelle: 'Gauche' }, { code: 'M', libelle: 'Milieu' }, { code: 'D', libelle: 'Droite' }]
+    : (REFS_CABINE.places || []);
+  const places = (e.illimite && !e.est_mp) ? '' : `
+    <div class="sec">${e.est_mp ? 'Les trois places' : 'Les deux places'}</div>
+    <div class="meta" style="margin:-2px 0 8px">${e.est_mp
+      ? 'Une place condamnée ne prend plus rien ; les autres continuent.'
+      : 'Une place condamnée ne prend plus de cabine ; l’autre continue.'} Pour retirer
+      l'emplacement entier, utilisez « hors service » ci-dessus.</div>
+    <div class="list">${listePlaces.map(({ code, libelle }) => {
       const c = parPlace[code];
       return `<div class="item" style="cursor:default">
         <div class="r">${esc(code)} — ${esc(libelle)} ${c
@@ -4236,9 +5050,10 @@ function blocMiseEnService(e, gerer) {
               ? esc(e.motif_inactif) : 'Aucun motif enregistré.'}${
             e.actif_par_nom ? ' — ' + esc(e.actif_par_nom) : ''}${quand ? ', le ' + esc(quand) : ''}</div>
            <div class="meta" style="margin-top:5px">Il garde son historique et reste
-             consultable, mais aucune cabine ne peut plus y être rangée.</div>`
-        : `<div class="meta" style="margin-top:5px">Les cabines peuvent y être
-             rangées.${quand ? ' Remis en service le ' + esc(quand) + '.' : ''}</div>`}
+             consultable, mais ${e.est_mp ? 'plus rien ne peut y être posé' : 'aucune cabine ne peut plus y être rangée'}.</div>`
+        : `<div class="meta" style="margin-top:5px">${e.est_mp
+             ? 'Les matières premières peuvent y être posées.'
+             : 'Les cabines peuvent y être rangées.'}${quand ? ' Remis en service le ' + esc(quand) + '.' : ''}</div>`}
       ${gerer ? `<button class="btn ${inactif ? 'orange' : 'danger'}" id="fBascule">${
         inactif ? 'Remettre en service' : 'Mettre hors service'}</button>` : ''}
       ${places}
@@ -4257,8 +5072,8 @@ function brancherMiseEnService(e, redessiner) {
       if (!inactif) {
         const rep = await confirmer({
           titre: 'Mettre ' + e.code + ' hors service ?',
-          texte: 'Plus aucune cabine ne pourra y être rangée. L’historique est '
-               + 'conservé, et le geste se défait.',
+          texte: (e.est_mp ? 'Plus rien ne pourra y être posé. ' : 'Plus aucune cabine ne pourra y être rangée. ')
+               + 'L’historique est conservé, et le geste se défait.',
           ok: 'Mettre hors service', danger: true,
           champ: { libelle: 'Pourquoi ?', placeholder: 'Ex. rack démonté, pilier devant',
                    obligatoire: true,
@@ -4286,7 +5101,8 @@ function brancherMiseEnService(e, redessiner) {
       if (condamnee) {
         const rep = await confirmer({
           titre: `Condamner la place ${place} de ${e.code} ?`,
-          texte: 'Cette place ne prendra plus de cabine. L’autre continue.',
+          texte: e.est_mp ? 'Cette place ne prendra plus rien. Les autres continuent.'
+                          : 'Cette place ne prendra plus de cabine. L’autre continue.',
           ok: 'Condamner', danger: true,
           champ: { libelle: 'Pourquoi ?', placeholder: 'Ex. pilier, montant tordu',
                    obligatoire: true,
@@ -5299,7 +6115,7 @@ async function renderTrouver(titre = 'Trouver une cabine') {
           : api('/cabines/?numero=' + encodeURIComponent(t)).then(d => d.results || []).catch(() => []),
       ]);
       const blocEmp = emps.length
-        ? `<div class="sec">Emplacements</div>${emps.slice(0, 4).map(e => `<div class="item" data-emp="${e.id}"><div class="r">${esc(e.code)}</div><div class="d">${esc(e.zone_cabine_nom || e.zone || '')}</div></div>`).join('')}`
+        ? `<div class="sec">Emplacements</div>${emps.slice(0, 4).map(e => `<div class="item" data-emp="${e.id}"><div class="r">${esc(e.code)}</div><div class="d">${esc(e.est_mp ? e.usage_libelle : (e.zone_cabine_nom || e.zone || ''))}</div></div>`).join('')}`
         : '';
       const blocCab = cabs.length
         ? `<div class="sec">Cabines</div>${cabs.slice(0, 5).map(c => `<div class="item" data-cab="${c.id}"><div class="r">${esc(c.numero)} ${badgeStatut(c)}</div><div class="d">Chantier ${esc(c.chantier || '—')}</div></div>`).join('')}`
@@ -5528,7 +6344,14 @@ async function boot() {
   PILE = [() => { ECRAN = 'scanner'; renderScanner(); }];
   RANG = 0;
   try { history.replaceState({ rang: 0 }, '', '#home'); } catch (_) {}
+  // Le nom de l'écran AVANT de le dessiner : resté à « home », il allumait
+  // « Tableau de bord » dans la barre latérale au-dessus de l'écran Cabines,
+  // et le pouls redessinait cet écran comme s'il était le tableau de bord.
+  ECRAN = 'scanner';
   renderScanner();
+  // La cloche n'attend pas le premier battement : ce qui sonnait avant la
+  // connexion se voit dès l'arrivée.
+  chargerAlertes();
 }
 
 if (token) { boot(); } else { renderLogin(); }
@@ -5840,6 +6663,1376 @@ async function appliquerImport(bouton) {
 }
 
 /* ===========================================================================
+   MATIÈRES PREMIÈRES — vitrages et cartons
+
+   Un parcours court, qui part de l'emplacement comme celui des cabines part
+   du numéro : on scanne l'étiquette du rack ou du chevalet, l'écran montre ses
+   trois places — gauche, milieu, droite — et ce qu'elles portent, et l'on
+   entre ou l'on sort.
+
+   Trois règles tiennent l'écran propre :
+   - le code se CHOISIT dans la base, il ne se tape pas en entier : on écrit
+     « vitr.8 » ou « 445 » et la liste se resserre. Un code tapé à la main finit
+     par exister en deux orthographes, et le stock se coupe en deux ;
+   - rien n'est présélectionné, ni la place ni la quantité : la palette posée à
+     droite ne doit pas s'écrire à gauche parce qu'on a validé trop vite ;
+   - une ancienne génération se confirme, en toutes lettres.
+   =========================================================================== */
+
+const FAMILLES_MP = {
+  vitrage: { un: 'vitrage', plusieurs: 'vitrages', titre: 'Vitrages',
+             exemple: 'Ex. vitr.445 ou 445' },
+  carton: { un: 'carton', plusieurs: 'cartons', titre: 'Cartons',
+            exemple: 'Ex. C8.FD ou ESS 1 F' },
+};
+const NOMS_PLACES_MP = { G: 'gauche', M: 'milieu', D: 'droite' };
+const PLACES_MP = ['G', 'M', 'D'];
+
+/** La clé de comparaison d'un code : la même règle que le serveur
+    (`normaliser_code_mp`). « vitr.445 », « VITR 445 » → « VITR445 ». */
+function cleMP(texte) {
+  return String(texte == null ? '' : texte).replace(/×/g, 'X')
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .toUpperCase().replace(/[^0-9A-Z]/g, '');
+}
+
+/** Une quantité saisie → entier ≥ 1, ou `null`. Pas de virgule : on compte des
+    pièces. Les espaces sont tolérés (« 1 600 »), le reste non. */
+function lireQuantite(brut) {
+  const t = String(brut == null ? '' : brut).replace(/\s/g, '');
+  if (!/^\d+$/.test(t)) return null;
+  const n = parseInt(t, 10);
+  return n >= 1 ? n : null;
+}
+
+/** « 19 vitrages », « 1 carton ». */
+function quantiteMP(n, famille) {
+  const f = FAMILLES_MP[famille] || { un: 'pièce', plusieurs: 'pièces' };
+  return `${n} ${n > 1 ? f.plusieurs : f.un}`;
+}
+
+const badgeAncienne = (a) => (a && a.ancienne_generation
+  ? ' <span class="etat ancienne">ancienne gen</span>' : '');
+
+/** Ce qu'on lit sous un code : désignation, fournisseur, n° article. */
+const sousTitreArticle = (a) => [a.designation,
+  a.fournisseur ? a.fournisseur + (a.numero ? ' n°' + a.numero : '') : (a.numero ? 'n°' + a.numero : ''),
+].filter(Boolean).map(esc).join(' · ');
+
+/* --- L'onglet MP --------------------------------------------------------- */
+
+async function renderMP() {
+  const agir = peut('mp');
+  layout(`<h2 class="title">Matières premières</h2>
+    <div class="meta" style="margin:-4px 0 14px">Vitrages et cartons. Tout part de
+      l’emplacement : scanne son étiquette, puis entre ou sors.</div>
+    ${agir ? '' : `<div class="banner">Consultation seule : la case « matières
+      premières » de ton compte est nécessaire pour entrer ou sortir du stock.</div>`}
+    <div class="gestes">
+      <button class="geste" id="mQr">
+        <span class="ic">${icon('scan', 26)}</span>
+        <span class="t">Scanner un emplacement MP</span>
+        <span class="s">L’étiquette du rack ou du chevalet</span>
+      </button>
+      <button class="geste" id="mCherche">
+        <span class="ic">${icon('search', 26)}</span>
+        <span class="t">Trouver par code élément</span>
+        <span class="s">Un vitrage, un carton : où il est, combien il en reste</span>
+      </button>
+    </div>
+    <div id="mCam"></div>
+    <div class="card">
+      <div class="sec" style="margin-top:0">Ou saisir l’emplacement</div>
+      <input id="mEmp" placeholder="Ex. AH500" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      <div class="list" id="mEmpSugg"></div>
+      <div id="mEmpEtat"></div>
+      <button class="btn ghost" id="mEmpOk">Continuer</button>
+    </div>
+    <div class="sec">En stock</div>
+    <div class="kpis" id="mKpis"><div class="kpi"><div class="l">Chargement…</div></div></div>
+    <div class="pied">
+      <button data-go="stockmp">${icon('search', 16)} Tout le stock MP</button>
+      <button data-go="journalmp">${icon('history', 16)} Journal MP</button>
+    </div>`, 'mp');
+
+  // « Trouver par code élément » : le Stock côté MP, le curseur déjà dans la
+  // recherche.
+  $('#mCherche').onclick = () => ouvrirStockMP({}, { chercher: true });
+  $('#mQr').onclick = () => {
+    const zone = $('#mCam');
+    if (!zone) return;
+    zone.innerHTML = blocCameraHTML('Scanner un emplacement MP',
+                                    'L’étiquette du rack ou du chevalet');
+    brancherCamera((texte) => retenirEmplacementMP(texte));
+    const allumer = $('#camGo');
+    if (allumer) allumer.click();
+    zone.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+
+  const champ = $('#mEmp');
+  const valider = async () => {
+    const refus = await retenirEmplacementMP(champ.value);
+    const etat = $('#mEmpEtat');
+    if (etat) etat.innerHTML = refus ? `<div class="banner" style="margin:10px 0 0">${esc(refus)}</div>` : '';
+  };
+  $('#mEmpOk').onclick = valider;
+  champ.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); valider(); } };
+  // Les emplacements MP qui ressemblent à la saisie : on tape « AH5 », on touche.
+  champ.oninput = debounce(async () => {
+    const boite = $('#mEmpSugg');
+    const t = champ.value.replace(/^LOC:/i, '').trim();
+    if (!boite) return;
+    if (t.length < 2) { boite.innerHTML = ''; return; }
+    try {
+      const res = (await api('/emplacements/?usage=mp&search=' + encodeURIComponent(t))).results || [];
+      boite.innerHTML = res.slice(0, 6).map(e => `<div class="item" data-emp="${e.id}">
+          <div class="r">${esc(e.code)} ${etiquetteEtat(e)}</div></div>`).join('')
+        || '<div class="empty" style="padding:12px">Aucun emplacement MP ne correspond</div>';
+      boite.querySelectorAll('[data-emp]').forEach(n => n.onclick = () => {
+        const e = res.find(x => String(x.id) === n.dataset.emp);
+        if (e) ouvrirEmplacementMP(e);
+      });
+    } catch (e) { boite.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  }, 220);
+
+  try {
+    const c = await api('/mp/filtres/');
+    const k = $('#mKpis');
+    if (!k) return;
+    const bas = c.sous_seuil || 0;
+    k.innerHTML = ['vitrage', 'carton'].map(f => {
+      const x = (c.familles || {})[f] || { codes: 0, quantite: 0 };
+      return `<div class="kpi clic kpi-mp ${f}" data-fam="${f}">
+        <div class="l">${FAMILLES_MP[f].titre}</div>
+        <div class="v">${x.quantite}</div>
+        <div class="l">${x.codes} code${x.codes > 1 ? 's' : ''} en stock</div></div>`;
+    }).join('')
+      // Les codes sous leur seuil : la même chose que la cloche, là où l'on
+      // regarde le stock. Sur toute la largeur — un troisième chiffre seul sur
+      // sa ligne aurait l'air d'avoir perdu son voisin.
+      + `<div class="kpi clic kpi-seuil${bas ? ' warn' : ''}" data-seuil>
+          <div class="l">Sous le seuil d’alerte</div>
+          <div class="v">${bas}</div>
+          <div class="l">${bas ? `code${bas > 1 ? 's' : ''} à recommander — voir la liste`
+                               : 'aucun code à recommander'}</div></div>`
+      + (c.emplacements_mp ? '' : `<div class="banner" style="grid-column:1/-1;margin:0">
+        Aucun emplacement n’est encore réglé pour les matières premières.
+        ${peut('ref') ? 'Emplacements → un rack → « Sélectionner » → « Ce qu’ils rangent ».'
+                      : 'Un responsable du référentiel doit les régler.'}</div>`);
+    k.querySelectorAll('[data-fam]').forEach(n => n.onclick = () =>
+      ouvrirStockMP({ famille: n.dataset.fam }));
+    const seuil = k.querySelector('[data-seuil]');
+    if (seuil) seuil.onclick = () => ouvrirStockMP({ sous_seuil: '1' });
+  } catch (e) {
+    const k = $('#mKpis');
+    if (k) k.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+/** QR lu (ou code saisi) : un emplacement MP s'ouvre, un autre se refuse — et le
+    refus dit pourquoi, sur la vidéo. Renvoie '' quand l'écran suivant est ouvert. */
+async function retenirEmplacementMP(texte) {
+  const code = String(texte || '').replace(/^(LOC|CAB):/i, '').trim();
+  if (!code) return 'Saisis le code de l’emplacement.';
+  if (MOTIF_NUMERO_CABINE.test(code)) {
+    return `${code} est un n° de cabine : scanne l’étiquette de l’emplacement.`;
+  }
+  try {
+    const d = await api('/mp/emplacement/?code=' + encodeURIComponent(code));
+    if (!d.est_mp) return d.refus || `${d.code} range des cabines.`;
+    await arreterCamera();
+    ouvrirEmplacementMP({ id: d.emplacement, code: d.code });
+    return '';
+  } catch (e) { return e.message; }
+}
+
+/** L'écran d'un emplacement MP, avec son entrée d'historique. */
+function ouvrirEmplacementMP(emp) {
+  ouvrirEcran(() => ecranEmplacementMP(emp), 'mp-emplacement');
+}
+
+async function ecranEmplacementMP(emp) {
+  ECRAN = 'mp-emplacement';
+  layout(`<h2 class="title">Matières premières</h2>
+    <div id="zone"></div>
+    <div class="pied">
+      <button data-go="mp">${icon('scan', 16)} Un autre emplacement</button>
+      <button data-go="stockmp">${icon('search', 16)} Stock MP</button>
+    </div>`, 'mp');
+  await montrerEmplacementMP(emp);
+}
+
+/** Une place et ce qu'elle porte. Chaque ligne se touche : pour en sortir —
+    ou, quand on choisit ce qui change d'emplacement, pour la cocher
+    (`choisies` : les identifiants cochés, `null` hors de ce choix). */
+function placeMPHTML(p, cliquable, choisies = null) {
+  const lignes = p.lignes.map(l => `<button type="button" class="mp-ligne${
+      l.hors_reservation ? ' hors' : ''}" data-ligne="${l.id}"${
+      choisies ? ` aria-pressed="${String(choisies.has(String(l.id)))}"` : ''}${cliquable ? '' : ' disabled'}>
+      <span class="code-mp">${esc(l.code)}</span>
+      <span class="q">${l.quantite}</span>
+      <span class="d">${esc(l.designation || '')}${l.ancienne_generation
+        ? ' · <b class="ancienne-txt">ancienne génération</b>' : ''}${l.hors_reservation
+        ? ' · <b class="hors-txt">plus accepté ici : à changer d’emplacement</b>' : ''}</span>
+    </button>`).join('');
+  const vide = p.condamnee
+    ? `<div class="mp-vide">Condamnée — ${esc(p.condamnee)}</div>`
+    : (p.lignes.length ? '' : '<div class="mp-vide">libre</div>');
+  return `<div class="mp-place${p.condamnee ? ' condamnee' : ''}">
+    <div class="mp-lettre"><b>${esc(p.code)}</b><span>${esc(NOMS_PLACES_MP[p.code] || '')}</span></div>
+    <div class="mp-contenu">${lignes}${vide}</div>
+  </div>`;
+}
+
+/** Le contenu d'un emplacement MP, et ses trois gestes : entrer, sortir,
+    changer d'emplacement.
+
+    S'écrit dans le `#zone` de l'écran courant — l'écran MP, la fiche d'un
+    emplacement, ou l'écran Cabines quand on y a lu une étiquette MP. `apres`
+    est la phrase de réussite du geste précédent : elle reste affichée
+    au-dessus, le temps d'enchaîner le suivant. `alerte` la complète quand le
+    geste a fait passer un code sous son seuil, et `arrivee` propose d'ouvrir
+    l'emplacement où le stock vient d'arriver. */
+async function montrerEmplacementMP(emp, opts = {}) {
+  const zone = zoneEcran();
+  if (!zone) return;
+  const redessiner = (apres, suite = {}) => montrerEmplacementMP(emp, {
+    ...opts, apres, alerte: suite.alerte || '', arrivee: suite.arrivee || null });
+  zone.innerHTML = '<div class="empty">Chargement…</div>';
+  let d;
+  try { d = await api('/mp/emplacement/?id=' + encodeURIComponent(emp.id)); }
+  catch (e) { zone.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  // L'opérateur a pu changer d'écran pendant la lecture : rien à dessiner.
+  if (!zone.isConnected) return;
+  if (!d.est_mp) { zone.innerHTML = `<div class="banner">${esc(d.refus)}</div>`; return; }
+
+  const agir = peut('mp');
+  const lignes = d.places.flatMap(p => p.lignes);
+  const acceptes = d.codes_acceptes || [];
+  zone.innerHTML = `
+    ${opts.apres ? `<div class="banner fait">${esc(opts.apres)}</div>` : ''}
+    ${opts.alerte ? `<div class="banner">${esc(opts.alerte)}</div>` : ''}
+    ${opts.arrivee ? `<div class="row" style="margin:-4px 0 14px"><button class="btn ghost" id="mpArrivee"
+        style="margin-top:0">${icon('transfer', 17)} Ouvrir ${esc(opts.arrivee.code)}, où le stock est arrivé</button></div>` : ''}
+    <div class="card emp-mp ${esc(d.famille)}">
+      <div class="emp-mp-tete">
+        <div><span class="famille-mp ${esc(d.famille)}">${esc(d.usage_libelle)}</span>
+          <div class="r">Emplacement ${esc(d.code)}</div></div>
+        <span class="total">${d.nb_lignes ? quantiteMP(d.quantite, d.famille) : 'vide'}</span>
+      </div>
+      ${acceptes.length ? `<div class="mp-reserve"><span class="l">Réservé à</span>${
+        acceptes.map(a => `<span class="jeton">${esc(a.code)}</span>`).join('')}</div>` : ''}
+      ${d.actif ? '' : `<div class="banner" style="margin:10px 0 0">${esc(d.code)} est hors
+        service${d.motif_inactif ? ' : ' + esc(d.motif_inactif) : ''}. Rien n’y entre plus ;
+        ce qui y reste peut encore sortir ou changer d’emplacement.</div>`}
+      <div class="mp-places" id="mpPlacesVue">${d.places.map(p => placeMPHTML(p, agir)).join('')}</div>
+      ${agir ? `<div class="row" style="margin-top:12px">
+          <button class="btn orange" id="mpEntrer" style="margin-top:0"${d.actif ? '' : ' disabled'}>${icon('in', 17)} Entrer</button>
+          <button class="btn ghost" id="mpSortir" style="margin-top:0"${d.nb_lignes ? '' : ' disabled'}>${icon('out', 17)} Sortir</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn ghost" id="mpDeplacer" style="margin-top:0"${d.nb_lignes ? '' : ' disabled'}>${
+            icon('transfer', 17)} Changer d’emplacement</button>
+        </div>` : `<div class="meta" style="margin-top:10px">Consultation seule : la case
+          « matières premières » est nécessaire pour entrer, sortir ou déplacer.</div>`}
+      <div id="mpAct"></div>
+    </div>
+    ${(peut('ref') && !opts.sansReglages) ? `<button class="btn ghost" id="mpReglage" style="margin-top:12px">${
+      icon('cog', 17)} Régler cet emplacement — codes acceptés, places</button>` : ''}
+    ${opts.pied ? piedGestes({ suite: 'Scanner autre chose' }) : ''}`;
+  // Le pied et le réglage sont écrits dans un `#zone` : `layout()` ne les a
+  // pas branchés.
+  zone.querySelectorAll('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
+  const reglage = zone.parentNode && zone.parentNode.querySelector('#mpReglage');
+  if (reglage) reglage.onclick = () => ficheEmplacement({ id: d.emplacement }, opts.retour || renderEmplacements);
+  const versArrivee = zone.querySelector('#mpArrivee');
+  if (versArrivee) versArrivee.onclick = () => ouvrirEmplacementMP(opts.arrivee);
+  if (!agir) return;
+
+  const vue = zone.querySelector('#mpPlacesVue');
+  const act = zone.querySelector('#mpAct');
+  // Le choix de ce qui change d'emplacement : un ensemble d'identifiants le
+  // temps du choix, `null` le reste du temps — une ligne touchée ouvre alors
+  // sa sortie, comme avant.
+  let choisies = null;
+  const ouvrirSortie = (id) => {
+    const ligne = lignes.find(l => String(l.id) === String(id));
+    if (ligne) ouvrirSortieMP(d, ligne, redessiner);
+  };
+  const dessinerPlaces = () => {
+    vue.classList.toggle('selection', Boolean(choisies));
+    vue.classList.remove('choisir');
+    vue.innerHTML = d.places.map(p => placeMPHTML(p, true, choisies)).join('');
+    vue.querySelectorAll('.mp-ligne[data-ligne]').forEach(b => b.onclick = () => toucher(b.dataset.ligne));
+  };
+  const toucher = (id) => {
+    if (!choisies) { ouvrirSortie(id); return; }
+    if (choisies.has(id)) choisies.delete(id); else choisies.add(id);
+    dessinerPlaces();
+    barreChoix();
+  };
+  const quitterChoix = () => { arreterCamera(); choisies = null; dessinerPlaces(); act.innerHTML = ''; };
+  const versLArrivee = (parties, retour, libelleRetour) => {
+    // Pendant le choix de l'arrivée, la sélection est figée : elle se modifie
+    // par « Modifier la sélection », pas d'un doigt qui frôle une ligne.
+    vue.querySelectorAll('.mp-ligne').forEach(b => { b.disabled = true; });
+    ouvrirDeplacementMP(d, parties, redessiner, retour, libelleRetour);
+  };
+  const barreChoix = () => {
+    const n = choisies.size;
+    act.innerHTML = `<div class="mp-panneau">
+      <div class="sec" style="margin-top:0">Changer d’emplacement</div>
+      <div class="aide" style="margin:0 0 10px">Touche, ci-dessus, ce qui part — une ligne ou
+        plusieurs. Elles iront toutes au même endroit.</div>
+      <button class="btn orange" id="mpChoixOk" style="margin-top:0"${n ? '' : ' disabled'}>${n
+        ? `Choisir l’arrivée — ${n} ligne${n > 1 ? 's' : ''}` : 'Touche au moins une ligne'}</button>
+      <div class="row" style="margin-top:8px">
+        <button class="btn ghost" id="mpChoixTout" style="margin-top:0"${n === lignes.length ? ' disabled' : ''}>Tout cocher</button>
+        <button class="btn ghost" id="mpChoixNon" style="margin-top:0">Annuler</button>
+      </div></div>`;
+    act.querySelector('#mpChoixOk').onclick = () => {
+      const parties = lignes.filter(l => choisies.has(String(l.id)));
+      if (parties.length) {
+        versLArrivee(parties, () => { dessinerPlaces(); barreChoix(); }, '← Modifier la sélection');
+      }
+    };
+    act.querySelector('#mpChoixTout').onclick = () => {
+      lignes.forEach(l => choisies.add(String(l.id)));
+      dessinerPlaces();
+      barreChoix();
+    };
+    act.querySelector('#mpChoixNon').onclick = quitterChoix;
+  };
+
+  dessinerPlaces();
+  zone.querySelector('#mpEntrer').onclick = () => {
+    if (choisies) quitterChoix();
+    ouvrirEntreeMP(d, redessiner);
+  };
+  zone.querySelector('#mpSortir').onclick = () => {
+    if (choisies) quitterChoix();
+    if (lignes.length === 1) { ouvrirSortie(lignes[0].id); return; }
+    // Plusieurs lignes : on désigne celle qu'on emporte, à l'endroit où elle est.
+    vue.classList.add('choisir');
+    act.innerHTML = `<div class="banner" style="margin:12px 0 0">Touche, ci-dessus,
+      la ligne à sortir.</div>`;
+    vue.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+  zone.querySelector('#mpDeplacer').onclick = () => {
+    arreterCamera();                 // celle d'une arrivée laissée en plan
+    // Une seule ligne : il n'y a rien à choisir, on passe à l'arrivée.
+    if (lignes.length === 1) {
+      choisies = new Set([String(lignes[0].id)]);
+      dessinerPlaces();
+      versLArrivee(lignes.slice(), quitterChoix, 'Annuler');
+      return;
+    }
+    choisies = new Set();
+    dessinerPlaces();
+    barreChoix();
+    vue.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+}
+
+/** Les trois places, à toucher. Une place condamnée se montre, éteinte, avec sa
+    raison : une place qui disparaît passe pour un défaut d'affichage.
+    `exclues` : les places d'où part ce qu'on déplace, quand l'arrivée est le
+    même emplacement — y « déplacer » ne déplacerait rien. */
+function placesMPHTML(d, opts = {}) {
+  const exclues = opts.exclues || new Set();
+  return `<div class="places" id="mpPlaces">${d.places.map(p => {
+    const depart = exclues.has(p.code);
+    const etat = p.condamnee ? 'condamnée' : depart ? 'départ'
+      : (p.lignes.length ? `${p.lignes.length} code${p.lignes.length > 1 ? 's' : ''}` : 'libre');
+    const eteinte = p.condamnee || depart;
+    return `<button type="button" class="place${p.condamnee ? ' condamnee' : ''}${depart ? ' depart' : ''}" data-place="${esc(p.code)}"
+        aria-pressed="false"${eteinte ? ` disabled title="${esc(p.condamnee || 'C’est d’ici que ça part')}"` : ''}>
+        <span class="c">${esc(p.code)}</span>
+        <span class="l">${esc(NOMS_PLACES_MP[p.code] || '')}</span>
+        <span class="l${p.condamnee ? ' o' : ''}">${esc(etat)}</span></button>`;
+  }).join('')}</div>`;
+}
+
+/** Entrer : la place, le code choisi dans la base, la quantité. Dans cet ordre,
+    celui du geste devant le rack : on pose, on lit l'étiquette, on compte.
+
+    Un emplacement réservé propose ses codes d'une touche, et la recherche ne
+    cherche que parmi eux : le serveur refuserait les autres. */
+function ouvrirEntreeMP(d, redessiner) {
+  const zone = $('#mpAct');
+  if (!zone) return;
+  const vue = $('#mpPlacesVue');
+  if (vue) vue.classList.remove('choisir');
+  const fam = FAMILLES_MP[d.famille] || FAMILLES_MP.vitrage;
+  const acceptes = d.codes_acceptes || [];
+  let place = null;
+  let article = null;
+  let propositions = [];
+
+  zone.innerHTML = `<div class="mp-panneau">
+    <div class="sec" style="margin-top:0">Entrer des ${esc(fam.plusieurs)} en ${esc(d.code)}</div>
+    <label>Place</label>
+    ${placesMPHTML(d)}
+    <label for="mpCode">Code élément</label>
+    ${acceptes.length ? `<div class="aide" style="margin:0 0 8px">${esc(d.code)} est réservé à
+        ${acceptes.length > 1 ? 'ces codes' : 'ce code'} : touche celui que tu poses.</div>
+      <div class="chips">${acceptes.map(a => `<button type="button" class="chip" data-accepte="${a.id}">${
+        esc(a.code)}</button>`).join('')}</div>` : ''}
+    <input id="mpCode" placeholder="${esc(acceptes.length ? 'Ou cherche parmi eux' : fam.exemple)}" autocomplete="off"
+           autocapitalize="characters" autocorrect="off" spellcheck="false">
+    <div class="list" id="mpSugg"></div>
+    <div id="mpChoisi"></div>
+    <label for="mpQte">Quantité (${esc(fam.plusieurs)})</label>
+    <div class="qte-mp"><input id="mpQte" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
+      <span id="mpColis"></span></div>
+    <div class="manque" id="mpManque"></div>
+    <button class="btn orange" id="mpOk" disabled>Entrer</button>
+    <button class="btn ghost" id="mpAnnul">Annuler</button>
+  </div>`;
+
+  const champ = $('#mpCode'), qte = $('#mpQte'), bouton = $('#mpOk');
+
+  const majBouton = () => {
+    const n = lireQuantite(qte.value);
+    const manque = !place ? 'Touche une place'
+      : !article ? 'Choisis le code dans la liste'
+      : !n ? 'Indique la quantité' : '';
+    bouton.disabled = Boolean(manque);
+    bouton.textContent = manque || `Entrer ${quantiteMP(n, d.famille)} en ${place} — ${NOMS_PLACES_MP[place]}`;
+  };
+
+  zone.querySelectorAll('#mpPlaces .place').forEach(b => {
+    if (b.disabled) return;
+    b.onclick = () => {
+      place = b.dataset.place;
+      zone.querySelectorAll('#mpPlaces .place').forEach(x =>
+        x.setAttribute('aria-pressed', String(x.dataset.place === place)));
+      majBouton();
+      if (!article && !acceptes.length) champ.focus();
+    };
+  });
+
+  const choisir = (a) => {
+    article = a;
+    champ.value = a.code;
+    $('#mpSugg').innerHTML = '';
+    zone.querySelectorAll('[data-accepte]').forEach(x =>
+      x.classList.toggle('on', String(x.dataset.accepte) === String(a.id)));
+    // Où ce code est-il attendu, s'il l'est ailleurs qu'ici ? La réponse à
+    // « est-ce que je le pose au bon endroit ? », avant de le poser.
+    const ailleurs = (a.reserve_sur || []).filter(c => c !== d.code);
+    $('#mpChoisi').innerHTML = `<div class="mp-choisi${a.ancienne_generation ? ' ancienne' : ''}">
+      <b class="code-mp">${esc(a.code)}</b>${badgeAncienne(a)}
+      <div>${sousTitreArticle(a)}</div>
+      ${a.ancienne_generation ? '<div><b>Ancienne génération</b> : l’entrée te sera demandée en confirmation.</div>' : ''}
+      ${ailleurs.length && !acceptes.length ? `<div>Ce code a sa place réservée en <b>${
+        esc(listeCodes(ailleurs))}</b>.</div>` : ''}
+    </div>`;
+    $('#mpColis').innerHTML = a.colisage
+      ? `<button type="button" class="chip" id="mpPalette">${a.colisage} · 1 palette</button>` : '';
+    const palette = $('#mpPalette');
+    if (palette) palette.onclick = () => { qte.value = String(a.colisage); majBouton(); };
+    majBouton();
+    qte.focus();
+  };
+
+  zone.querySelectorAll('[data-accepte]').forEach(b => b.onclick = () => {
+    const a = acceptes.find(x => String(x.id) === b.dataset.accepte);
+    if (a) choisir(a);
+  });
+
+  // Le code a été choisi — d'une touche sur une pastille, ou dans la liste —
+  // pendant qu'une recherche attendait son tour : elle n'a plus rien à dire.
+  const dejaChoisi = () => Boolean(article) && cleMP(champ.value) === cleMP(article.code);
+  const proposer = debounce(async () => {
+    const t = champ.value.trim();
+    const boite = $('#mpSugg');
+    if (!boite) return;
+    if (!cleMP(t) || dejaChoisi()) { boite.innerHTML = ''; propositions = []; return; }
+    try {
+      propositions = await api(`/mp/suggestions/?famille=${encodeURIComponent(d.famille)}`
+        + `&emplacement=${encodeURIComponent(d.emplacement)}&q=${encodeURIComponent(t)}`);
+      if (champ.value.trim() !== t || dejaChoisi()) return;   // on a tapé, ou choisi, entre-temps
+      boite.innerHTML = propositions.length
+        ? propositions.slice(0, 8).map(a => `<div class="item sugg-mp" data-art="${a.id}">
+            <div class="r"><span class="code-mp">${esc(a.code)}</span>${badgeAncienne(a)}</div>
+            <div class="d">${sousTitreArticle(a)}${a.en_stock ? ` · <b>${a.en_stock}</b> en stock` : ''}</div>
+          </div>`).join('')
+        : `<div class="empty" style="padding:12px">${acceptes.length
+            ? `Aucun des codes acceptés en ${esc(d.code)} ne ressemble à « ${esc(t)} ». Un autre code se
+               pose sur un autre emplacement.`
+            : `Aucun ${esc(fam.un)} de la base ne ressemble à « ${esc(t)} ».`}</div>`;
+      boite.querySelectorAll('[data-art]').forEach(n => n.onclick = () => {
+        const a = propositions.find(x => String(x.id) === n.dataset.art);
+        if (a) choisir(a);
+      });
+    } catch (e) { boite.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  }, 160);
+
+  champ.oninput = () => {
+    // Le texte ne correspond plus au code choisi : on repart de la liste.
+    if (article && cleMP(champ.value) !== cleMP(article.code)) {
+      article = null;
+      $('#mpChoisi').innerHTML = '';
+      $('#mpColis').innerHTML = '';
+      zone.querySelectorAll('[data-accepte]').forEach(x => x.classList.remove('on'));
+      majBouton();
+    }
+    proposer();
+  };
+  champ.onkeydown = (ev) => {
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    // Entrée : le code exact, ou la seule proposition. Jamais la première d'une liste.
+    const exact = propositions.find(a => cleMP(a.code) === cleMP(champ.value));
+    if (exact) choisir(exact);
+    else if (propositions.length === 1) choisir(propositions[0]);
+  };
+  qte.oninput = majBouton;
+  qte.onkeydown = (ev) => { if (ev.key === 'Enter' && !bouton.disabled) { ev.preventDefault(); bouton.click(); } };
+  $('#mpAnnul').onclick = () => { zone.innerHTML = ''; };
+
+  bouton.onclick = async () => {
+    const n = lireQuantite(qte.value);
+    if (!place || !article || !n) { majBouton(); return; }
+    if (article.ancienne_generation) {
+      const ok = await confirmer({
+        titre: 'Attention : ancienne génération',
+        texte: `${article.code} est une ancienne génération. Tu veux vraiment l’entrer ?`,
+        ok: 'Oui, l’entrer', annuler: 'Non', danger: true,
+      });
+      if (!ok) return;
+    }
+    bouton.disabled = true;
+    bouton.textContent = 'Enregistrement…';
+    try {
+      await api('/mp/entrer/', { method: 'POST', body: {
+        emplacement: d.emplacement, place: place, article: article.id, quantite: n,
+        ancienne_confirmee: Boolean(article.ancienne_generation),
+      } });
+      const phrase = `Entré : ${quantiteMP(n, d.famille)} ${article.code} en ${d.code}·${place}.`;
+      toast(phrase, 'ok');
+      chargerAlertes();
+      redessiner(phrase + ' Autre chose ?');
+    } catch (e) {
+      const manque = $('#mpManque');
+      if (manque) { manque.textContent = e.message; majBouton(); } else toast(e.message, 'err');
+    }
+  };
+  majBouton();
+}
+
+//: Les motifs de sortie qui reviennent : un geste au lieu d'une phrase à taper.
+const MOTIFS_SORTIE_MP = ['Production', 'Casse', 'Inventaire', 'Retour fournisseur'];
+
+/** La phrase qui suit une sortie quand le code vient de passer sous son seuil. */
+function phraseSeuil(a) {
+  if (!a || !a.sous_seuil) return '';
+  return `${a.code} est sous son seuil d’alerte : ${a.en_stock
+    ? `plus que ${quantiteMP(a.en_stock, a.famille)} en stock` : 'plus aucun en stock'}, pour un seuil de ${a.seuil}.`;
+}
+
+/** Sortir une ligne : combien, et pourquoi si on veut le dire. */
+function ouvrirSortieMP(d, ligne, redessiner) {
+  const zone = $('#mpAct');
+  if (!zone) return;
+  const vue = $('#mpPlacesVue');
+  if (vue) vue.classList.remove('choisir');
+  zone.innerHTML = `<div class="mp-panneau">
+    <div class="sec" style="margin-top:0">Sortir de ${esc(d.code)}·${esc(ligne.place)} — ${esc(NOMS_PLACES_MP[ligne.place] || '')}</div>
+    <div class="mp-choisi${ligne.ancienne_generation ? ' ancienne' : ''}">
+      <b class="code-mp">${esc(ligne.code)}</b>${badgeAncienne(ligne)}
+      <div>${esc(ligne.designation || '')}</div>
+      <div><b>${quantiteMP(ligne.quantite, ligne.famille)}</b> à cette place</div>
+    </div>
+    <label for="mpQs">Combien ?</label>
+    <div class="qte-mp"><input id="mpQs" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
+      <button type="button" class="chip" id="mpTout">Tout · ${ligne.quantite}</button></div>
+    <label for="mpNote">Pour quoi ? <span class="muted">(facultatif)</span></label>
+    <div class="chips" style="margin-bottom:8px">${MOTIFS_SORTIE_MP.map(m =>
+      `<button type="button" class="chip" data-motif="${esc(m)}">${esc(m)}</button>`).join('')}</div>
+    <input id="mpNote" placeholder="Ou écris-le" autocomplete="off" maxlength="200">
+    <div class="manque" id="mpManque"></div>
+    <button class="btn orange" id="mpSortOk" disabled>Sortir</button>
+    <button class="btn ghost" id="mpAnnul">Annuler</button>
+  </div>`;
+  zone.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+  const qte = $('#mpQs'), note = $('#mpNote'), bouton = $('#mpSortOk');
+  const maj = () => {
+    const n = lireQuantite(qte.value);
+    const trop = n && n > ligne.quantite;
+    bouton.disabled = !n || trop;
+    bouton.textContent = !n ? 'Indique la quantité'
+      : trop ? `Il n’y en a que ${ligne.quantite}`
+      : n === ligne.quantite ? `Tout sortir — ${quantiteMP(n, ligne.famille)}`
+      : `Sortir ${quantiteMP(n, ligne.famille)} — il en restera ${ligne.quantite - n}`;
+  };
+  qte.oninput = maj;
+  qte.onkeydown = (ev) => { if (ev.key === 'Enter' && !bouton.disabled) { ev.preventDefault(); bouton.click(); } };
+  $('#mpTout').onclick = () => { qte.value = String(ligne.quantite); maj(); };
+  zone.querySelectorAll('[data-motif]').forEach(b => b.onclick = () => {
+    note.value = b.dataset.motif;
+    zone.querySelectorAll('[data-motif]').forEach(x => x.classList.toggle('on', x === b));
+  });
+  $('#mpAnnul').onclick = () => { zone.innerHTML = ''; };
+  qte.focus();
+
+  bouton.onclick = async () => {
+    const n = lireQuantite(qte.value);
+    if (!n || n > ligne.quantite) { maj(); return; }
+    bouton.disabled = true;
+    bouton.textContent = 'Enregistrement…';
+    try {
+      const r = await api('/mp/sortir/', { method: 'POST', body: {
+        ligne: ligne.id, quantite: n, note: note.value.trim() } });
+      const phrase = `Sorti : ${quantiteMP(n, ligne.famille)} ${ligne.code} de ${d.code}·${ligne.place}`
+        + (r.reste ? ` — il en reste ${r.reste}.` : ' — la place est vide pour ce code.');
+      toast(phrase, 'ok');
+      chargerAlertes();
+      redessiner(phrase, { alerte: phraseSeuil(r.article) });
+    } catch (e) {
+      const manque = $('#mpManque');
+      if (manque) { manque.textContent = e.message; maj(); } else toast(e.message, 'err');
+    }
+  };
+  maj();
+}
+
+/* --- Changer d'emplacement --------------------------------------------------
+   Déplacer une palette, c'était la sortir puis la rentrer : deux saisies, et
+   au journal une « sortie » qui comptait comme une consommation. Ici, un geste
+   et une ligne de journal par ligne déplacée — d'où, vers où. On choisit ce
+   qui part, puis l'arrivée —
+   scannée ou tapée — et sa place. Ce que l'arrivée refuserait se dit avant le
+   geste, avec la même règle que le serveur, qui la redit au besoin.          */
+
+/** Pourquoi ces lignes ne peuvent pas aller sur cet emplacement — '' si elles
+    le peuvent. `e` vient de la liste des emplacements ou de `/mp/emplacement/` :
+    les deux portent `est_mp`, `actif`, `usage` et `codes_acceptes[].code`. */
+function refusArrivee(e, parties) {
+  if (!e.est_mp) return `${e.code} range des cabines.`;
+  if (e.actif === false) return `${e.code} est hors service.`;
+  const famille = parties.length ? parties[0].famille : e.usage;
+  if (e.usage !== famille) {
+    return `${e.code} range des ${(FAMILLES_MP[e.usage] || { plusieurs: e.usage }).plusieurs}.`;
+  }
+  const acceptes = (e.codes_acceptes || []).map(a => a.code);
+  if (acceptes.length) {
+    const refuses = [...new Set(parties.filter(l => !acceptes.includes(l.code)).map(l => l.code))];
+    if (refuses.length) {
+      return `${e.code} est réservé à ${listeCodes(acceptes)} : ${listeCodes(refuses)} n’y ${
+        refuses.length > 1 ? 'vont' : 'va'} pas.`;
+    }
+  }
+  return '';
+}
+
+/** Le bouton du geste : ce qui part, combien, et où — lu avant d'appuyer. */
+function phraseDeplacement(items, vers) {
+  if (items.length === 1) return `Déplacer ${items[0].quantite} ${items[0].code} vers ${vers}`;
+  const total = items.reduce((n, x) => n + x.quantite, 0);
+  return `Déplacer ${items.length} lignes — ${quantiteMP(total, items[0].famille)} — vers ${vers}`;
+}
+
+/** Ce que dit l'écran une fois le geste fait, d'après la réponse du serveur. */
+function phraseDeplace(deplaces) {
+  if (!deplaces || !deplaces.length) return '';
+  return `Déplacé : ${listeCodes(deplaces.map(x => `${x.quantite} ${x.code}`))} vers ${deplaces[0].destination}.`;
+}
+
+/** Changer d'emplacement : combien de chaque ligne, vers où, à quelle place.
+
+    Une ligne part entière si l'on ne dit rien — c'est la palette qu'on
+    déplace, et le bouton dit « les 19 » avant qu'on appuie ; une quantité
+    tapée n'en déplace qu'une partie. Les places d'arrivée se touchent, et
+    rien n'est choisi d'office. */
+function ouvrirDeplacementMP(d, parties, redessiner, retour, libelleRetour) {
+  const zone = $('#mpAct');
+  if (!zone) return;
+  const fam = FAMILLES_MP[d.famille] || FAMILLES_MP.vitrage;
+  let arrivee = null;      // le contenu de l'emplacement d'arrivée, une fois choisi
+  let place = null;
+  let resultats = [];
+  // Un écran qui a déjà sa caméra — « Trouver », « Scanner une colonne » —
+  // n'en reçoit pas une deuxième : les deux porteraient les mêmes repères, et
+  // c'est la sienne que le bouton allumerait, branchée pour de bon sur ce
+  // déplacement. L'arrivée s'y tape, ou se choisit dans la liste.
+  const autreCamera = document.getElementById('cam');
+  const scanner = !(autreCamera && !zone.contains(autreCamera));
+
+  zone.innerHTML = `<div class="mp-panneau">
+    <div class="sec" style="margin-top:0">Changer d’emplacement — ${parties.length} ligne${parties.length > 1 ? 's' : ''}</div>
+    <div class="dep-lignes">${parties.map(l => `<div class="dep-ligne">
+        <div class="r"><span class="code-mp">${esc(l.code)}</span>
+          <span class="meta">${esc(d.code)}·${esc(l.place)} — ${l.quantite} en place</span></div>
+        <div class="qte-mp"><input data-qte="${l.id}" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+            placeholder="tout" aria-label="Combien de ${esc(l.code)} — vide : les ${l.quantite}">
+          <span class="aide" style="margin:0">vide : les ${l.quantite}</span></div>
+      </div>`).join('')}</div>
+    <label for="mpVers">Vers quel emplacement ?</label>
+    <div class="vers-mp">
+      <input id="mpVers" placeholder="${scanner ? 'Ex. AH510 — ou scanne son étiquette' : 'Ex. AH510'}" autocomplete="off"
+             autocapitalize="characters" spellcheck="false">
+      ${scanner ? `<button type="button" class="btn ghost" id="mpVersScan" aria-label="Scanner l’étiquette de l’arrivée">${
+        icon('scan', 20)}</button>` : ''}
+    </div>
+    <div id="mpVersCam"></div>
+    <div class="list" id="mpVersSugg"></div>
+    <div id="mpArriveeVue"></div>
+    <div class="manque" id="mpDepManque"></div>
+    <button class="btn orange" id="mpDepOk" disabled>Choisis l’emplacement d’arrivée</button>
+    <button class="btn ghost" id="mpDepRetour">${esc(libelleRetour || 'Annuler')}</button>
+  </div>`;
+  zone.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+  const champ = zone.querySelector('#mpVers');
+  const bouton = zone.querySelector('#mpDepOk');
+  const dire = (texte) => { const m = zone.querySelector('#mpDepManque'); if (m) m.textContent = texte || ''; };
+
+  const lireQuantites = () => parties.map(l => {
+    const saisie = zone.querySelector(`[data-qte="${l.id}"]`);
+    const brut = saisie ? saisie.value.trim() : '';
+    if (!brut) return { ligne: l, n: l.quantite, tout: true, faux: false };
+    const n = lireQuantite(brut);
+    return { ligne: l, n, tout: false, faux: !n || n > l.quantite };
+  });
+
+  const maj = () => {
+    const q = lireQuantites();
+    const fausse = q.find(x => x.faux);
+    const manque = fausse ? `${fausse.ligne.code} : ${fausse.n
+        ? `il n’y en a que ${fausse.ligne.quantite}` : 'quantité illisible'}`
+      : !arrivee ? 'Choisis l’emplacement d’arrivée'
+      : !place ? 'Touche la place d’arrivée' : '';
+    bouton.disabled = Boolean(manque);
+    bouton.textContent = manque || phraseDeplacement(
+      q.map(x => ({ code: x.ligne.code, quantite: x.n, famille: x.ligne.famille })),
+      `${arrivee.code}·${place}`);
+  };
+
+  const dessinerArrivee = () => {
+    const vueArr = zone.querySelector('#mpArriveeVue');
+    if (!vueArr || !arrivee) return;
+    const ici = String(arrivee.emplacement) === String(d.emplacement);
+    const acceptes = (arrivee.codes_acceptes || []).map(a => a.code);
+    vueArr.innerHTML = `<div class="mp-choisi"><b>${esc(arrivee.code)}</b>${ici ? ' — le même emplacement, une autre place' : ''}
+        — ${arrivee.nb_lignes ? `${esc(quantiteMP(arrivee.quantite, arrivee.famille))} déjà posés` : 'vide'}${
+        acceptes.length ? ` · réservé à ${esc(listeCodes(acceptes))}` : ''}</div>
+      <label>Place d’arrivée</label>
+      ${placesMPHTML(arrivee, { exclues: ici ? new Set(parties.map(l => l.place)) : null })}`;
+    vueArr.querySelectorAll('#mpPlaces .place').forEach(b => {
+      if (b.disabled) return;
+      b.onclick = () => {
+        place = b.dataset.place;
+        vueArr.querySelectorAll('#mpPlaces .place').forEach(x =>
+          x.setAttribute('aria-pressed', String(x.dataset.place === place)));
+        maj();
+      };
+    });
+  };
+
+  /** Retient l'arrivée — par son identifiant (liste) ou par son code (saisie,
+      étiquette scannée). Rend le refus à dire, ou '' : la caméra s'en sert. */
+  const choisirArrivee = async (cible) => {
+    let dest;
+    try {
+      dest = await api('/mp/emplacement/?' + (cible.id
+        ? 'id=' + encodeURIComponent(cible.id)
+        : 'code=' + encodeURIComponent(String(cible.code || '').replace(/^(LOC|CAB):/i, '').trim())));
+    } catch (e) { dire(e.message); return e.message; }
+    if (!zone.isConnected) return '';
+    const refus = dest.est_mp ? refusArrivee(dest, parties) : (dest.refus || `${dest.code} range des cabines.`);
+    if (refus) { dire(refus); return refus; }
+    arrivee = dest;
+    place = null;
+    dire('');
+    champ.value = dest.code;
+    const boite = zone.querySelector('#mpVersSugg');
+    if (boite) boite.innerHTML = '';
+    dessinerArrivee();
+    maj();
+    return '';
+  };
+
+  // L'arrivée a été retenue — Entrée, étiquette scannée — pendant qu'une
+  // recherche attendait son tour : la liste n'a plus lieu d'être.
+  const dejaRetenue = () => Boolean(arrivee)
+    && champ.value.replace(/^LOC:/i, '').trim().toUpperCase() === String(arrivee.code).toUpperCase();
+  const proposer = debounce(async () => {
+    const t = champ.value.replace(/^LOC:/i, '').trim();
+    const boite = zone.querySelector('#mpVersSugg');
+    if (!boite) return;
+    if (!t || dejaRetenue()) { boite.innerHTML = ''; return; }
+    try {
+      const res = (await api(`/emplacements/?usage=${encodeURIComponent(d.famille)}&search=${encodeURIComponent(t)}`)).results || [];
+      // On a tapé, ou retenu l'arrivée, entre-temps.
+      if (champ.value.replace(/^LOC:/i, '').trim() !== t || dejaRetenue()) return;
+      resultats = res.slice(0, 6);
+      boite.innerHTML = resultats.map(e => {
+        const refus = refusArrivee(e, parties);
+        return `<div class="item${refus ? ' indisponible' : ''}" data-vers="${e.id}">
+          <div class="r">${esc(e.code)}${String(e.id) === String(d.emplacement) ? ' <span class="pill">ici</span>' : ''} ${etiquetteEtat(e)}</div>
+          ${refus ? `<div class="d">${esc(refus)}</div>` : ''}</div>`;
+      }).join('') || `<div class="empty" style="padding:12px">Aucun emplacement de ${esc(fam.plusieurs)} ne correspond.</div>`;
+      boite.querySelectorAll('[data-vers]').forEach(n => n.onclick = () => {
+        const e = resultats.find(x => String(x.id) === n.dataset.vers);
+        if (e && !refusArrivee(e, parties)) choisirArrivee({ id: e.id });
+      });
+    } catch (e) { boite.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  }, 200);
+
+  champ.oninput = () => {
+    if (arrivee) {
+      arrivee = null;
+      place = null;
+      zone.querySelector('#mpArriveeVue').innerHTML = '';
+      maj();
+    }
+    dire('');
+    proposer();
+  };
+  champ.onkeydown = (ev) => {
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    if (champ.value.trim()) choisirArrivee({ code: champ.value });
+  };
+  zone.querySelectorAll('[data-qte]').forEach(c => { c.oninput = maj; });
+  const boutonScan = zone.querySelector('#mpVersScan');
+  if (boutonScan) boutonScan.onclick = () => {
+    const cam = zone.querySelector('#mpVersCam');
+    if (!cam) return;
+    cam.innerHTML = blocCameraHTML('Scanner l’emplacement d’arrivée',
+                                   'L’étiquette du rack ou du chevalet où ça va');
+    brancherCamera(async (texte) => {
+      const refus = await choisirArrivee({ code: texte });
+      // Lue et retenue : la caméra a fini son travail, son cadre part avec elle.
+      if (!refus) setTimeout(() => { if (!CAMERA) cam.innerHTML = ''; }, 600);
+      return refus;
+    });
+    const allumer = $('#camGo');
+    if (allumer) allumer.click();
+    cam.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+  zone.querySelector('#mpDepRetour').onclick = () => { arreterCamera(); retour(); };
+
+  bouton.onclick = async () => {
+    const q = lireQuantites();
+    if (q.some(x => x.faux) || !arrivee || !place) { maj(); return; }
+    bouton.disabled = true;
+    bouton.textContent = 'Enregistrement…';
+    try {
+      // La quantité LUE à l'écran part, « tout » compris : si un autre poste a
+      // complété la ligne entre-temps, on déplace ce qu'on a vu — le serveur
+      // refuse si la ligne a baissé, au lieu de déplacer autre chose.
+      const r = await api('/mp/deplacer/', { method: 'POST', body: {
+        lignes: q.map(x => ({ ligne: x.ligne.id, quantite: x.n })),
+        emplacement: arrivee.emplacement, place: place } });
+      arreterCamera();
+      const phrase = phraseDeplace(r.deplaces);
+      toast(phrase, 'ok');
+      chargerAlertes();
+      const ailleurs = String(arrivee.emplacement) !== String(d.emplacement);
+      redessiner(phrase, { arrivee: ailleurs ? { id: arrivee.emplacement, code: arrivee.code } : null });
+    } catch (e) {
+      dire(e.message);
+      maj();
+    }
+  };
+  maj();
+}
+
+/* --- Le stock MP : le Stock côté matières premières ------------------------
+   Une ligne par code, avec ses positions : la question posée est « où sont
+   les VITR.445, et combien en reste-t-il ? ». Les filtres sont ceux de la
+   matière — famille, fournisseur, génération, seuil — et non ceux des cabines. */
+
+//: Le Stock s'ouvre sur ce qu'on a regardé en dernier, sur CE téléphone.
+let PARC_MODE = (() => {
+  try { return localStorage.getItem('wms_parc') === 'mp' ? 'mp' : 'cabines'; }
+  catch (_) { return 'cabines'; }
+})();
+
+function choisirParc(mode) {
+  PARC_MODE = mode === 'mp' ? 'mp' : 'cabines';
+  try { localStorage.setItem('wms_parc', PARC_MODE); } catch (_) {}
+}
+
+/** Les deux boutons du haut du Stock : cabines, ou matières premières. */
+function basculeParc() {
+  const bouton = (mode, ic, libelle) => `<button type="button" role="tab" data-parc="${mode}"
+      aria-selected="${String(PARC_MODE === mode)}">${icon(ic, 19)}<span>${libelle}</span></button>`;
+  return `<div class="bascule-parc" role="tablist" aria-label="Que chercher ?">
+    ${bouton('cabines', 'build', 'Cabines')}${bouton('mp', 'couches', 'MP')}</div>`;
+}
+
+function brancherBasculeParc() {
+  el().querySelectorAll('[data-parc]').forEach(b => b.onclick = () => {
+    if (b.dataset.parc === PARC_MODE) return;
+    choisirParc(b.dataset.parc);
+    renderCabines();
+  });
+}
+
+const FILTRES_MP_VIDE = () => ({ q: '', famille: '', fournisseur: '', rack: '',
+                                 generation: '', sous_seuil: '', tous: '', tri: 'code' });
+let FILTRES_MP = FILTRES_MP_VIDE();
+let OPTIONS_MP = { fournisseurs: [], racks: [], familles: {}, tris: [] };
+let PANNEAU_MP = null;
+
+//: Mettre le curseur dans la recherche au prochain affichage — une seule fois.
+let CHERCHER_MP = false;
+
+/* Régler les seuils d'alerte en nombre : un mode du Stock MP, comme la
+   sélection dans le plan d'un rack. Les codes s'y cochent au lieu d'ouvrir
+   leur fiche, et une barre en bas dit combien et propose le réglage.
+   `null` hors du mode ; sinon les identifiants cochés, et la case « codes
+   sans stock » telle qu'elle était — le mode l'allume, un seuil se règle
+   AUSSI pour un code à zéro, c'est même pour lui qu'il sert d'abord.      */
+let SEUILS_MP = null;
+//: La dernière liste affichée : « Toute la liste » coche ce qu'on voit.
+let LISTE_MP = [];
+
+/** Ouvre le Stock côté MP, éventuellement sur un filtre déjà posé. */
+function ouvrirStockMP(preset, options = {}) {
+  choisirParc('mp');
+  SEUILS_MP = null;
+  FILTRES_MP = Object.assign(FILTRES_MP_VIDE(), preset || {});
+  CHERCHER_MP = Boolean(options.chercher);
+  go('cabines');
+}
+
+function entrerReglageSeuils() {
+  // `connus` garde chaque code coché tel qu'on l'a vu : un filtre changé
+  // entre-temps peut le faire sortir de la liste, il reste coché et nommé.
+  SEUILS_MP = { ids: new Set(), connus: new Map(), tousAvant: FILTRES_MP.tous };
+  FILTRES_MP.tous = '1';
+  renderStockMP();
+}
+
+/** Sort du mode et rend à la case « codes sans stock » sa valeur d'avant. */
+function quitterReglageSeuils(redessiner = true) {
+  if (!SEUILS_MP) return;
+  FILTRES_MP.tous = SEUILS_MP.tousAvant;
+  SEUILS_MP = null;
+  if (redessiner) renderStockMP();
+}
+
+const CHAMPS_MP = { famille: '#mFa', fournisseur: '#mFo', rack: '#mRk', generation: '#mGe', tri: '#mTr' };
+
+const CHIPS_MP = () => [
+  ['vitrage', 'Vitrages', { famille: 'vitrage' }],
+  ['carton', 'Cartons', { famille: 'carton' }],
+  ['ancienne', 'Ancienne génération', { generation: 'ancienne' }],
+  ['sous_seuil', 'Sous le seuil d’alerte', { sous_seuil: '1' }],
+];
+
+const filtreMPActif = (poses) => Object.entries(poses).every(([k, v]) => FILTRES_MP[k] === v);
+
+function requeteMP() {
+  const vide = FILTRES_MP_VIDE();
+  return Object.entries(FILTRES_MP)
+    .filter(([k, v]) => v !== '' && !(k === 'tri' && v === vide.tri))
+    .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+}
+
+async function renderStockMP() {
+  const options = await api('/mp/filtres/').catch(() => null);
+  if (options) OPTIONS_MP = options;
+  const opts = (liste, choisie, tous) => `<option value="">${esc(tous)}</option>`
+    + liste.map(([v, l]) => `<option value="${esc(v)}"${String(choisie) === String(v) ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  const deplie = PANNEAU_MP !== null ? PANNEAU_MP
+    : Boolean(window.matchMedia && window.matchMedia('(min-width:1024px)').matches);
+  const regler = peut('ref');
+  // Le mode n'a de sens qu'avec le droit de régler : un compte qui ne l'a pas
+  // n'y reste pas, d'où qu'il y soit arrivé.
+  if (SEUILS_MP && !regler) quitterReglageSeuils(false);
+
+  layout(`<h2 class="title">Stock</h2>
+    ${basculeParc()}
+    <input id="mQ" class="recherche" type="search" autocomplete="off" spellcheck="false"
+           placeholder="Code, dimension, emplacement…" value="${esc(FILTRES_MP.q)}">
+    <div class="chips" id="mChips"></div>
+    <details class="filtres" id="mPan"${deplie ? ' open' : ''}>
+      <summary><span id="mTitre">Filtres</span></summary>
+      <div class="grille-filtres">
+        <div><label for="mFa">Famille</label>
+          <select id="mFa">${opts([['vitrage', 'Vitrages'], ['carton', 'Cartons']], FILTRES_MP.famille, 'Toutes')}</select></div>
+        <div><label for="mFo">Fournisseur</label>
+          <select id="mFo">${opts((OPTIONS_MP.fournisseurs || []).map(f => [f, f]), FILTRES_MP.fournisseur, 'Tous')}</select></div>
+        <div><label for="mRk">Rack</label>
+          <select id="mRk">${opts((OPTIONS_MP.racks || []).map(r => [r, r]), FILTRES_MP.rack, 'Tous')}</select></div>
+        <div><label for="mGe">Génération</label>
+          <select id="mGe">${opts([['actuelle', 'Actuelle'], ['ancienne', 'Ancienne']], FILTRES_MP.generation, 'Toutes')}</select></div>
+        <div><label for="mTr">Trier par</label>
+          <select id="mTr">${(OPTIONS_MP.tris || [{ code: 'code', libelle: 'Code' }]).map(t =>
+            `<option value="${esc(t.code)}"${FILTRES_MP.tri === t.code ? ' selected' : ''}>${esc(t.libelle)}</option>`).join('')}</select></div>
+      </div>
+      <label class="case"><input type="checkbox" id="mTous"${FILTRES_MP.tous === '1' ? ' checked' : ''}>
+        <span>Montrer aussi les codes sans stock — toute la base</span></label>
+    </details>
+    <div id="mActifs"></div>
+    <div class="row actions-stock">
+      <button class="btn ghost" id="mExport" style="margin-top:0">${icon('in', 17)} Télécharger le stock MP (Excel)</button>
+      ${regler ? `<button class="btn ${SEUILS_MP ? '' : 'ghost'}" id="mSeuils" style="margin-top:0">${SEUILS_MP
+        ? 'Terminer le réglage des seuils' : `${icon('cloche', 17)} Régler les seuils d’alerte`}</button>` : ''}
+    </div>
+    ${SEUILS_MP ? `<div class="aide" style="margin:10px 2px 0">Touche les codes à régler — ou « Toute la
+      liste », après l’avoir resserrée avec les filtres. Le même seuil s’appliquera à tous.</div>` : ''}
+    <div id="zone"><div class="empty">Chargement…</div></div>
+    ${SEUILS_MP ? '<div class="selbar" id="mSelbar"></div>' : ''}`, 'cabines');
+  brancherBasculeParc();
+
+  Object.entries(CHAMPS_MP).forEach(([cle, sel]) => {
+    const n = $(sel);
+    if (n) n.onchange = () => { FILTRES_MP[cle] = n.value; majEtListerMP(); };
+  });
+  $('#mPan').ontoggle = (ev) => { PANNEAU_MP = ev.target.open; };
+  $('#mQ').oninput = debounce(() => { FILTRES_MP.q = $('#mQ').value.trim(); majEtListerMP(); }, 250);
+  $('#mTous').onchange = () => { FILTRES_MP.tous = $('#mTous').checked ? '1' : ''; majEtListerMP(); };
+  $('#mExport').onclick = exporterStockMP;
+  const boutonSeuils = $('#mSeuils');
+  if (boutonSeuils) boutonSeuils.onclick = () => (SEUILS_MP ? quitterReglageSeuils() : entrerReglageSeuils());
+  if (CHERCHER_MP) { CHERCHER_MP = false; $('#mQ').focus(); }
+  majEtListerMP();
+}
+
+function synchroniserChampsMP() {
+  Object.entries(CHAMPS_MP).forEach(([cle, sel]) => {
+    const n = $(sel);
+    if (n && n.value !== FILTRES_MP[cle]) n.value = FILTRES_MP[cle];
+  });
+  const q = $('#mQ');
+  if (q && q.value !== FILTRES_MP.q) q.value = FILTRES_MP.q;
+  const tous = $('#mTous');
+  if (tous) tous.checked = FILTRES_MP.tous === '1';
+}
+
+function majEtListerMP() {
+  const boite = $('#mChips');
+  if (boite) {
+    const c = OPTIONS_MP || {};
+    const nombre = {
+      vitrage: ((c.familles || {}).vitrage || {}).codes,
+      carton: ((c.familles || {}).carton || {}).codes,
+      ancienne: c.ancienne_generation, sous_seuil: c.sous_seuil,
+    };
+    boite.innerHTML = CHIPS_MP().map(([cle, libelle, poses]) =>
+      `<button type="button" class="chip ${filtreMPActif(poses) ? 'on' : ''}" data-chip="${cle}">
+        ${esc(libelle)}${nombre[cle] === undefined ? '' : `<span class="n">${nombre[cle]}</span>`}</button>`).join('');
+    boite.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => {
+      const [, , poses] = CHIPS_MP().find(x => x[0] === b.dataset.chip);
+      const actif = filtreMPActif(poses);
+      const vide = FILTRES_MP_VIDE();
+      Object.keys(poses).forEach(k => { FILTRES_MP[k] = actif ? vide[k] : poses[k]; });
+      synchroniserChampsMP();
+      majEtListerMP();
+    });
+  }
+  const vide = FILTRES_MP_VIDE();
+  const n = Object.keys(vide).filter(k => k !== 'tri' && k !== 'q' && FILTRES_MP[k] !== vide[k]).length;
+  const titre = $('#mTitre');
+  if (titre) titre.textContent = n ? `Filtres (${n})` : 'Filtres';
+  const zone = $('#mActifs');
+  if (zone) {
+    const morceaux = [];
+    if (FILTRES_MP.q) morceaux.push(`« ${FILTRES_MP.q} »`);
+    if (FILTRES_MP.famille) morceaux.push(FAMILLES_MP[FILTRES_MP.famille].plusieurs);
+    if (FILTRES_MP.fournisseur) morceaux.push('fournisseur ' + FILTRES_MP.fournisseur);
+    if (FILTRES_MP.rack) morceaux.push('rack ' + FILTRES_MP.rack);
+    if (FILTRES_MP.generation) morceaux.push('génération ' + FILTRES_MP.generation);
+    if (FILTRES_MP.sous_seuil) morceaux.push('sous le seuil d’alerte');
+    if (FILTRES_MP.tous) morceaux.push('codes sans stock inclus');
+    zone.innerHTML = morceaux.length
+      ? `<div class="actifs"><span>${esc(morceaux.join(' · '))}</span>
+           <button type="button" class="lien" data-vider>Tout effacer</button></div>` : '';
+    const vider = zone.querySelector('[data-vider]');
+    if (vider) vider.onclick = () => { FILTRES_MP = FILTRES_MP_VIDE(); synchroniserChampsMP(); majEtListerMP(); };
+  }
+  listerStockMP();
+}
+
+/** Le seuil d'un code, dit comme on le lit dans une liste. */
+const libelleSeuil = (a) => (a.seuil_reappro ? `seuil d’alerte ${a.seuil_reappro}` : '');
+
+/** Une carte par code : son total, et chacune de ses positions. En réglage des
+    seuils, la carte se coche (`choisi` vaut alors vrai ou faux). */
+function ligneArticleMP(a, choisi) {
+  const positions = (a.positions || []).map(p =>
+    `<span class="jeton">${esc(p.position)} <b>${p.quantite}</b></span>`).join('');
+  const seuil = libelleSeuil(a);
+  return `<div class="item article-mp" data-cle="${a.id}"${choisi === undefined ? ''
+      : ` role="button" aria-pressed="${String(Boolean(choisi))}"`}>
+    <div class="r"><span class="famille-mp ${esc(a.famille)}">${esc(FAMILLES_MP[a.famille] ? FAMILLES_MP[a.famille].titre : a.famille)}</span>
+      <span class="code-mp">${esc(a.code)}</span>${badgeAncienne(a)}
+      ${a.sous_seuil ? '<span class="etat crit">sous le seuil</span>' : ''}
+      <span class="total">${a.en_stock || 0}</span></div>
+    <div class="d">${sousTitreArticle(a)}${seuil ? ` · <span class="seuil-mp">${esc(seuil)}</span>` : ''}</div>
+    ${positions ? `<div class="positions">${positions}</div>` : '<div class="meta">Aucun en stock.</div>'}
+  </div>`;
+}
+
+function ouvrirFicheArticleMP(a) {
+  ouvrirEcran(() => ficheArticleMP(a, () => history.back()), 'fiche-mp');
+}
+
+async function listerStockMP() {
+  const zone = $('#zone');
+  if (!zone) return;
+  const q = requeteMP();
+  try {
+    const liste = await api('/mp/stock/' + (q ? '?' + q : ''));
+    if (requeteMP() !== q || !$('#zone')) return;     // les filtres ont changé entre-temps
+    LISTE_MP = liste;
+    const total = liste.reduce((n, a) => n + (a.en_stock || 0), 0);
+    zone.innerHTML = `<div class="sec">${liste.length} code${liste.length === 1 ? '' : 's'}${
+        total ? ` · ${total} pièce${total === 1 ? '' : 's'} en stock` : ''}</div>
+      <div class="list${SEUILS_MP ? ' a-cocher' : ''}" data-liste>${liste.length
+        ? liste.map(a => ligneArticleMP(a, SEUILS_MP ? SEUILS_MP.ids.has(a.id) : undefined)).join('')
+        : `<div class="empty">${requeteMP() ? 'Rien ne correspond à ces filtres. Essaie d’en retirer un.'
+                                            : 'Aucune matière première en stock pour l’instant.'}</div>`}</div>`;
+    zone.querySelectorAll('[data-cle]').forEach(n => n.onclick = () => {
+      const a = liste.find(x => String(x.id) === n.dataset.cle);
+      if (!a) return;
+      if (!SEUILS_MP) { ouvrirFicheArticleMP(a); return; }
+      if (SEUILS_MP.ids.has(a.id)) SEUILS_MP.ids.delete(a.id);
+      else { SEUILS_MP.ids.add(a.id); SEUILS_MP.connus.set(a.id, a); }
+      n.setAttribute('aria-pressed', String(SEUILS_MP.ids.has(a.id)));
+      barreSeuils();
+    });
+    barreSeuils();
+  } catch (e) { zone.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+/** La barre du réglage des seuils : combien de codes cochés, et le geste. */
+function barreSeuils() {
+  const barre = $('#mSelbar');
+  if (!barre || !SEUILS_MP) return;
+  const n = SEUILS_MP.ids.size;
+  const visibles = LISTE_MP.filter(a => !SEUILS_MP.ids.has(a.id)).length;
+  // La barre est l'élément collant lui-même : enveloppée dans un bloc à sa
+  // taille, elle n'aurait nulle part où glisser et resterait au bas de la
+  // liste, hors de vue.
+  barre.innerHTML = `<div class="sel-n">${n ? `${n} code${n > 1 ? 's' : ''} coché${n > 1 ? 's' : ''}` : 'Touche les codes à régler'}</div>
+    <div class="row">
+      <button class="btn orange" id="mSeuilGo" style="margin-top:0"${n ? '' : ' disabled'}>${icon('cloche', 17)} Seuil d’alerte${
+        n ? ` pour ${n} code${n > 1 ? 's' : ''}` : ''}</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn ghost" id="mSeuilTout" style="margin-top:0"${visibles ? '' : ' disabled'}>Toute la liste</button>
+      <button class="btn ghost" id="mSeuilVider" style="margin-top:0"${n ? '' : ' disabled'}>Tout décocher</button>
+    </div>`;
+  barre.querySelector('#mSeuilGo').onclick = () => {
+    const codes = [...SEUILS_MP.ids].map(id => SEUILS_MP.connus.get(id)).filter(Boolean);
+    ouvrirReglageSeuils(codes, () => quitterReglageSeuils());
+  };
+  barre.querySelector('#mSeuilTout').onclick = () => {
+    LISTE_MP.forEach(a => { SEUILS_MP.ids.add(a.id); SEUILS_MP.connus.set(a.id, a); });
+    listerStockMP();
+  };
+  barre.querySelector('#mSeuilVider').onclick = () => {
+    SEUILS_MP.ids = new Set();
+    listerStockMP();
+  };
+}
+
+/** Un seuil tapé → un entier (0 et vide : pas d'alerte, `null`), ou `undefined`
+    s'il est illisible. La même lecture que le serveur. */
+function lireSeuil(brut) {
+  const t = String(brut == null ? '' : brut).replace(/\s/g, '');
+  if (t === '') return null;
+  if (!/^\d+$/.test(t)) return undefined;
+  const n = parseInt(t, 10);
+  return n > 0 ? n : null;
+}
+
+/** Le seuil d'alerte d'un ou de plusieurs codes, d'un geste. `apres` : ce qui
+    se passe une fois le seuil écrit — redessiner la fiche, quitter le mode. */
+function ouvrirReglageSeuils(articles, apres) {
+  const n = articles.length;
+  if (!n) return;
+  const parValeur = new Map();
+  articles.forEach(a => {
+    const v = a.seuil_reappro ? String(a.seuil_reappro) : '';
+    parValeur.set(v, (parValeur.get(v) || 0) + 1);
+  });
+  // Ce qui est réglé aujourd'hui : on ne remplace pas à l'aveugle.
+  const actuel = n === 1
+    ? (articles[0].seuil_reappro ? `Seuil d’alerte actuel : ${articles[0].seuil_reappro}.` : 'Pas de seuil d’alerte aujourd’hui.')
+    : 'Aujourd’hui : ' + [...parValeur.entries()].map(([v, k]) =>
+        `${v ? `seuil ${v}` : 'pas de seuil'} pour ${k} code${k > 1 ? 's' : ''}`).join(', ') + '.';
+  const anciens = articles.filter(a => a.ancienne_generation).map(a => a.code);
+  const corps = modale(`Seuil d’alerte — ${n} code${n > 1 ? 's' : ''}`, `
+    <div class="meta" style="margin-top:0;word-break:break-word">${esc(listeCodes(articles.map(a => a.code), 6))}</div>
+    <div class="aide">${esc(actuel)}</div>
+    <label for="sValeur">Nouveau seuil d’alerte</label>
+    <input id="sValeur" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="Ex. 20"
+           value="${n === 1 && articles[0].seuil_reappro ? esc(String(articles[0].seuil_reappro)) : ''}">
+    <div class="aide">La cloche sonne quand le stock total ${n > 1 ? 'd’un de ces codes' : 'du code'} passe
+      <b>en dessous</b> de ce nombre. Vide : plus d’alerte.</div>
+    ${anciens.length ? `<div class="aide alerte">${esc(listeCodes(anciens))} : ancienne génération — elle
+      s’écoule, son seuil ne déclenchera pas d’alerte.</div>` : ''}
+    <div class="manque" id="sManque"></div>
+    <div class="modal-actions">
+      <button class="btn orange" id="sOk" type="button">Enregistrer</button>
+      <button class="btn ghost" id="sNon" type="button">Annuler</button>
+    </div>`);
+  const champ = corps.querySelector('#sValeur'), ok = corps.querySelector('#sOk');
+  const maj = () => {
+    const v = lireSeuil(champ.value);
+    ok.disabled = v === undefined;
+    ok.textContent = v === undefined ? 'Un nombre entier, ou rien'
+      : v === null ? `Plus d’alerte pour ${n > 1 ? `ces ${n} codes` : 'ce code'}`
+      : `Seuil ${v} pour ${n > 1 ? `ces ${n} codes` : 'ce code'}`;
+  };
+  champ.oninput = maj;
+  champ.onkeydown = (ev) => { if (ev.key === 'Enter' && !ok.disabled) { ev.preventDefault(); ok.click(); } };
+  corps.querySelector('#sNon').onclick = fermerModale;
+  ok.onclick = async () => {
+    const v = lireSeuil(champ.value);
+    if (v === undefined) { maj(); return; }
+    ok.disabled = true;
+    try {
+      const r = await api('/mp/seuils/', { method: 'POST', body: {
+        articles: articles.map(a => a.id), seuil: v } });
+      fermerModale();
+      toast(r.seuil ? `Seuil d’alerte ${r.seuil} pour ${r.nombre} code${r.nombre > 1 ? 's' : ''}`
+                    : `Plus d’alerte pour ${r.nombre} code${r.nombre > 1 ? 's' : ''}`, 'ok');
+      chargerAlertes();
+      if (apres) apres(r);
+    } catch (e) {
+      ok.disabled = false;
+      const m = corps.querySelector('#sManque');
+      if (m) m.textContent = e.message; else toast(e.message, 'err');
+    }
+  };
+  maj();
+  champ.focus();
+}
+
+/** Même chemin que l'inventaire des cabines : le fichier passe par le jeton. */
+async function exporterStockMP() {
+  const bouton = $('#mExport');
+  const libelle = bouton ? bouton.innerHTML : '';
+  if (bouton) { bouton.disabled = true; bouton.textContent = 'Préparation…'; }
+  try {
+    const q = requeteMP();
+    const r = await fetchReseau(API + '/mp/export/' + (q ? '?' + q : ''),
+                                { headers: token ? { Authorization: 'Token ' + token } : {} });
+    if (r.status === 401) { logout(); throw new Error('Session expirée, reconnecte-toi.'); }
+    if (!r.ok) throw new Error('L’export a été refusé (' + r.status + ').');
+    const fichier = await r.blob();
+    const nom = ((r.headers.get('Content-Disposition') || '').match(/filename="?([^";]+)/) || [])[1]
+      || 'stock-mp.csv';
+    const url = URL.createObjectURL(fichier);
+    const lien = document.createElement('a');
+    lien.href = url; lien.download = nom;
+    document.body.appendChild(lien); lien.click(); lien.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    toast('Stock MP exporté : ' + nom, 'ok');
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    if (bouton) { bouton.disabled = false; bouton.innerHTML = libelle; }
+  }
+}
+
+/** La fiche d'un code : la base, son seuil d'alerte, ses positions — qui
+    ouvrent l'emplacement —, les emplacements qui lui sont réservés, et les
+    derniers mouvements. */
+async function ficheArticleMP(a, retour) {
+  ECRAN = 'fiche-mp';
+  layout(`<button class="btn ghost retour" id="faRetour">← Retour</button>
+    <div id="zone"><div class="empty">Chargement…</div></div>`, 'cabines');
+  $('#faRetour').onclick = retour || (() => go('cabines'));
+  const zoneFiche = $('#zone');
+  let x;
+  try { x = await api('/mp/article/?id=' + encodeURIComponent(a.id)); }
+  catch (e) { zoneFiche.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (!zoneFiche.isConnected) return;          // l'opérateur est passé à autre chose
+  const lignesBase = [
+    ['Famille', FAMILLES_MP[x.famille] ? FAMILLES_MP[x.famille].titre : x.famille],
+    ['Fournisseur', x.fournisseur], ['N° article', x.numero],
+    ['Autres références', x.references],
+    ['Colisage', x.colisage ? `${x.colisage} par palette` : ''],
+    ['Seuil d’alerte', x.seuil_reappro || 'aucun — pas d’alerte'],
+  ].filter(([, v]) => v !== '' && v !== null && v !== undefined);
+  const reserves = x.reserve_sur || [];
+  zoneFiche.innerHTML = `
+    <h2 class="title"><span class="code-mp">${esc(x.code)}</span>${badgeAncienne(x)}</h2>
+    ${x.sous_seuil ? `<div class="banner">Sous le seuil d’alerte : ${x.en_stock
+      ? `plus que ${esc(quantiteMP(x.en_stock, x.famille))} en stock` : 'plus aucun en stock'}, pour un
+      seuil de ${x.seuil_reappro}.</div>` : ''}
+    ${x.ancienne_generation ? `<div class="banner">Ancienne génération : le stock restant
+      s’écoule, l’entrée demande une confirmation.</div>` : ''}
+    ${x.actif ? '' : '<div class="banner">Ce code n’est plus actif dans la base : il ne se propose plus à l’entrée.</div>'}
+    <div class="card">
+      <div style="font-size:14px;line-height:1.45">${esc(x.designation || '')}</div>
+      <div class="specs"><table><tbody>${lignesBase.map(([l, v]) =>
+        `<tr><td>${esc(l)}</td><td>${esc(String(v))}</td></tr>`).join('')}</tbody></table></div>
+      ${peut('ref') ? `<button class="btn ghost" id="faSeuil">${icon('cloche', 17)} Régler le seuil d’alerte</button>` : ''}
+    </div>
+    <div class="sec" style="margin-top:18px">En stock · ${quantiteMP(x.en_stock || 0, x.famille)}${
+      x.positions.length > 1 ? ` sur ${x.positions.length} positions` : ''}
+      ${x.sous_seuil ? ' · <span class="etat crit">sous le seuil</span>' : ''}</div>
+    <div class="list">${x.positions.length ? x.positions.map(p => `<div class="item" data-emp="${p.emplacement}" data-code="${esc(p.code_emplacement)}">
+        <div class="r ligne-total">${esc(p.code_emplacement)} · ${esc(p.place)} — ${esc(NOMS_PLACES_MP[p.place] || '')}
+          <span class="total">${p.quantite}</span></div>
+        <div class="meta">Dernier mouvement le ${esc(new Date(p.modifie_le).toLocaleDateString('fr-FR'))}</div>
+      </div>`).join('') : '<div class="empty">Aucun en stock.</div>'}</div>
+    ${reserves.length ? `<div class="sec" style="margin-top:18px">Emplacements réservés à ce code · ${reserves.length}</div>
+      <div class="list">${reserves.map(e => `<div class="item" data-emp="${e.id}" data-code="${esc(e.code)}">
+        <div class="r">${esc(e.code)}</div></div>`).join('')}</div>` : ''}
+    <div class="sec" style="margin-top:18px">Derniers mouvements</div>
+    <div class="list">${x.mouvements.length ? x.mouvements.map(ligneMouvementMP).join('')
+      : '<div class="empty">Aucun mouvement.</div>'}</div>`;
+  zoneFiche.querySelectorAll('[data-emp]').forEach(n => n.onclick = () =>
+    ouvrirEmplacementMP({ id: n.dataset.emp, code: n.dataset.code }));
+  const seuil = zoneFiche.querySelector('#faSeuil');
+  if (seuil) seuil.onclick = () => ouvrirReglageSeuils([x], () => ficheArticleMP(a, retour));
+}
+
+/** Une ligne du journal MP. Un changement d'emplacement se lit d'où vers où,
+    avec ce qui reste aux deux bouts. */
+function ligneMouvementMP(m) {
+  const deplace = m.type === 'transfert';
+  const etat = { entree: 'ok', sortie: 'att', transfert: 'dep' }[m.type] || '';
+  const signe = { entree: '+', sortie: '−' }[m.type] || '';
+  const ou = deplace
+    ? `${esc(m.origine)} → ${esc(m.position)} · reste ${m.reste_origine === null || m.reste_origine === undefined
+        ? '—' : m.reste_origine} au départ, ${m.reste} à l’arrivée`
+    : `${esc(m.position)} · reste ${m.reste}`;
+  return `<div class="item" style="cursor:default">
+    <div class="r"><span class="etat ${etat}">${esc(m.type_libelle)}</span>
+      ${signe}${m.quantite} <span class="code-mp">${esc(m.code)}</span></div>
+    <div class="d">${ou}${m.note ? ' · ' + esc(m.note) : ''}</div>
+    <div class="meta">${esc(new Date(m.date).toLocaleString('fr-FR'))}${m.utilisateur_nom ? ' — ' + esc(m.utilisateur_nom) : ''}</div>
+  </div>`;
+}
+
+async function renderJournalMP() {
+  layout(`<h2 class="title">Journal MP</h2>
+    <div class="card"><label for="jq">Filtrer</label>
+      <input id="jq" placeholder="Code, emplacement, auteur ou motif" autocomplete="off" spellcheck="false">
+      <label for="jty">Mouvement</label>
+      <select id="jty"><option value="">Tous</option><option value="entree">Entrées</option><option value="sortie">Sorties</option>
+        <option value="transfert">Changements d’emplacement</option></select></div>
+    <div id="zone"><div class="empty">Chargement…</div></div>`, 'mp');
+  const charger = () => {
+    const t = $('#jq').value.trim(), ty = $('#jty').value;
+    const q = [t ? 'search=' + encodeURIComponent(t) : '', ty ? 'type=' + ty : ''].filter(Boolean).join('&');
+    listePaginee($('#zone'), '/mp/journal/' + (q ? '?' + q : ''), {
+      ligne: ligneMouvementMP,
+      vide: q ? 'Aucun mouvement ne correspond.' : 'Aucun mouvement de matières premières pour l’instant.',
+      entete: (total) => `<div class="sec">${total} mouvement${total === 1 ? '' : 's'}</div>`,
+    });
+  };
+  $('#jq').oninput = debounce(charger, 250);
+  $('#jty').onchange = charger;
+  charger();
+}
+
+/* ===========================================================================
    SCANNER — le point de départ de tout
 
    Trois façons de lire un numéro, une seule suite. L'ancien écran ne faisait
@@ -5854,7 +8047,7 @@ async function appliquerImport(bouton) {
 
 async function renderScanner() {
   await refsCabine();
-  layout(`<h2 class="title">Scanner</h2>
+  layout(`<h2 class="title">Cabines</h2>
     ${rappelEnCours()}
     <div class="meta" style="margin:-4px 0 14px">Deux choses se scannent :
       la <b>fiche</b> collée sur la cabine, et le <b>QR d'un emplacement</b>.
@@ -5970,7 +8163,7 @@ const gesteBouton = (id, titre, sous, options = {}) => `<button class="geste" id
 /* Le pied de tous les écrans du parcours de scan — voir plus haut, côté CSS,
    pourquoi il est commun. `fiche` n'est proposé que si la cabine existe : sans
    cabine en stock, il n'y a pas de fiche à ouvrir.
-   Pas de troisième pastille vers le Parc : l'onglet « Parc » est en bas de
+   Pas de troisième pastille vers le Stock : l'onglet « Stock » est en bas de
    l'écran en permanence, et un raccourci de plus vers ce qui est déjà à un
    doigt de distance est exactement le doublon qu'on retire partout ailleurs.
    Deux pastilles tiennent aussi sur une seule ligne — trois en font deux. */

@@ -23,10 +23,15 @@ class Utilisateur(AbstractUser):
     pin = models.CharField(max_length=32, blank=True)
     droit_cab = models.BooleanField("cabines", default=False)
     droit_ref = models.BooleanField("référentiel", default=False)
+    #: Entrer et sortir des matières premières (vitrages, cartons). Une case à
+    #: part : l'équipe qui reçoit le verre n'est pas forcément celle qui range
+    #: les cabines, et l'inverse.
+    droit_mp = models.BooleanField("matières premières", default=False)
 
-    #: Les deux seuls droits qui commandent quelque chose : manipuler les cabines,
-    #: et gérer le référentiel (emplacements, racks, modèles, étiquettes).
-    DROITS = ["cab", "ref"]
+    #: Les droits qui commandent quelque chose : manipuler les cabines, gérer le
+    #: référentiel (emplacements, racks, modèles, étiquettes), et mouvementer
+    #: les matières premières.
+    DROITS = ["cab", "ref", "mp"]
 
     def droits_effectifs(self):
         """Droits réellement applicables. Appliqué par wms.permissions.DroitWMS.
@@ -121,6 +126,41 @@ class Emplacement(models.Model):
     mode_places = models.CharField("mode de rangement", max_length=16,
                                    choices=MODES_PLACES, default=GD)
 
+    #: Ce que l'emplacement range : des cabines, ou une famille de matières
+    #: premières. Les deux mondes ne se mélangent pas — une palette de cartons
+    #: posée là où le WMS attend une cabine fausse les deux stocks à la fois.
+    #:
+    #: Un emplacement MP a toujours TROIS places, gauche, milieu, droite : c'est
+    #: la largeur d'une lisse de rack pour des palettes ou des chevalets. Le
+    #: `mode_places` ne le concerne pas — il décrit le rangement des cabines, et
+    #: reste tel quel pour le jour où l'emplacement y reviendrait.
+    #:
+    #: Les codes MP sont ceux de `ArticleMP.famille` : on compare l'un à l'autre
+    #: sans table de correspondance.
+    CABINES, MP_CARTON, MP_VITRAGE = "cabines", "carton", "vitrage"
+    USAGES = [(CABINES, "Cabines"), (MP_CARTON, "MP · cartons"),
+              (MP_VITRAGE, "MP · vitrages")]
+    usage = models.CharField("ce qu'il range", max_length=16, choices=USAGES,
+                             default=CABINES, db_index=True)
+
+    #: Les codes qu'un emplacement MP accepte. VIDE : tous ceux de sa famille —
+    #: c'est le cas ordinaire, et il le reste tant qu'on ne réserve pas
+    #: l'emplacement à un ou plusieurs codes.
+    #:
+    #: Une réservation ne déplace rien : un code déjà posé qui n'en fait plus
+    #: partie peut toujours sortir ou changer d'emplacement, il ne peut plus y
+    #: ENTRER. Elle se règle par `services_mp.regler_codes`, qui vérifie la
+    #: famille ; l'administration passe par la même règle.
+    codes_acceptes = models.ManyToManyField(
+        "ArticleMP", blank=True, related_name="emplacements_reserves",
+        verbose_name="codes acceptés",
+        help_text="Vide : tous les codes de sa famille. Sinon, seuls ces codes y entrent.")
+
+    @property
+    def est_mp(self):
+        """Emplacement de matières premières (cartons ou vitrages) ?"""
+        return self.usage != self.CABINES
+
     #: Position dans la structure physique, renseignée par le générateur de racks.
     #: Le code seul ne suffit pas : « AC551 » ne dit pas à une machine que c'est le
     #: niveau 1 de la colonne 550 du rack AC. Sans ces trois champs, imprimer les
@@ -140,6 +180,27 @@ class Emplacement(models.Model):
         ordering = ["code"]
         indexes = [models.Index(fields=["rack", "colonne", "niveau"],
                                 name="emplacement_position_idx")]
+
+    def clean(self):
+        """Ce que range l'emplacement ne change que s'il est vide — y compris par
+        l'administration, qui ne passe ni par l'écran ni par l'API.
+
+        La règle est celle du réglage en nombre (`services_mp.bilan_usage`) :
+        une seule définition, la même phrase partout.
+        """
+        super().clean()
+        if not self.pk:
+            return
+        avant = Emplacement.objects.filter(pk=self.pk).first()
+        if avant is None or (avant.usage, avant.mode_places) == (self.usage, self.mode_places):
+            return
+        from . import services_mp     # import tardif : services_mp importe ce module
+        choix = (self.usage if self.usage != self.CABINES
+                 else ("cabines-illimite" if self.mode_places == self.ILLIMITE else "cabines-gd"))
+        if choix != services_mp.choix_de(avant):
+            refus = services_mp.refus_changement_usage(avant, choix)
+            if refus:
+                raise ValidationError({"usage": refus})
 
     def save(self, *args, **kwargs):
         self.code = (self.code or "").strip().upper()
@@ -528,6 +589,12 @@ class Occupation(models.Model):
 
     def clean(self):
         super().clean()
+        # Un emplacement de matières premières ne porte pas de cabine — y compris
+        # par l'administration, où ce formulaire se remplit à la main.
+        if self.emplacement_id and self.emplacement.est_mp:
+            raise ValidationError({"emplacement": (
+                f"{self.emplacement.code} range des matières premières "
+                f"({self.emplacement.get_usage_display()}) : pas de cabine.")})
         if self.place and not self.emplacement_id:
             raise ValidationError({"place": "Une place ne se définit qu'avec un emplacement."})
         # Un emplacement à capacité illimitée n'a pas de place nommée.
@@ -586,7 +653,10 @@ class PlaceCondamnee(models.Model):
     #: Les places condamnables sont celles qu'on peut choisir : gauche et droite.
     #: « Tout l'emplacement » n'en est pas une — c'est ce que prend un grand
     #: modèle, et pour le retirer du stock on désactive l'emplacement.
-    PLACES = [(Occupation.GAUCHE, "Gauche"), (Occupation.DROITE, "Droite")]
+    #: « Milieu » n'existe que sur un emplacement de matières premières : le
+    #: service le refuse ailleurs (voir `services_cabines.condamner_place`).
+    PLACES = [(Occupation.GAUCHE, "Gauche"), ("M", "Milieu"),
+              (Occupation.DROITE, "Droite")]
 
     emplacement = models.ForeignKey(Emplacement, on_delete=models.CASCADE,
                                     related_name="places_condamnees")
@@ -766,3 +836,195 @@ class CabineAttendue(models.Model):
 
     def __str__(self):
         return f"{self.numero} — attendue (chantier {self.chantier or self.chantier_brut or '—'})"
+
+
+# --- Matières premières : vitrages et cartons --------------------------------
+#
+# Trois tables, sur le modèle des cabines : la BASE des codes (ce qui peut
+# exister), le STOCK (ce qui est là, place par place) et le JOURNAL (ce qui
+# s'est passé). Le stock ne s'écrit que par `services_mp`, qui écrit le journal
+# dans la même transaction.
+
+
+def normaliser_code_mp(texte):
+    """« vitr.8 », « VITR 8 », « Vitr-8 » → « VITR8 ».
+
+    Ce qu'on tape au poste ne ressemble jamais tout à fait au code de la base :
+    un point oublié, un x minuscule, une espace. On compare donc des clés
+    réduites aux lettres et aux chiffres, en majuscules. Le signe « × » vaut
+    « X » : il apparaît quand une dimension est recopiée d'un document.
+    """
+    import unicodedata
+    texte = str(texte or "").replace("×", "X")
+    texte = unicodedata.normalize("NFKD", texte).encode("ascii", "ignore").decode()
+    return "".join(c for c in texte.upper() if c.isalnum())
+
+
+class ArticleMP(models.Model):
+    """Un code élément de matière première : un vitrage ou un carton.
+
+    C'est la base dans laquelle on pioche à l'entrée : le code se choisit dans
+    une liste qui se resserre à mesure qu'on tape, il ne s'invente pas. Un code
+    tapé à la main finit toujours par exister en deux orthographes, et le stock
+    se coupe en deux sans que personne s'en aperçoive.
+
+    `ancienne_generation` ne bloque rien : du stock d'ancienne génération reste
+    à écouler, et il faut pouvoir le ranger et le sortir. L'écran demande
+    seulement de CONFIRMER une entrée — c'est là que l'erreur se fait, en
+    prenant le code voisin dans la liste.
+    """
+
+    VITRAGE, CARTON = "vitrage", "carton"
+    FAMILLES = [(VITRAGE, "Vitrage"), (CARTON, "Carton")]
+
+    code = models.CharField("code élément", max_length=64, unique=True)
+    famille = models.CharField(max_length=16, choices=FAMILLES)
+    designation = models.CharField("désignation", max_length=200, blank=True, default="")
+    fournisseur = models.CharField(max_length=60, blank=True, default="")
+    #: Le n° de l'article dans le fichier des matières premières (« 434 »).
+    #: On le cite au téléphone ; il se cherche donc comme le code.
+    numero = models.CharField("n° article", max_length=20, blank=True, default="")
+    #: Les autres noms du même élément, séparés par « · » : réf. fournisseur,
+    #: libellé fournisseur, marquage peint sur la palette. Tous se cherchent.
+    references = models.CharField("autres références", max_length=255, blank=True,
+                                  default="")
+    #: Quantité d'une palette pleine. Proposée d'une touche à l'entrée, jamais
+    #: écrite d'office : une palette entamée existe aussi.
+    colisage = models.PositiveIntegerField(null=True, blank=True)
+    #: Le seuil d'alerte : quand le stock total du code passe EN DESSOUS, la
+    #: cloche des écrans le signale. Vide : pas d'alerte pour ce code. Le nom
+    #: du champ date du fichier d'origine (« seuil de réappro ») ; c'est la
+    #: même chose, dite comme on la règle au poste.
+    seuil_reappro = models.PositiveIntegerField(
+        "seuil d'alerte", null=True, blank=True,
+        help_text="Alerte quand le stock total du code passe en dessous. Vide : pas d'alerte.")
+    ancienne_generation = models.BooleanField("ancienne génération", default=False)
+    #: Un code retiré de la base ne se propose plus à l'entrée. Il n'est pas
+    #: supprimé : le journal et le stock restant le citent encore.
+    actif = models.BooleanField(default=True)
+
+    cle = models.CharField("clé de recherche", max_length=64, db_index=True,
+                           editable=False, default="")
+    cle_references = models.CharField(max_length=300, editable=False, default="")
+    modifie_le = models.DateTimeField("modifié le", auto_now=True)
+
+    class Meta:
+        verbose_name = "code MP"
+        verbose_name_plural = "codes MP (base vitrages et cartons)"
+        ordering = ["famille", "code"]
+
+    def clean(self):
+        """Le code normalisé AVANT le contrôle d'unicité de l'administration.
+
+        Sans cela, « vitr.445x2072.bp » passait le contrôle — la base porte
+        « VITR.445X2072.BP » — puis `save()` le mettait en majuscules et la
+        contrainte d'unicité sautait en erreur 500 au lieu d'un message clair.
+        """
+        super().clean()
+        self.code = " ".join(str(self.code or "").split()).upper()
+
+    def save(self, *args, **kwargs):
+        self.code = " ".join(str(self.code or "").split()).upper()
+        self.cle = normaliser_code_mp(self.code)
+        self.cle_references = "|".join(
+            normaliser_code_mp(r) for r in str(self.references or "").split("·")
+            if normaliser_code_mp(r))
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.code
+
+
+class StockMP(models.Model):
+    """Ce qu'il y a, maintenant, sur une place d'un emplacement MP.
+
+    Une ligne par code et par place : deux palettes du même carton posées sur la
+    même place n'en font qu'une, dont la quantité s'additionne. Plusieurs codes
+    peuvent partager une place — une palette sur une autre, deux paquets de
+    verre sur le même chevalet.
+
+    PROTECT des deux côtés : supprimer un emplacement ou un code qui porte du
+    stock le ferait disparaître sans trace. Le service refuse avant, et le dit.
+    """
+
+    GAUCHE, MILIEU, DROITE = "G", "M", "D"
+    PLACES = [(GAUCHE, "Gauche"), (MILIEU, "Milieu"), (DROITE, "Droite")]
+
+    emplacement = models.ForeignKey(Emplacement, on_delete=models.PROTECT,
+                                    related_name="stock_mp")
+    place = models.CharField(max_length=1, choices=PLACES)
+    article = models.ForeignKey(ArticleMP, on_delete=models.PROTECT, related_name="stock")
+    quantite = models.PositiveIntegerField("quantité")
+    entre_le = models.DateTimeField("entré le", auto_now_add=True)
+    modifie_le = models.DateTimeField("dernier mouvement", auto_now=True)
+
+    class Meta:
+        verbose_name = "ligne de stock MP"
+        verbose_name_plural = "stock MP"
+        ordering = ["emplacement__code", "place", "article__code"]
+        constraints = [
+            models.UniqueConstraint(fields=["emplacement", "place", "article"],
+                                    name="stock_mp_un_code_par_place"),
+            # Une ligne à zéro n'a pas de sens : elle s'efface à la dernière sortie.
+            models.CheckConstraint(condition=models.Q(quantite__gt=0),
+                                   name="stock_mp_quantite_positive"),
+        ]
+
+    @property
+    def position(self):
+        return f"{self.emplacement.code}·{self.place}"
+
+    def __str__(self):
+        return f"{self.article.code} × {self.quantite} @ {self.position}"
+
+
+class MouvementMP(models.Model):
+    """Journal des matières premières : chaque entrée, chaque sortie, chaque
+    changement d'emplacement.
+
+    Comme le journal des cabines, il recopie ce qu'il cite — code, position,
+    auteur — pour rester lisible quand le code ou l'emplacement a disparu.
+    `reste` dit ce qui restait à cette place après le geste : un écart
+    d'inventaire se remonte alors ligne par ligne, sans rien recalculer.
+
+    Un changement d'emplacement est UNE ligne, et non une sortie suivie d'une
+    entrée : `emplacement`, `position` et `reste` disent où le stock est
+    arrivé, `origine` et `reste_origine` d'où il est parti. Écrit en deux
+    lignes, il compterait comme une consommation dans « ce qui est sorti ce
+    mois-ci », et la palette déplacée passerait pour une palette utilisée.
+    """
+
+    ENTREE, SORTIE, TRANSFERT = "entree", "sortie", "transfert"
+    TYPES = [(ENTREE, "Entrée"), (SORTIE, "Sortie"),
+             (TRANSFERT, "Changement d'emplacement")]
+
+    date = models.DateTimeField(auto_now_add=True)
+    type = models.CharField(max_length=16, choices=TYPES)
+    article = models.ForeignKey(ArticleMP, null=True, blank=True,
+                                on_delete=models.SET_NULL, related_name="mouvements")
+    article_code = models.CharField("code élément", max_length=64)
+    famille = models.CharField(max_length=16, choices=ArticleMP.FAMILLES)
+    emplacement = models.ForeignKey(Emplacement, null=True, blank=True,
+                                    on_delete=models.SET_NULL, related_name="mouvements_mp")
+    position = models.CharField(max_length=80)
+    quantite = models.PositiveIntegerField("quantité")
+    reste = models.PositiveIntegerField("reste à cette place")
+    #: Changement d'emplacement seulement : la position de départ, et ce qui y
+    #: restait de ce code après le geste.
+    origine = models.CharField("depuis", max_length=80, blank=True, default="")
+    reste_origine = models.PositiveIntegerField("reste au départ", null=True, blank=True)
+    utilisateur = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="mouvements_mp")
+    utilisateur_nom = models.CharField(max_length=150, blank=True, default="")
+    note = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        verbose_name = "mouvement MP"
+        verbose_name_plural = "mouvements MP"
+        ordering = ["-date", "-id"]
+
+    def __str__(self):
+        ou = f"{self.origine} → {self.position}" if self.origine else self.position
+        return (f"{self.get_type_display()} {self.quantite} × {self.article_code} "
+                f"— {ou} — {self.date:%d/%m/%Y %H:%M}")

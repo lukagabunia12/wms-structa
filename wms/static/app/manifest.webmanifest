@@ -2,7 +2,7 @@
   "id": "/",
   "name": "WMS Structa",
   "short_name": "WMS Structa",
-  "description": "Entrepôt des cabines : scanner, ranger, retrouver.",
+  "description": "Entrepôt des cabines et des matières premières : scanner, ranger, retrouver.",
   "lang": "fr",
   "dir": "ltr",
   "start_url": "/",
