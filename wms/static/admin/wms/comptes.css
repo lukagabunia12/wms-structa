@@ -1,0 +1,6 @@
+/* La fiche d'un compte : les cases des droits portent des phrases, pas des
+   mots. L'administration de Django cale chaque libellé sur 160 px, ce qui
+   coupe « Entrer et ranger des cabines » en deux lignes à côté de la case. */
+.aligned .checkbox-row label.vCheckboxLabel {
+    width: auto;
+}

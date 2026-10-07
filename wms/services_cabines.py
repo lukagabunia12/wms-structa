@@ -13,15 +13,13 @@ Règles portées ici :
   seule contrainte qu'express ne relâche pas.
 """
 import logging
-from pathlib import Path
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from .models import (Cabine, CabineAttendue, Emplacement, ModeleCabine,
-                     MouvementCabine, Occupation, PlaceCondamnee, StockMP,
-                     Utilisateur, Zone)
+                     MouvementCabine, Occupation, PlaceCondamnee, StockMP)
 
 
 logger = logging.getLogger(__name__)
@@ -42,8 +40,9 @@ def _controler_fichier_production(numero, utilisateur, motif):
     La règle : une cabine que le fichier de production n'annonce pas ne
     s'enregistre pas. Un opérateur qui a une cabine inconnue devant lui n'a pas
     à inventer sa fiche — il n'en a pas les éléments, et la reconnaissance de
-    texte confond 0 et O. Un administrateur peut forcer, mais doit dire
-    pourquoi : le motif part au journal, avec son nom.
+    texte confond 0 et O. Un compte qui a la case « enregistrer une cabine
+    absente du fichier de production » peut forcer — l'administrateur l'a
+    d'office —, mais doit dire pourquoi : le motif part au journal, avec son nom.
 
     **La règle ne s'active qu'une fois un fichier importé.** Sur une
     installation neuve la table est vide ; refuser toute création rendrait le
@@ -56,17 +55,26 @@ def _controler_fichier_production(numero, utilisateur, motif):
         return attendue, False
     if not CabineAttendue.objects.exists():
         return None, False
-    if not getattr(utilisateur, "est_administrateur", False):
+    peut = getattr(utilisateur, "peut", None)
+    if not (peut and peut("hors_fichier")):
         raise ErreurCabine(
             f"La cabine {numero} n'est pas annoncée par le fichier de production. "
             "Elle ne peut pas être enregistrée : demandez l'import du fichier à "
-            "jour, ou faites-la créer par un administrateur.")
+            "jour, ou faites-la créer par un compte qui a le droit « enregistrer une "
+            "cabine absente du fichier de production » — un administrateur l'a.")
     if not (motif or "").strip():
         raise ErreurCabine(
             f"La cabine {numero} n'est pas dans le fichier de production. "
             "Indiquez pourquoi vous la créez malgré tout : le motif est écrit au "
             "journal.")
     return None, True
+
+
+def _hors_fichier(numero):
+    """Vrai si un fichier de production est importé et n'annonce pas ce numéro."""
+    numero = (numero or "").strip()
+    return (CabineAttendue.objects.exists()
+            and not CabineAttendue.objects.filter(numero=numero).exists())
 
 
 def _nom(utilisateur):
@@ -859,6 +867,7 @@ def corriger_fiche(*, cabine, utilisateur=None, **champs):
     sans cela, un numéro qui change du jour au lendemain n'a aucune explication.
     """
     modifs = []
+    ancien_numero = cabine.numero
     for champ, libelle in CHAMPS_CORRIGEABLES.items():
         if champ not in champs:
             continue
@@ -879,104 +888,21 @@ def corriger_fiche(*, cabine, utilisateur=None, **champs):
         # IntegrityError (500) au lieu d'un message lisible au poste.
         raise ErreurCabine(f"Le numéro {cabine.numero} est déjà porté par une autre cabine.")
 
+    if cabine.numero != ancien_numero and _hors_fichier(cabine.numero):
+        # La règle d'une création : sans elle, corriger le numéro d'une cabine
+        # annoncée vers un numéro inconnu enregistrait par la bande ce que
+        # l'entrée refuse. Le journal le dit, avec l'auteur.
+        peut = getattr(utilisateur, "peut", None)
+        if not (peut and peut("hors_fichier")):
+            raise ErreurCabine(
+                f"Le numéro {cabine.numero} n'est pas annoncé par le fichier de production. "
+                "Le corriger ainsi demande le droit « enregistrer une cabine absente du "
+                "fichier de production » — un administrateur l'a.")
+        modifs.append("hors fichier de production")
+
     cabine.save()   # clean_fields() + clean() rejouent les formats attendus
     _tracer(cabine, MouvementCabine.CORRECTION, utilisateur, note=" ; ".join(modifs)[:255])
     return cabine
-
-
-#: Où atterrissent les sauvegardes d'avant remise à zéro. À la racine du projet
-#: et non dans un dossier temporaire : c'est un fichier qu'on doit retrouver six
-#: mois plus tard, pas un intermédiaire technique.
-DOSSIER_SAUVEGARDES = "sauvegardes"
-
-
-def etat_du_stock():
-    """Ce qu'une remise à zéro effacerait, et ce qui resterait.
-
-    Une seule définition, pour que l'écran annonce exactement ce que
-    l'opération fera ensuite. Deux comptages écrits à deux endroits finissent
-    par diverger, et c'est l'écran qui aurait tort au pire moment.
-    """
-    return {
-        "cabines": Cabine.objects.count(),
-        "rangees": Occupation.objects.filter(emplacement__isnull=False)
-                                     .values("cabine").distinct().count(),
-        "journal": MouvementCabine.objects.count(),
-        "conserves": {
-            "emplacements": Emplacement.objects.count(),
-            "zones": Zone.objects.count(),
-            "comptes": Utilisateur.objects.count(),
-            "cabines_attendues": CabineAttendue.objects.count(),
-            "modeles_regles": ModeleCabine.objects.count(),
-            # Un pilier devant une place est toujours là après une remise à
-            # zéro : la condamnation décrit l'entrepôt, pas le stock.
-            "places_condamnees": PlaceCondamnee.objects.count(),
-            # Les matières premières ne sont pas des cabines : la remise à zéro
-            # du parc ne touche ni à leur stock ni à leur journal.
-            "lignes_stock_mp": StockMP.objects.count(),
-        },
-    }
-
-
-def sauvegarder_le_stock(dossier=None, horodatage=None):
-    """Écrit tout ce qu'une remise à zéro ferait disparaître. Rend le chemin.
-
-    Le format est un export Django ordinaire : `manage.py loaddata <fichier>`
-    remet tout en place. Ce n'est pas une trace pour l'archive, c'est un retour
-    en arrière qui marche — et c'est la différence entre « irréversible, vous
-    êtes prévenu » et « irréversible, sauf si vous rechargez ce fichier ».
-
-    L'ordre des objets est celui du rechargement : les cabines d'abord, puis ce
-    qui pointe vers elles. Un fichier qui se recharge dans le désordre n'est pas
-    une sauvegarde, c'est un espoir.
-    """
-    from django.conf import settings
-    from django.core import serializers
-
-    racine = (Path(dossier) if dossier
-              else Path(settings.BASE_DIR) / DOSSIER_SAUVEGARDES)
-    racine.mkdir(parents=True, exist_ok=True)
-    quand = horodatage or timezone.localtime()
-    fichier = racine / f"remise-a-zero_{quand:%Y-%m-%d_%Hh%M%S}.json"
-    rang = 2
-    while fichier.exists():
-        fichier = racine / f"remise-a-zero_{quand:%Y-%m-%d_%Hh%M%S}-{rang}.json"
-        rang += 1
-
-    objets = (list(Cabine.objects.all())
-              + list(Occupation.objects.all())
-              + list(MouvementCabine.objects.all()))
-    fichier.write_text(serializers.serialize("json", objets, indent=1),
-                       encoding="utf-8")
-    return fichier
-
-
-@transaction.atomic
-def vider_le_stock(*, utilisateur=None, dossier=None):
-    """Efface TOUTES les cabines et leur journal, après les avoir sauvegardées.
-
-    Ce qu'elle ne touche pas, et c'est le point : les emplacements, les zones,
-    les comptes, le fichier de production et les réglages de taille de modèle.
-    Effacer le fichier de production désarmerait au passage la règle « une
-    cabine non annoncée ne s'enregistre pas », et il faudrait réimporter deux
-    mille lignes pour pouvoir entrer la première cabine.
-
-    Le journal part avec les cabines : il ne survit pas à ce qu'il raconte.
-    `MouvementCabine.cabine` est en SET_NULL, donc l'effacer d'abord évite de
-    laisser des lignes orphelines qui parleraient de cabines disparues.
-
-    La sauvegarde est écrite AVANT le premier effacement. Si elle échoue, rien
-    n'est effacé : l'exception traverse, et la transaction est annulée.
-    """
-    fichier = sauvegarder_le_stock(dossier)
-    journal = MouvementCabine.objects.count()
-    cabines = Cabine.objects.count()
-    MouvementCabine.objects.all().delete()
-    Cabine.objects.all().delete()
-    logger.warning("Stock des cabines vidé par %s : %s cabines, %s lignes de "
-                   "journal. Sauvegarde : %s",
-                   getattr(utilisateur, "username", "?"), cabines, journal, fichier)
-    return {"cabines": cabines, "journal": journal, "sauvegarde": fichier}
 
 
 #: Motifs qui appellent une confirmation supplémentaire avant de supprimer.

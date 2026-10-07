@@ -84,44 +84,144 @@ plus besoin d'internet. À rejouer avec `--forcer` pour changer de version.
 
 ## Comptes et droits
 
-- Rôles : administrateur, opérateur, lecture seule.
-- 3 droits fins ajustables par compte : **cabines** (ranger, changer un statut, envoyer,
-  corriger ou supprimer une cabine), **référentiel** (créer, modifier, supprimer des
-  emplacements et des racks, régler ce qu'ils rangent et les codes MP qu'ils acceptent,
-  régler les seuils d'alerte des codes MP, régler la taille des modèles) et **matières
-  premières** (entrer, sortir et changer d'emplacement des vitrages et des cartons).
-  L'administrateur a tous les droits. À la mise à jour qui l'a créée, la case « matières premières » a été
-  cochée sur tous les comptes qui avaient « cabines » : décochez-la là où elle n'a pas
-  lieu d'être.
-- Deux opérations sont réservées au **rôle administrateur**, au-delà des droits fins :
-  importer le fichier de production, et vider le stock des cabines (« Repartir de
-  zéro », dans l'administration, derrière trois phrases à recopier et avec une
-  sauvegarde écrite avant tout effacement).
-- Un emplacement ne se supprime pas tant qu'une cabine y est rangée ou que du stock MP y
-  est posé : il faut d'abord le libérer. Chaque suppression est notée dans
-  `logs/wms.log`, avec son auteur et son motif — comme chaque changement de ce que
-  rangent les emplacements (cabines, cartons, vitrages), de leurs codes acceptés, et
-  des seuils d'alerte.
-- La base des codes MP (vitrages, cartons) se complète dans l'administration, **Codes
-  MP** : code élément, famille, désignation, fournisseur, n° article, autres références
-  (séparées par « · », toutes cherchables), colisage, **seuil d'alerte**, ancienne
-  génération. La liste permet de modifier directement le seuil d'alerte, « ancienne
-  génération » et « actif », ligne par ligne ; l'application, elle, règle le même seuil
-  pour une sélection de codes (Stock → MP → « Régler les seuils d'alerte »). Un code
-  réservé sur des emplacements ne change pas de famille et ne se décoche pas « actif »
-  tant qu'il y est réservé : l'administration nomme les emplacements à régler d'abord.
-- Dans **Emplacements**, la fiche d'un emplacement MP porte ses **codes acceptés**
-  (vide : toute sa famille). L'administration y applique la règle de l'application :
-  pas de code d'une autre famille, aucun code sur un emplacement de cabines. Le
-  réglage courant se fait plutôt dans l'application, à l'unité ou en nombre.
-- Le **stock MP** et le **journal MP** y sont consultables, jamais modifiables : un
-  écart se corrige par une entrée ou une sortie dans l'application, motif
+Les comptes se créent et se règlent dans l'administration, **Utilisateurs**. La
+fiche d'un compte porte, juste sous l'identifiant, son **rôle** et ses
+**droits** — une case par geste.
+
+**Le rôle**
+
+- **Opérateur** : il consulte tout, et fait ce qui est coché — rien d'autre.
+- **Lecture seule** : il consulte tout et ne modifie rien ; les cases sont ignorées.
+- **Administrateur** : toutes les cases, plus « Repartir de zéro » ; les cases
+  sont ignorées.
+
+**Les cases** (rôle Opérateur)
+
+| Groupe | Case | Ce qu'elle permet |
+|---|---|---|
+| Cabines | Entrer et ranger des cabines | enregistrer une cabine annoncée par le fichier de production, la ranger, la déplacer, lui ajouter un emplacement |
+| | Changer le statut d'une cabine | quarantaine, lever la quarantaine — sans elle, la question « quel est son état ? » qui suit un rangement est sautée |
+| | Sortir des cabines de l'entrepôt | les envoyer sur chantier (avec le n° de chantier), remettre en stock une cabine revenue |
+| | Corriger ou supprimer une fiche cabine | corriger une cabine mal saisie, ou la supprimer |
+| Fichier de production | Importer le fichier de production | l'écran « Fichier de production » |
+| | Enregistrer une cabine absente du fichier | avec un motif, écrit au journal ; demande aussi « entrer et ranger » |
+| Matières premières | Entrer, sortir et déplacer des matières premières | vitrages et cartons |
+| | Régler les seuils d'alerte MP | le seuil sous lequel la cloche signale un code |
+| Emplacements, racks et modèles | Mettre hors service, condamner une place | et l'inverse : remettre en service, rouvrir |
+| | Régler les emplacements | leur code, ce qu'ils rangent, leurs codes MP acceptés, leur description |
+| | Créer et supprimer des emplacements et des racks | à l'unité, une sélection, un rack entier |
+| | Régler la taille des modèles de cabine | grand modèle ou non |
+
+L'application ne montre à chacun que les boutons de ses cases. Un geste qu'il
+ne peut pas faire est absent, ou affiché éteint avec la case qui manque — c'est
+le mot à chercher sur sa fiche pour la cocher.
+
+**Les profils prêts à l'emploi.** Dans la liste des comptes, cochez-en un ou
+plusieurs, puis choisissez dans « Action » : **Cariste** (les quatre cases des
+cabines), **Cariste + MP**, **Matières premières**, **Gestionnaire** (tout le
+quotidien, réglages compris, mais ni créer ou supprimer des emplacements, ni le
+fichier de production), **Lecture seule**. Un profil fixe le rôle et TOUTES les
+cases — passer un gestionnaire en cariste lui retire le reste. Les
+administrateurs cochés par mégarde sont laissés tels quels. La colonne
+« droits » de la liste dit ce que chacun peut faire : le nom du profil, ou
+« Sur mesure » suivi de ses cases ; le filtre « a le droit » répond à « qui
+peut… ? ».
+
+À la mise à jour qui a créé ces cases, chaque compte a gardé ce qu'il pouvait
+faire, case par case — **sauf « créer et supprimer des emplacements et des
+racks »**, que personne n'a reçu d'office : cochez-la pour qui doit l'avoir.
+
+**À savoir aussi**
+
+- Un emplacement ne se supprime pas tant qu'une cabine y est rangée ou que du
+  stock MP y est posé : il faut d'abord le libérer. Chaque suppression est notée
+  dans `logs/wms.log`, avec son auteur et son motif — comme chaque changement de
+  ce que rangent les emplacements (cabines, cartons, vitrages), de leurs codes
+  acceptés, et des seuils d'alerte.
+- La base des codes MP (vitrages, cartons) se complète dans l'administration,
+  **Codes MP** : code élément, famille, désignation, fournisseur, n° article,
+  autres références (séparées par « · », toutes cherchables), colisage, **seuil
+  d'alerte**, ancienne génération. La liste permet de modifier directement le
+  seuil d'alerte, « ancienne génération » et « actif », ligne par ligne ;
+  l'application, elle, règle le même seuil pour une sélection de codes (Stock →
+  MP → « Régler les seuils d'alerte »). Un code réservé sur des emplacements ne
+  change pas de famille et ne se décoche pas « actif » tant qu'il y est réservé :
+  l'administration nomme les emplacements à régler d'abord.
+- Dans **Emplacements**, la fiche d'un emplacement MP porte ses **codes
+  acceptés** (vide : toute sa famille). L'administration y applique la règle de
+  l'application : pas de code d'une autre famille, aucun code sur un emplacement
+  de cabines. Le réglage courant se fait plutôt dans l'application, à l'unité ou
+  en nombre.
+- Le **stock MP** et le **journal MP** y sont consultables, jamais modifiables :
+  un écart se corrige par une entrée ou une sortie dans l'application, motif
   « Inventaire ». Le journal montre aussi les changements d'emplacement, avec la
   position de départ (« depuis »).
-- « Repartir de zéro » ne vide que les cabines : le stock MP et son journal restent.
-- Les zones se règlent dans l'administration ; une zone à laquelle des emplacements sont
-  rattachés ne se supprime pas.
-- Gestion via l'administration : `/admin/`.
+- Les zones se règlent dans l'administration ; une zone à laquelle des
+  emplacements sont rattachés ne se supprime pas.
+- Gestion via l'administration : `/admin/`. L'administration suit les
+  permissions de Django (« Statut équipe », « Statut super-utilisateur »,
+  permissions par table), pas les cases du WMS : ne donnez « Statut équipe »
+  qu'aux administrateurs du WMS. Exception voulue, les **emplacements** : même
+  avec les permissions de Django, on n'y crée rien sans la case « créer et
+  supprimer », on n'y règle rien sans « régler les emplacements », et on n'y
+  supprime **aucun** emplacement, superutilisateur compris — la suppression se
+  fait dans l'application (fiche, sélection, rack), avec ses refus et sa trace.
+- Une cabine dont on corrige le numéro suit la règle de l'entrée : vers un
+  numéro que le fichier de production n'annonce pas, il faut la case
+  « enregistrer une cabine absente du fichier de production » (le journal porte
+  alors « hors fichier de production »).
+
+## Repartir de zéro
+
+Remet l'outil à neuf. Réservé au rôle **administrateur**, avec « Statut
+équipe » coché pour entrer dans l'administration : lien « Repartir de zéro » sur
+l'accueil de l'administration (la page vit sous Cabines → « Repartir de
+zéro »).
+
+**Tout est coché** à l'ouverture ; on décoche ce qu'on garde. Chaque partie dit
+ce qu'elle efface, avec les nombres du moment :
+
+| Partie | Ce qui part |
+|---|---|
+| Les cabines | toutes les cabines, leurs positions, leur journal |
+| Les matières premières | le stock des vitrages et des cartons, et son journal |
+| Le fichier de production | les cabines annoncées — d'ici le prochain import, une cabine entre par saisie libre |
+| Le plan de l'entrepôt | emplacements, racks, zones, places condamnées, codes acceptés — les étiquettes QR collées ne mènent plus nulle part tant que les emplacements ne sont pas recréés avec les mêmes codes |
+| Les tailles des modèles de cabine | retour aux six grands modèles d'origine |
+| La base des codes MP | retour aux codes livrés : codes ajoutés retirés, seuils d'alerte et fiches remis comme à l'installation |
+
+Le plan ne part pas sans les cabines ni le stock MP (ils y sont posés), et la
+base des codes ne revient pas sans vider le stock MP : la page coche et décoche
+ensemble ce qui va ensemble. **Les comptes restent toujours** — sans eux,
+personne ne pourrait se reconnecter ; ils se gèrent dans « Utilisateurs ».
+Restent aussi `logs/` et les sauvegardes déjà écrites.
+
+Trois phrases à recopier (« confirmer », la date du jour, une phrase
+d'engagement), puis une **sauvegarde** est écrite dans `sauvegardes/` avant le
+premier effacement — si elle échoue, rien n'est effacé. Elle contient tout ce
+qui part ou change, et se recharge **juste après, avant toute nouvelle saisie** :
+
+```bash
+python manage.py loaddata sauvegardes/remise-a-zero_<date>.json
+```
+
+Le rechargement rend tout ce qui est parti ou a changé. Une seule chose
+reste : un code MP ou un grand modèle d'origine que la remise a **recréé**
+(parce qu'il avait été supprimé ou renommé avant) reste en place — la page
+l'annonce (« code livré manquant, remis ») ; supprimez-le dans l'administration
+s'il ne doit pas exister.
+
+Sur PostgreSQL, les tables touchées sont fermées aux écritures le temps de la
+remise (quelques secondes) : un geste fait au même moment attend, puis passe
+sur l'outil remis à zéro — il ne peut pas être effacé sans être dans la
+sauvegarde. Si un geste en cours tient la base plus de quinze secondes, ou si
+la sauvegarde ne peut pas s'écrire, la remise est annulée avant tout
+effacement, et la page le dit : réessayez. Le mieux reste de repartir de zéro
+quand personne ne travaille.
+
+Pour un retour complet en arrière à une date donnée, la vraie sauvegarde reste
+celle de la base entière (voir « Sauvegarde » plus bas) : faites-en une avant de
+repartir de zéro.
 
 ## Mise en serveur et base PostgreSQL
 

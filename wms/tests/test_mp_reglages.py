@@ -210,8 +210,9 @@ class CodesAcceptesTest(BaseReglages):
                 self.assertEqual(r.status_code, 400)
                 self.assertIn(morceau, str(r.data))
 
-    def test_api_codes_demande_le_referentiel(self):
-        c = self.client_avec(droit_mp=True, droit_cab=True)
+    def test_api_codes_demande_le_reglage_des_emplacements(self):
+        c = self.client_avec(**{f"droit_{d}": True for d in Utilisateur.DROITS
+                                if d != "empl_regler"})
         r = c.post("/api/emplacements/codes/", {"ids": [self.ah500.id],
                                                  "articles": [self.v470.id],
                                                  "mode": "remplacer"}, format="json")
@@ -293,7 +294,7 @@ class SeuilsTest(BaseReglages):
         r = services_mp.regler_seuils([self.v445.id, self.v470.id], 10)
         self.assertEqual(r["sans_effet"], ["VITR.445X2072.BP"])
 
-    def test_api_seuils_demande_le_referentiel(self):
+    def test_api_seuils_demande_sa_case(self):
         corps = {"articles": [self.v470.id], "seuil": 12}
         self.assertEqual(self.client_avec(droit_mp=True).post(
             "/api/mp/seuils/", corps, format="json").status_code, 403)
@@ -302,8 +303,8 @@ class SeuilsTest(BaseReglages):
         self.v470.refresh_from_db()
         self.assertEqual(self.v470.seuil_reappro, 12)
 
-    def test_api_seuils_avec_le_seul_referentiel(self):
-        c = self.client_avec(droit_ref=True)
+    def test_api_seuils_avec_la_seule_case_des_seuils(self):
+        c = self.client_avec(droit_mp_seuils=True)
         r = c.post("/api/mp/seuils/", {"articles": [self.v470.id], "seuil": 30}, format="json")
         self.assertEqual(r.status_code, 200, r.data)
 
@@ -562,7 +563,8 @@ class DeplacerTest(BaseReglages):
     def test_api_deplacer_demande_la_case_mp(self):
         ligne = self.entrer(quantite=19)
         corps = {"lignes": [{"ligne": ligne.id}], "emplacement": self.ah510.id, "place": "D"}
-        for droits in ({"droit_cab": True}, {"droit_ref": True}):
+        for droits in ({"droit_cab_ranger": True, "droit_cab_envoyer": True},
+                       {"droit_empl_regler": True, "droit_mp_seuils": True}):
             with self.subTest(droits=droits):
                 c = self.client_avec(**droits)
                 self.assertEqual(c.post("/api/mp/deplacer/", corps, format="json")

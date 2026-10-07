@@ -1,0 +1,21 @@
+{% extends "admin/index.html" %}
+{# L'accueil de l'administration, avec « Repartir de zéro » pour les
+   administrateurs du WMS. La page vit sous « Cabines » pour des raisons
+   d'adresse, mais elle remet à zéro tout l'outil : personne ne la chercherait
+   dans la liste des cabines. #}
+{% block content %}
+<div id="content-main">
+  {% if user.est_administrateur %}
+  <div class="module">
+    <table>
+      <caption>Outils</caption>
+      <tr>
+        <th scope="row"><a href="{% url 'admin:wms_cabine_remise_a_zero' %}">Repartir de zéro</a></th>
+        <td>Remettre l'outil à neuf — tout, ou ce qu'on coche — après une sauvegarde.</td>
+      </tr>
+    </table>
+  </div>
+  {% endif %}
+  {% include "admin/app_list.html" with app_list=app_list show_changelinks=True %}
+</div>
+{% endblock %}

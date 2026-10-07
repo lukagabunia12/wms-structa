@@ -260,16 +260,16 @@ class ServiceImportTest(APITestCase):
 
 
 class DroitsImportTest(APITestCase):
-    """L'import réécrit des milliers de cabines : administrateurs seulement."""
+    """L'import réécrit des milliers de cabines : sa case, et elle seule, l'ouvre."""
 
     def setUp(self):
         self.admin = Utilisateur.objects.create_user(
             username="chef", password="motdepasse123", role=Utilisateur.ADMIN)
-        # Un opérateur avec TOUS les droits fins cochés : la barrière ne doit pas
-        # dépendre d'une case, sinon elle finirait cochée « pour débloquer ».
+        # Un opérateur avec TOUTES les cases cochées, sauf celle de l'import :
+        # aucune autre ne doit l'ouvrir par la bande.
         self.operateur = Utilisateur.objects.create_user(
             username="cariste", password="motdepasse123", role=Utilisateur.OPERATEUR,
-            droit_cab=True, droit_ref=True)
+            **{f"droit_{d}": True for d in Utilisateur.DROITS if d != "production"})
         CabineAttendue.objects.create(numero="26_02_49", chantier="251314",
                                       modele="MODELE M")
 
@@ -278,7 +278,20 @@ class DroitsImportTest(APITestCase):
         r = self.client.post("/api/cabines-attendues/analyser/",
                              {"fichier": classeur([ligne()])}, format="multipart")
         self.assertEqual(r.status_code, 403)
-        self.assertIn("administrateur", str(r.data).lower())
+        self.assertIn("importer le fichier de production", str(r.data))
+
+    def test_la_case_import_suffit(self):
+        """Cochée seule, sur un opérateur : c'est la souplesse demandée."""
+        responsable = Utilisateur.objects.create_user(
+            username="planning", password="motdepasse123", role=Utilisateur.OPERATEUR,
+            droit_production=True)
+        self.client.force_authenticate(user=responsable)
+        r = self.client.post("/api/cabines-attendues/importer/",
+                             {"fichier": classeur([ligne(CABINE="26_03_02")])},
+                             format="multipart")
+        self.assertEqual(r.status_code, 200, getattr(r, "data", None))
+        self.assertEqual(CabineAttendue.objects.get(numero="26_03_02").importe_par,
+                         responsable)
 
     def test_un_visiteur_anonyme_est_refuse(self):
         r = self.client.post("/api/cabines-attendues/importer/",
@@ -363,16 +376,20 @@ class CreationHorsFichierTest(APITestCase):
     """Une cabine que la production n'annonce pas ne s'enregistre plus.
 
     Un opérateur qui a une cabine inconnue devant lui n'a pas de quoi inventer
-    sa fiche. Un administrateur peut passer outre, mais doit dire pourquoi : le
-    motif part au journal avec son nom, et c'est la seule trace de l'exception.
+    sa fiche. Un compte qui a la case « enregistrer une cabine absente du
+    fichier de production » — un administrateur l'a d'office — peut passer
+    outre, mais doit dire pourquoi : le motif part au journal avec son nom, et
+    c'est la seule trace de l'exception.
     """
 
     def setUp(self):
         self.admin = Utilisateur.objects.create_user(
             username="chef", password="motdepasse123", role=Utilisateur.ADMIN)
+        # Toutes les cases sauf celle de l'exception : importer le fichier ne
+        # vaut pas passer outre.
         self.operateur = Utilisateur.objects.create_user(
             username="cariste", password="motdepasse123", role=Utilisateur.OPERATEUR,
-            droit_cab=True, droit_ref=True)
+            **{f"droit_{d}": True for d in Utilisateur.DROITS if d != "hors_fichier"})
         CabineAttendue.objects.create(numero="26_02_49", chantier="251314",
                                       modele="MODELE M", client="CNRS")
 
@@ -393,8 +410,69 @@ class CreationHorsFichierTest(APITestCase):
         self.assertEqual(r.status_code, 400)
         message = " ".join(r.data["erreur"])
         self.assertIn("fichier de production", message)
+        # Le refus dit quelle case manque — et qu'un administrateur l'a.
+        self.assertIn("absente du fichier de production", message)
         self.assertIn("administrateur", message)
         self.assertFalse(Cabine.objects.filter(numero="99_99_99").exists())
+
+    def test_la_case_hors_fichier_ouvre_l_exception_avec_motif(self):
+        chef = Utilisateur.objects.create_user(
+            username="chef_quai", password="motdepasse123", role=Utilisateur.OPERATEUR,
+            droit_cab_ranger=True, droit_hors_fichier=True)
+        self.client.force_authenticate(user=chef)
+        r = self.client.post("/api/cabines/",
+                             {"numero": "99_99_98", "chantier": "251314"}, format="json")
+        self.assertEqual(r.status_code, 400, "le motif reste exigé")
+        r = self.client.post("/api/cabines/",
+                             {"numero": "99_99_98", "chantier": "251314",
+                              "motif_hors_fichier": "cabine d'exposition"}, format="json")
+        self.assertEqual(r.status_code, 201, getattr(r, "data", None))
+        mouvement = MouvementCabine.objects.get(cabine_numero="99_99_98",
+                                                type=MouvementCabine.CREATION)
+        self.assertEqual(mouvement.utilisateur, chef)
+
+    def test_corriger_vers_un_numero_inconnu_suit_la_meme_regle(self):
+        """Sans cela, entrer une cabine annoncée puis corriger son numéro vers un
+        numéro que le fichier n'annonce pas enregistrait par la bande ce que
+        l'entrée refuse."""
+        correcteur = Utilisateur.objects.create_user(
+            username="correcteur", password="motdepasse123", role=Utilisateur.OPERATEUR,
+            droit_cab_ranger=True, droit_cab_corriger=True)
+        self.client.force_authenticate(user=correcteur)
+        r = self.client.post("/api/cabines/", {"numero": "26_02_49", "chantier": "251314"},
+                             format="json")
+        self.assertEqual(r.status_code, 201, getattr(r, "data", None))
+        cabine_id = r.data["id"]
+        r = self.client.patch(f"/api/cabines/{cabine_id}/", {"numero": "99_99_96"},
+                              format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("absente du fichier de production", " ".join(r.data["erreur"]))
+        self.assertEqual(Cabine.objects.get(pk=cabine_id).numero, "26_02_49")
+        # Les autres corrections restent libres.
+        r = self.client.patch(f"/api/cabines/{cabine_id}/", {"client": "CNRS Lyon"},
+                              format="json")
+        self.assertEqual(r.status_code, 200, getattr(r, "data", None))
+
+    def test_avec_la_case_la_correction_passe_et_le_journal_le_dit(self):
+        self.client.force_authenticate(user=self.admin)
+        r = self.client.post("/api/cabines/", {"numero": "26_02_49", "chantier": "251314"},
+                             format="json")
+        r = self.client.patch(f"/api/cabines/{r.data['id']}/", {"numero": "99_99_95"},
+                              format="json")
+        self.assertEqual(r.status_code, 200, getattr(r, "data", None))
+        mouvement = MouvementCabine.objects.filter(type=MouvementCabine.CORRECTION).latest("date")
+        self.assertIn("hors fichier de production", mouvement.note)
+
+    def test_la_case_hors_fichier_seule_ne_fait_pas_entrer(self):
+        """L'exception est une création : il faut aussi la case « entrer et ranger »."""
+        seul = Utilisateur.objects.create_user(
+            username="seul", password="motdepasse123", role=Utilisateur.OPERATEUR,
+            droit_hors_fichier=True)
+        self.client.force_authenticate(user=seul)
+        r = self.client.post("/api/cabines/",
+                             {"numero": "99_99_97", "chantier": "251314",
+                              "motif_hors_fichier": "essai"}, format="json")
+        self.assertEqual(r.status_code, 403)
 
     def test_un_motif_ne_suffit_pas_a_un_operateur(self):
         """Sans quoi la barrière se contournerait en remplissant un champ."""

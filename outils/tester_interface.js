@@ -342,5 +342,58 @@ verifier('déjà réservés ainsi', mp.phraseDejaCodes({ mode: 'remplacer', deja
 verifier('déjà ouverts', mp.phraseDejaCodes({ mode: 'tous', deja: ['AH500'] }),
          '1 accepte déjà tous les codes : AH500');
 
+/* --- Droits : une case par geste ------------------------------------------------
+   Ce que l'écran propose doit suivre les cases du compte, et le profil du menu
+   s'en déduire. Les morceaux sont évalués avec les droits d'un compte donné :
+   `DROITS` et `LIBELLES_DROITS` sont posés AVANT, comme le fait `boot()`. */
+function compteAvec(cases, libelles = {}) {
+  const morceaux = [
+    ['const peut = (droit)', 'function refuseSansDroit'],
+    ['function profil()', '// Onglets du bas'],
+    ['const MENU_CABINES = [', '/** L\'entrée du menu à surligner'],
+  ].map(([debut, fin]) => {
+    const i = source.indexOf(debut);
+    const j = source.indexOf(fin, i);
+    if (i < 0 || j < 0) {
+      throw new Error(`Repère introuvable dans app.js : « ${i < 0 ? debut : fin} ». `
+        + 'Le code a été réorganisé : mettez ces repères à jour plutôt que de retirer le test.');
+    }
+    return source.slice(i, j);
+  }).join('\n');
+  const DROITS = Object.fromEntries(cases.map(c => [c, true]));
+  // `voitAlertes` vit plus loin, au milieu de la cloche : sa seule ligne suffit.
+  const alerte = source.match(/const voitAlertes = .*;/)[0];
+  return eval(`(function(DROITS, LIBELLES_DROITS){ ${morceaux}; ${alerte};
+    return { peut, peutUnDe, gereEmplacements, sansLeDroit, profil, menuLateral, voitAlertes };
+  })`)(DROITS, libelles);
+}
+const entrees = (compte) => compte.menuLateral().flatMap(([, liens]) => liens.map(([cle]) => cle));
+
+console.log('\nDroits à cocher');
+const cariste = compteAvec(['cab_ranger', 'cab_statut', 'cab_envoyer', 'cab_corriger']);
+verifier('un cariste a le profil cariste', cariste.profil(), 'cariste');
+verifier('le cariste ne voit pas le référentiel', entrees(cariste).includes('emplacements'), false);
+verifier('ni la cloche du verre', cariste.voitAlertes(), false);
+const regleur = compteAvec(['empl_regler', 'empl_service']);
+verifier('qui règle les emplacements gère', regleur.profil(), 'gestion');
+verifier('il les voit', entrees(regleur).includes('emplacements'), true);
+verifier('sans pouvoir en créer', regleur.peut('empl_creer'), false);
+verifier('il voit la cloche (codes acceptés)', regleur.voitAlertes(), true);
+verifier('une seule case des emplacements suffit à les gérer',
+         compteAvec(['empl_service']).gereEmplacements(), true);
+verifier('le modèle seul : profil gestion', compteAvec(['modeles']).profil(), 'gestion');
+verifier('sans case : lecture', compteAvec([]).profil(), 'lecture');
+verifier('l’import suit SA case, pas le profil',
+         entrees(compteAvec(['production'])).includes('import'), true);
+verifier('un gestionnaire sans la case n’importe pas',
+         entrees(compteAvec(['empl_regler', 'empl_creer', 'modeles'])).includes('import'), false);
+verifier('les seuils seuls font voir la cloche', compteAvec(['mp_seuils']).voitAlertes(), true);
+verifier('le refus nomme la case',
+         compteAvec([], { empl_creer: 'créer et supprimer des emplacements et des racks' })
+           .sansLeDroit('empl_creer'),
+         'Ton compte n’a pas le droit « créer et supprimer des emplacements et des racks ». '
+         + 'Demande-le à l’administrateur du WMS.');
+verifier('une case inconnue vaut non', compteAvec(['mp']).peut('cab'), false);
+
 console.log(echecs ? `\n${echecs} test(s) en échec.` : '\nInterface OK — tous les tests passent.');
 process.exit(echecs ? 1 : 0);

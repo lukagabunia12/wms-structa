@@ -6,8 +6,10 @@ possibles et se ressemblaient toutes à l'écran.
 """
 from rest_framework.test import APITestCase
 
-from wms.admin import PROFIL_CARISTE
+from wms.admin import valeurs_profil
 from wms.models import Utilisateur
+
+PROFIL_CARISTE = valeurs_profil("cariste")
 
 
 class ConnexionTest(APITestCase):

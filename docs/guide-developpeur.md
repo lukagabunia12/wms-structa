@@ -8,13 +8,14 @@ Ce guide sert aussi de contexte à l'assistant IA.
 - Base **PostgreSQL** en exploitation ; **SQLite** (`db.sqlite3`, chemin `DJANGO_DB_PATH`)
   sur un poste de développement.
 - Utilisateur personnalisé `wms.Utilisateur` : un rôle (administrateur, opérateur, lecture
-  seule) et trois droits fins, **cabines**, **référentiel** et **matières premières**.
+  seule) et douze droits, une case par geste (`Utilisateur.GROUPES_DROITS`).
 
 ## Où vit la logique
 
 | Module | Rôle |
 |---|---|
-| `wms/services_cabines.py` | Toute écriture sur une cabine : créer, ranger, déplacer, changer de statut, envoyer, reprendre, corriger, supprimer. Chaque geste écrit sa ligne de `MouvementCabine` dans la même transaction. Aussi : mise en service des emplacements, places condamnées, remise à zéro avec sauvegarde. |
+| `wms/services_cabines.py` | Toute écriture sur une cabine : créer, ranger, déplacer, changer de statut, envoyer, reprendre, corriger, supprimer. Chaque geste écrit sa ligne de `MouvementCabine` dans la même transaction. Aussi : mise en service des emplacements, places condamnées. |
+| `wms/services_remise.py` | « Repartir de zéro » : six parties (cabines, MP, fichier de production, plan, modèles, codes MP), ce que chacune touche, ce qu'elle emporte (`EXIGE`), la sauvegarde rechargeable écrite avant le premier effacement, et la remise des réglages d'origine — lus dans les migrations qui les sèment (0020, 0026). |
 | `wms/services_emplacements.py` | Le référentiel : créer un rack, supprimer un emplacement, une sélection ou un rack — tout ou rien, et refusé tant qu'une cabine y est rangée. |
 | `wms/services_import.py` | Import du fichier de production (`CabineAttendue`), tout ou rien. |
 | `wms/services_mp.py` | Matières premières : entrer, sortir, changer d'emplacement (chaque geste écrit son `MouvementMP`), suggestions de codes, stock par code ; le réglage des emplacements — leur usage (cabines, cartons, vitrages) et leurs codes acceptés — et des seuils d'alerte ; les alertes de la cloche. |
@@ -56,20 +57,50 @@ services (`ValidationError`) en réponses 400.
     dans `EmplacementSerializer` (sinon `fields = "__all__"` l'aurait ouvert au PATCH),
     et l'administration passe par la même règle (`EmplacementForm`, `ArticleMPForm`).
     Un changement d'usage efface la réservation (`oublier_codes`).
+11. **« Repartir de zéro » sauvegarde avant d'effacer, dans la même transaction**, et
+    remet les réglages d'origine SUR leurs lignes (codes MP par code, modèles par clé)
+    au lieu de les recréer : la sauvegarde se recharge alors sans buter sur un code en
+    double. Les comptes ne partent jamais.
 
 ## Contrat d'erreur de l'API
 Une saisie invalide produit un **400 avec `{"erreur": [...]}`**, jamais un 500. Les filtres
 d'identifiant passent par `_filtre_id`.
 
 ## Droits
+Une case par geste, sur `Utilisateur` (`droit_<clé>`) ; la liste et l'ordre de la fiche
+font foi dans `Utilisateur.GROUPES_DROITS`. `droits_effectifs()` accorde tout à
+`role == admin` **et à `is_superuser`** — `createsuperuser` laisse `role = operateur` —, rien
+à `role == lecture`, et les cases cochées à un opérateur. `peut(clé)` : un nom inconnu vaut
+« non ».
+
 `wms/permissions.py` (`DroitWMS`, câblé en `DEFAULT_PERMISSION_CLASSES`) : lecture ouverte à
 tout compte authentifié, écriture soumise au droit déclaré par la vue (`droit_ecriture` ou
 `droits_par_action`). Les deux se combinent : `droits_par_action` nomme les exceptions,
-`droit_ecriture` couvre tout le reste — `MatieresPremieresViewSet` exige « mp » partout,
-sauf `seuils` qui exige « ref ». Une action ajoutée sans y penser tombe ainsi sous le
-droit de la vue au lieu de s'ouvrir à tous. `droits_effectifs()` accorde tout à `role == admin` **et à
-`is_superuser`** — `createsuperuser` laisse `role = operateur`. `EstAdministrateur` réserve
-l'import du fichier de production aux administrateurs.
+`droit_ecriture` couvre tout le reste, et c'est la case la plus fermée de la vue —
+`empl_creer` pour les emplacements, `cab_corriger` pour les cabines. Une action ajoutée sans
+y penser tombe ainsi sous elle au lieu de s'ouvrir à tous ; une vue qui ne déclare rien
+(`NON_DECLARE`) n'écrit que pour les administrateurs ; une action qui n'écrit rien mais
+passe par un POST (`lire_fiche`) s'ouvre en nommant `None`. Le refus (403) nomme la case qui
+manque. Seule exception à « une vue, un droit » : `hors_fichier`, vérifiée par
+`services_cabines` à la création d'une cabine que le fichier n'annonce pas.
+
+`/api/moi/` rend `droits` et `libelles_droits` : l'écran (`peut`, `sansLeDroit`) cache ce que
+le compte ne peut pas faire, et nomme la case quand il éteint un geste.
+`wms/tests/test_droits_a_cocher.py` vérifie chaque geste dans les deux sens — la case
+seule suffit, toutes les autres ne suffisent pas —, que toute écriture exposée par le
+routeur (actions standard et `@action` autres que GET) figure au tableau `GESTES` avec sa
+case, ou dans `SANS_CASE` avec sa raison, et qu'aucune case ne reste sans geste. **Un
+geste ajouté à l'API entre dans `GESTES`**, sinon ce test échoue.
+`wms/tests/test_migration_droits.py` rejoue la migration 0028 (aller et retour).
+
+L'administration de Django suit ses propres permissions, sauf `EmplacementAdmin`, qui
+exige en plus les cases (`empl_creer`, `empl_regler`) et ne supprime rien : la suppression
+d'emplacements vit dans l'application, par `services_emplacements`. Les actions de profil de `UtilisateurAdmin` exigent la
+permission de modifier (`permissions=["change"]`) : sans elle, Django les proposait à qui
+pouvait seulement consulter la liste.
+
+Seul « Repartir de zéro » reste au-delà des cases : rôle administrateur
+(`est_administrateur`), dans l'administration.
 
 ## Migrations
 `wms/migrations/` est committé. La CI lance `makemigrations --check --dry-run` : elle

@@ -44,11 +44,15 @@ UNION ALL SELECT 'Codes acceptes',    COUNT(*) FROM wms_emplacement_codes_accept
 UNION ALL SELECT 'Comptes',           COUNT(*) FROM wms_utilisateur;
 
 
--- 1.2  Les comptes et leurs droits.
---      Un superutilisateur a TOUS les droits, quelles que soient les cases :
---      c'est pourquoi elles peuvent etre a 0 sur un compte admin.
+-- 1.2  Les comptes et leurs droits : une colonne par case de la fiche.
+--      Un administrateur (role 'admin') ou un superutilisateur a TOUS les
+--      droits, quelles que soient les cases : elles peuvent etre a 0 sur son
+--      compte. Un compte 'lecture' n'en a AUCUN, meme coche.
 SELECT username, nom, role, is_superuser, is_active,
-       droit_cab, droit_ref, droit_mp
+       droit_cab_ranger, droit_cab_statut, droit_cab_envoyer, droit_cab_corriger,
+       droit_production, droit_hors_fichier,
+       droit_mp, droit_mp_seuils,
+       droit_empl_service, droit_empl_regler, droit_empl_creer, droit_modeles
 FROM wms_utilisateur
 ORDER BY username;
 
@@ -72,6 +76,17 @@ FROM wms_emplacement
 WHERE rack IS NOT NULL AND rack <> ''
 GROUP BY rack
 ORDER BY rack;
+
+
+-- 1.5  Qui peut creer et supprimer des emplacements et des racks ?
+--      Les roles comptent : un administrateur le peut sans la case, un
+--      compte en lecture seule ne le peut pas meme avec. Pour une autre
+--      case, remplacer droit_empl_creer par son nom (requete 1.2).
+SELECT username, nom, role
+FROM wms_utilisateur
+WHERE is_active
+  AND (is_superuser OR role = 'admin' OR (role = 'operateur' AND droit_empl_creer))
+ORDER BY username;
 
 
 -- ============================================================================

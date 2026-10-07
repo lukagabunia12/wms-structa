@@ -2,15 +2,33 @@ const API = '/api';
 let token = localStorage.getItem('wms_token') || '';
 let USER = localStorage.getItem('wms_user') || '';
 let EMPS = [];
+/* --- Droits : une case par geste ----------------------------------------------
+   Le serveur envoie, par /api/moi/, ce que le compte peut faire — une clé par
+   case de sa fiche dans l'administration — et le nom de chaque case. L'écran
+   ne propose que ce que le serveur acceptera ; quand il refuse quand même un
+   geste, il dit QUELLE case manque, avec le mot de la fiche : c'est ce que
+   l'administrateur cherchera pour la cocher.                                 */
 let DROITS = {};
-// Compte administrateur : au-delà des droits fins. Seul l'import du fichier de
-// production s'y appuie — il réécrit les caractéristiques de milliers de cabines
-// d'un coup, ce n'est pas un geste de poste.
-let ADMIN = false;
+let LIBELLES_DROITS = {};
 
 // N'affiche pas une commande que le serveur refusera : sans ce contrôle, l'opérateur
 // remplit un formulaire pour découvrir un 403 à la validation.
 const peut = (droit) => DROITS[droit] === true;
+const peutUnDe = (droits) => droits.some(peut);
+const DROITS_CABINES = ['cab_ranger', 'cab_statut', 'cab_envoyer', 'cab_corriger'];
+const DROITS_EMPLACEMENTS = ['empl_service', 'empl_regler', 'empl_creer'];
+/** A-t-il la main sur les emplacements — n'importe laquelle des trois cases ? */
+const gereEmplacements = () => peutUnDe(DROITS_EMPLACEMENTS);
+const libelleDroit = (droit) => LIBELLES_DROITS[droit] || droit;
+/** La phrase d'un geste refusé : la case qui manque, et à qui la demander. */
+const sansLeDroit = (droit) => `Ton compte n’a pas le droit « ${libelleDroit(droit)} ». `
+  + 'Demande-le à l’administrateur du WMS.';
+/** Garde des gestes : vrai, et un message, quand le compte n'a pas la case. */
+function refuseSansDroit(droit) {
+  if (peut(droit)) return false;
+  toast(sansLeDroit(droit), 'err');
+  return true;
+}
 
 const el = () => document.getElementById('app');
 const $ = (s) => el().querySelector(s);
@@ -316,6 +334,8 @@ async function apiAll(path) {
 
 function logout() {
   token = ''; USER = '';
+  // Les droits partent avec le compte : le suivant reçoit les siens au boot.
+  DROITS = {}; LIBELLES_DROITS = {};
   localStorage.removeItem('wms_token'); localStorage.removeItem('wms_user');
   // Le compte suivant n'a peut-être ni la cloche ni le droit de régler les
   // seuils : rien ne doit en rester.
@@ -364,8 +384,8 @@ async function doLogin(u, p) {
    ranger. Les écrans restent joignables par leur nom — rien n'est supprimé,
    seulement retiré du chemin de celui qui n'en a pas l'usage.                */
 function profil() {
-  if (peut('ref')) return 'gestion';
-  if (peut('cab')) return 'cariste';
+  if (gereEmplacements() || peut('modeles')) return 'gestion';
+  if (peutUnDe(DROITS_CABINES)) return 'cariste';
   return 'lecture';
 }
 
@@ -453,7 +473,7 @@ const MENU_CABINES = [
   ['Référentiel', [['emplacements','Emplacements','box'],
                    ['modeles','Modèles de cabine','tag'],
                    ['etiquettes','Étiquettes','print'],
-                   // Administrateurs seulement — voir `menuLateral`.
+                   // La case « importer le fichier de production » — voir `menuLateral`.
                    // « Repartir de zéro » n'est plus ici : vider l'entrepôt
                    // n'est pas un geste de poste. Il vit dans /admin, derrière
                    // un second mot de passe, trois phrases à recopier et une
@@ -472,12 +492,12 @@ const MENU_PAR_PROFIL = {
 function menuLateral() {
   const base = MENU_CABINES;
   const permis = MENU_PAR_PROFIL[profil()];
-  // L'import ne dépend pas du profil mais du compte : un responsable logistique a
-  // le profil « gestion » sans être administrateur. Le serveur refuse de toute
-  // façon (403) ; ceci évite seulement de proposer un bouton sans effet.
-  const RESERVE_ADMIN = ['import'];
-  const ouvert = (cle) => (!RESERVE_ADMIN.includes(cle) || ADMIN)
-                       && (!permis || permis.includes(cle));
+  // L'import ne dépend pas du profil mais de SA case : la personne qui tient le
+  // planning n'a pas forcément d'autre droit, et un gestionnaire n'a pas
+  // forcément celui-là. Le serveur refuse de toute façon (403) ; ceci évite
+  // seulement de proposer un écran sans effet.
+  const ouvert = (cle) => (cle === 'import' ? peut('production')
+                                            : (!permis || permis.includes(cle)));
   return base
     .map(([titre, liens]) => [titre, liens.filter(([cle]) => ouvert(cle))])
     .filter(([, liens]) => liens.length);
@@ -683,9 +703,10 @@ document.addEventListener('visibilitychange', () => {
    à crier. Une alerte qui se règle puis revient redevient rouge : elle est
    oubliée dès qu'elle disparaît de la liste.
 
-   La cloche n'est montrée qu'à ceux qui peuvent agir sur ce qu'elle dit — la
-   case « matières premières » ou le référentiel. À un cariste des cabines,
-   une pastille rouge sur le verre n'apprendrait qu'à ignorer les pastilles. */
+   La cloche n'est montrée qu'à ceux qui peuvent agir sur ce qu'elle dit :
+   entrer du stock ou le déplacer, régler un seuil, régler les codes acceptés.
+   À un cariste des cabines, une pastille rouge sur le verre n'apprendrait qu'à
+   ignorer les pastilles. */
 const CLE_ALERTES_VUES = 'wms_alertes_vues';
 
 /** Les alertes déjà vues sur CE poste. Le stockage peut manquer (navigation
@@ -709,7 +730,7 @@ let ALERTES_A_RELIRE = false;
 //: le temps de la lire, relecture comprise.
 let NEUVES_A_L_OUVERTURE = new Set();
 
-const voitAlertes = () => peut('mp') || peut('ref');
+const voitAlertes = () => peutUnDe(['mp', 'mp_seuils', 'empl_regler']);
 
 /** Les clés d'une réponse `/alertes/`, toutes sortes confondues. */
 const clesAlertes = (groupes) => (groupes || []).flatMap(g => (g.items || []).map(x => x.cle));
@@ -932,10 +953,10 @@ function vignettesAccueil() {
   // Ni « Cabines » ni « Stock » : les deux sont des onglets de la barre du bas,
   // visible en permanence à trois centimètres de ces vignettes. Une vignette
   // qui double un onglet fait chercher lequel des deux est le bon.
-  v.push(tile('box', 'Emplacements', peut('ref')
-    ? 'occupation, ajout et réglages' : 'occupation des racks', 'emplacements'));
+  v.push(tile('box', 'Emplacements', peut('empl_creer') ? 'occupation, ajout et réglages'
+    : (gereEmplacements() ? 'occupation et réglages' : 'occupation des racks'), 'emplacements'));
   v.push(tile('history', 'Journal', 'tous les mouvements', 'journal'));
-  if (ADMIN) v.push(tile('clip', 'Fichier de production',
+  if (peut('production')) v.push(tile('clip', 'Fichier de production',
     'importer les cabines attendues', 'import'));
   return v.join('');
 }
@@ -961,8 +982,8 @@ async function renderHome() {
        d'entrée en a besoin pour se pré-remplir. Ce n'est donc pas une question
        de droit mais d'utilité : un cariste range des cabines, il n'analyse pas
        le plan de production, et ce tableau lui ferait dérouler son écran pour
-       rien. D'où le bloc réservé aux administrateurs ICI, à l'affichage. */
-    const semaines = ADMIN
+       rien. D'où le bloc réservé ICI, à l'affichage, à qui importe le fichier. */
+    const semaines = peut('production')
       ? await api('/cabines-attendues/par_semaine/').catch(() => null)
       : null;
     layout(`<h2 class="title">Tableau de bord</h2>
@@ -1450,7 +1471,7 @@ function afficherCabineAbsente(zone, numero, options = {}) {
         ne la crée pas.</div>
       <div class="meta">Passe par « Entrée d’une cabine » : tape ce numéro, et ses
         caractéristiques viennent du fichier de production — rien à recopier.</div>
-      ${peut('cab') ? '<button class="btn orange" data-entree>Aller à l’entrée avec ce numéro</button>' : ''}
+      ${peut('cab_ranger') ? '<button class="btn orange" data-entree>Aller à l’entrée avec ce numéro</button>' : ''}
       <button class="btn ghost" data-refaire>Une autre cabine</button>
     </div>`;
   const aller = zone.querySelector('[data-entree]');
@@ -1736,7 +1757,10 @@ async function montrerEmplacement(emp, opts = {}) {
        et repoussait le geste hors de l'écran. Hors de ce cas, la liste reste :
        c'est elle qu'on vient lire quand on scanne un emplacement pour savoir ce
        qu'elle contient. */
-    const attendUnePlace = Boolean(CABINE_A_RANGER) && peut('cab')
+    // Ranger et sortir ont chacun leur case : un compte peut avoir l'une sans
+    // l'autre, et l'écran ne propose que la sienne.
+    const ranger = peut('cab_ranger'), sortir = peut('cab_envoyer');
+    const attendUnePlace = Boolean(CABINE_A_RANGER) && ranger
       && !d.complet && !d.illimite
       && !(d.cabines || []).some(x => x.id === CABINE_A_RANGER.id);
     /* Une cabine qui prend l’emplacement entier n'apparaît QU'UNE FOIS. La version
@@ -1765,18 +1789,19 @@ async function montrerEmplacement(emp, opts = {}) {
         <div class="r" style="font-size:17px;font-weight:700">Emplacement ${esc(d.code)}</div>
         <div class="meta" style="margin-top:3px">${esc(d.mode_libelle)}${d.illimite ? ` · ${d.nb_cabines} cabine${d.nb_cabines === 1 ? '' : 's'}` : ''}</div>
         ${attendUnePlace ? '' : `<div class="list" style="margin-top:10px">${contenu}</div>`}
-        ${peut('cab') ? `
-          ${d.complet ? '' : `<button class="btn orange btn-fiche" id="eFiche">${icon('fiche', 20)} Scanner la fiche de la cabine</button>
-          <div class="meta" style="margin-top:5px;text-align:center">Photographie le tableau collé sur la cabine : le n° est lu tout seul.</div>`}
+        ${(ranger || sortir) ? `
+          ${(ranger && !d.complet) ? `<button class="btn orange btn-fiche" id="eFiche">${icon('fiche', 20)} Scanner la fiche de la cabine</button>
+          <div class="meta" style="margin-top:5px;text-align:center">Photographie le tableau collé sur la cabine : le n° est lu tout seul.</div>` : ''}
           <div class="row" style="margin-top:12px">
-          <button class="btn ghost" id="eRanger" ${d.complet ? 'disabled style="opacity:.45"' : ''}>Saisir le n° à la main</button>
-          <button class="btn ghost" id="eSortir" ${occupants.length ? '' : 'disabled style="opacity:.45"'}>Sortir une cabine</button>
+          ${ranger ? `<button class="btn ghost" id="eRanger" ${d.complet ? 'disabled style="opacity:.45"' : ''}>Saisir le n° à la main</button>` : ''}
+          ${sortir ? `<button class="btn ghost" id="eSortir" ${occupants.length ? '' : 'disabled style="opacity:.45"'}>Sortir une cabine</button>` : ''}
         </div>` : ''}
         ${d.complet ? `<div class="banner" style="margin:12px 0 0">${
           CABINE_A_RANGER ? 'Plus de place ici pour cette cabine' : 'Cet emplacement est plein'
           } : impossible de ranger ici.</div>` : ''}
         <div id="eAct"></div></div>
-      ${(peut('ref') && !opts.sansReglages) ? `<button class="btn ghost" id="eReglage" style="margin-top:12px">${icon('cog', 17)} Régler / supprimer cet emplacement</button>` : ''}
+      ${(gereEmplacements() && !opts.sansReglages) ? `<button class="btn ghost" id="eReglage" style="margin-top:12px">${icon('cog', 17)} ${
+        peut('empl_creer') ? 'Régler / supprimer cet emplacement' : 'Régler cet emplacement'}</button>` : ''}
       ${opts.pied ? piedGestes({ suite: 'Scanner autre chose' }) : ''}`;
 
     // Le pied est posé par `layout()` pour les écrans, pas ici : ce bloc est
@@ -1788,15 +1813,15 @@ async function montrerEmplacement(emp, opts = {}) {
     // Un seul formulaire de réglage dans toute l'application : celui de la fiche.
     // Il y en avait trois, avec des champs différents — on ne savait plus lequel
     // faisait foi, et aucun ne permettait de supprimer.
-    if (peut('ref') && !opts.sansReglages) {
+    if (gereEmplacements() && !opts.sansReglages) {
       $('#eReglage').onclick = () => ficheEmplacement(emp, opts.retour || renderEmplacements);
     }
 
-    if (!peut('cab')) return;
+    if (!(ranger || sortir)) return;
 
     // Parcours « fiche cabine d'abord » : une cabine attend une place, on la range
     // sans la rechercher. Le scan de l'emplacement suffit.
-    if (CABINE_A_RANGER) {
+    if (CABINE_A_RANGER && ranger) {
       const c = CABINE_A_RANGER;
       const dejaLa = (d.cabines || []).some(x => x.id === c.id);
       if (!dejaLa && !d.complet) {
@@ -1831,7 +1856,7 @@ async function montrerEmplacement(emp, opts = {}) {
     // reste qu'à toucher la place. Trois gestes, aucune saisie au clavier.
     if ($('#eFiche')) $('#eFiche').onclick = () => ouvrirScanFiche(emp, d, redessiner);
 
-    $('#eRanger').onclick = () => {
+    if ($('#eRanger')) $('#eRanger').onclick = () => {
       if (d.complet) return;
       $('#eAct').innerHTML = `<div class="sec">Quelle cabine ranger ?</div>
         <input id="cq" placeholder="N° de cabine (ex. 00_00_01)"><div class="list" id="cres"></div><div id="cform"></div>`;
@@ -1870,7 +1895,7 @@ async function montrerEmplacement(emp, opts = {}) {
       }, 250);
     };
 
-    $('#eSortir').onclick = () => {
+    if ($('#eSortir')) $('#eSortir').onclick = () => {
       $('#eAct').innerHTML = `<div class="sec">Quelle cabine sortir ?</div>
         <div class="banner">La sortie est <b>définitive</b> : la cabine quitte
           l'entrepôt et rejoint les archives.</div>
@@ -2334,6 +2359,7 @@ function verbeStatut(cabine, code) {
     etat possible, nomme par son verbe, et une confirmation qui rappelle ce que
     l'etat veut dire — le motif se saisit la, au moment ou on sait pourquoi. */
 async function confirmerChangementStatut(cabine, code, apres) {
+  if (refuseSansDroit('cab_statut')) return;
   const ref = STATUTS_PROPOSES.find(s => s[0] === code) || [code, code, ''];
   const rep = await confirmer({
     titre: verbeStatut(cabine, code) + ' ?',
@@ -2376,6 +2402,9 @@ async function confirmerChangementStatut(cabine, code, apres) {
  * geste que rien ne distinguait des deux autres, dans la même liste.
  */
 function ouvrirStatut(cabine, contexte, apres, opts = {}) {
+  // La question suit un rangement. Sans la case « changer le statut », elle est
+  // sautée : le rangement, lui, est fait, et l'écran suivant s'ouvre.
+  if (!peut('cab_statut')) { if (apres) apres(null); return; }
   const actuel = cabine.statut;
   const proposes = opts.statuts
     ? STATUTS_PROPOSES.filter(([code]) => opts.statuts.includes(code))
@@ -2451,6 +2480,7 @@ function ouvrirStatut(cabine, contexte, apres, opts = {}) {
     Le motif et la confirmation sont demandés par `envoyerCabine`, par où passe
     toute sortie. */
 async function sortirDefinitivement(cabine, apres) {
+  if (refuseSansDroit('cab_envoyer')) return null;
   try {
     if (!(await envoyerCabine(cabine))) return null;
   } catch (e) { toast(e.message, 'err'); return null; }
@@ -2580,10 +2610,9 @@ function filEtapes(courante) {
 }
 
 async function renderRangement() {
-  if (!peut('cab')) {
+  if (!peut('cab_ranger')) {
     layout(`<h2 class="title">Ranger une cabine</h2>
-      <div class="banner">Ton compte n’a pas le droit « cabines ». Demande-le à
-      l’administrateur du WMS.</div>`, 'rangement');
+      <div class="banner">${esc(sansLeDroit('cab_ranger'))}</div>`, 'rangement');
     return;
   }
   await refsCabine();
@@ -2865,11 +2894,12 @@ function etapeEnvoyee() {
       <div class="banner" style="margin-top:10px">Cette cabine est <b>envoyée</b> :
         elle est sortie de l’entrepôt et ne fait plus partie du stock.</div>
       <div class="sec">Elle est pourtant devant toi ?</div>
-      <button class="btn orange" id="djReprendre">La remettre en stock</button>
+      ${peut('cab_envoyer') ? '<button class="btn orange" id="djReprendre">La remettre en stock</button>'
+        : `<div class="meta">${esc(sansLeDroit('cab_envoyer'))}</div>`}
       <button class="btn ghost" id="djAutre">Autre cabine</button>
     </div>`;
   $('#djAutre').onclick = () => { arreterCamera(); repartirRangement(); etapeRangement(); };
-  $('#djReprendre').onclick = async () => {
+  if ($('#djReprendre')) $('#djReprendre').onclick = async () => {
     const c2 = await reprendreCabine(c);
     if (!c2) return;
     RANGEMENT.cabine = c2;
@@ -2881,6 +2911,7 @@ function etapeEnvoyee() {
 /** Confirmation, puis retour en stock. Rend la cabine relue, ou null si refus.
     Un seul endroit : la fiche et le parcours Ranger l'appellent tous les deux. */
 async function reprendreCabine(c) {
+  if (refuseSansDroit('cab_envoyer')) return null;
   const ok = await confirmer({
     titre: `${c.numero} a été envoyée`,
     texte: 'Elle est sortie de l’entrepôt' + (c.envoi_date ? ` le ${dateCourte(c.envoi_date)}` : '')
@@ -2923,9 +2954,11 @@ function blocIntention(c) {
   // sortir une cabine à moitié laisserait une place réservée par un morceau
   // qu'on croit parti.
   const plusieurs = (c.nb_emplacements || 1) > 1;
-  // Sortir exige un n° de chantier, pour tous les types sans exception. Le dire
-  // ici plutôt que de laisser le geste échouer après coup.
-  const bloque = !c.chantier;
+  // Sortir exige un n° de chantier, pour tous les types sans exception — et la
+  // case « sortir des cabines ». Le dire ici plutôt que de laisser le geste
+  // échouer après coup.
+  const sansDroit = !peut('cab_envoyer');
+  const bloque = sansDroit || !c.chantier;
   return `<div class="card">
     <div class="sec" style="margin-top:0">Déjà rangée en ${esc(c.position)}</div>
     <div class="meta" style="margin:-2px 0 12px">Que voulez-vous faire ?</div>
@@ -2945,7 +2978,7 @@ function blocIntention(c) {
       <button class="geste" data-intention="sortir"${bloque ? ' disabled' : ''}>
         <span class="ic">${icon('out', 26)}</span>
         <span class="t">La sortir de l’entrepôt</span>
-        <span class="s">${bloque
+        <span class="s">${sansDroit ? esc(sansLeDroit('cab_envoyer')) : bloque
           ? 'Impossible sans n° de chantier : à affecter sur la fiche de la cabine'
           : `C'est définitif : ${plusieurs ? 'ses emplacements se libèrent'
              : esc(c.position) + ' se libère'}, la cabine part et rejoint les archives`}</span>
@@ -3115,6 +3148,7 @@ function etapePlace() {
    Rend `true` si l'envoi a eu lieu, `false` si l'opérateur a refusé. Les erreurs
    remontent à l'appelant, qui sait où les afficher.                           */
 async function envoyerCabine(cabine, corps = {}) {
+  if (refuseSansDroit('cab_envoyer')) return false;
   let c = cabine;
   try { c = await api(`/cabines/${cabine.id}/`); } catch (_) {}
   if (c && c.statut === 'quarantaine') {
@@ -3170,9 +3204,9 @@ async function envoyerCabine(cabine, corps = {}) {
 let SORTIE = { cabine: null };
 
 async function renderSortieCabine() {
-  if (!peut('cab')) {
+  if (!peut('cab_envoyer')) {
     layout(`<h2 class="title">Sortir une cabine</h2>
-      <div class="banner">Ton compte n’a pas le droit « cabines ».</div>`, 'sortie-cabine');
+      <div class="banner">${esc(sansLeDroit('cab_envoyer'))}</div>`, 'sortie-cabine');
     return;
   }
   await refsCabine();
@@ -3321,7 +3355,10 @@ async function ficheCabine(cabine, retour) {
       api(`/cabines/${cabine.id}/historique/`),
     ]);
     noterRecentCabine(c);   // alimente les « Récents » du scanner
-    const modifiable = peut('cab') && !c.envoyee;
+    // Quatre cases, quatre familles de boutons : chacune n'apparaît qu'à qui l'a.
+    const statuer = peut('cab_statut'), ranger = peut('cab_ranger');
+    const sortir = peut('cab_envoyer'), corriger = peut('cab_corriger');
+    const modifiable = !c.envoyee && (statuer || ranger || sortir);
     zone.innerHTML = `
       ${retour ? '<button class="btn ghost" id="fRetour" style="margin:0 0 12px">← Retour</button>' : ''}
       <div class="card">
@@ -3335,12 +3372,12 @@ async function ficheCabine(cabine, retour) {
         <div style="margin-top:12px">${blocQuarantaine(c)}</div>
         ${c.envoyee ? '' : `<div class="meta" style="margin-top:4px">Sans mouvement depuis ${c.jours_immobile} jour${c.jours_immobile === 1 ? '' : 's'}</div>`}
         ${c.envoyee ? `<div class="banner" style="margin:12px 0 0">Cabine envoyée le ${new Date(c.envoi_date).toLocaleString('fr-FR')} — fiche archivée. La fiche reste corrigeable, et la cabine peut être remise en stock si elle revient.</div>
-          ${peut('cab') ? `<button class="btn orange" id="fReprendre">La remettre en stock</button>` : ''}` : ''}
+          ${sortir ? `<button class="btn orange" id="fReprendre">La remettre en stock</button>` : ''}` : ''}
         <button class="btn ghost" id="fTout" style="margin-top:12px">${
           icon('clip', 17)} Toutes les caractéristiques</button>
         <div id="fTousChamps"></div>
         <div id="fAct"></div>
-          ${peut('cab') ? `<div class="row" style="margin-top:10px">
+          ${corriger ? `<div class="row" style="margin-top:10px">
           <button class="btn ghost" id="fCorriger" style="margin-top:0">${icon('edit', 17)} Corriger la fiche</button>
           <button class="btn danger" id="fSupprimer" style="margin-top:0">${icon('trash', 17)} Supprimer</button>
         </div>` : ''}
@@ -3367,7 +3404,7 @@ async function ficheCabine(cabine, retour) {
     // Corriger et supprimer restent accessibles sur une cabine envoyée : une faute
     // de frappe reste une faute de frappe une fois la cabine partie, et corriger
     // l'archive vaut mieux que la supprimer pour la ressaisir.
-    if (peut('cab')) {
+    if (corriger) {
       $('#fCorriger').onclick = () => ouvrirCorrectionCabine(c, () => ficheCabine(c, retour));
       $('#fSupprimer').onclick = () => supprimerCabine(c, retour);
     }
@@ -3381,14 +3418,16 @@ async function ficheCabine(cabine, retour) {
     if (!modifiable) return;
 
     const statutsPossibles = REFS_CABINE.statuts.filter(s => s.code !== c.statut && s.code !== 'envoye');
+    const titreGestes = ranger ? (c.position ? 'Changer d’emplacement' : 'Ranger cette cabine')
+                               : 'La sortir';
     $('#fAct').innerHTML = `
-      <div class="sec">État de la cabine</div>
+      ${statuer ? `<div class="sec">État de la cabine</div>
       ${statutsPossibles.map(s => `<button class="btn ghost" data-vers="${s.code}"
-        >${esc(verbeStatut(c, s.code))}</button>`).join('')}
-      <div class="sec" style="margin-top:14px">${c.position ? 'Changer d’emplacement' : 'Ranger cette cabine'}</div>
-      <button class="btn ghost" id="fRanger">${icon('in', 17)} ${
-        c.position ? 'La ranger ailleurs' : 'Choisir son emplacement'}</button>
-      <button class="btn orange" id="fSortir">${icon('out', 17)} La sortir de l’entrepôt</button>
+        >${esc(verbeStatut(c, s.code))}</button>`).join('')}` : ''}
+      ${(ranger || sortir) ? `<div class="sec" style="margin-top:14px">${titreGestes}</div>` : ''}
+      ${ranger ? `<button class="btn ghost" id="fRanger">${icon('in', 17)} ${
+        c.position ? 'La ranger ailleurs' : 'Choisir son emplacement'}</button>` : ''}
+      ${sortir ? `<button class="btn orange" id="fSortir">${icon('out', 17)} La sortir de l’entrepôt</button>` : ''}
       <div id="fZone"></div>`;
 
     $('#fAct').querySelectorAll('[data-vers]').forEach(b => b.onclick =
@@ -3400,7 +3439,7 @@ async function ficheCabine(cabine, retour) {
        fermetures qui se ressemblaient, et la copie de la saisie du code était
        celle qui marchait : celle du bloc d'après-création renvoyait vers cette
        fiche, où il fallait appuyer une seconde fois sur le même libellé. */
-    $('#fRanger').onclick = () => ecranRangement(c, () => ficheCabine(c, retour));
+    if (ranger) $('#fRanger').onclick = () => ecranRangement(c, () => ficheCabine(c, retour));
 
     /* La sortie exige un n° de chantier, pour tous les types sans exception —
        l'exemption vaut pour ENTRER en stock, jamais pour en sortir. Ce chemin
@@ -3410,7 +3449,7 @@ async function ficheCabine(cabine, retour) {
        Ce bouton était double — « Sortir de l'emplacement » et « Envoyer
        (définitif) » l'un sous l'autre — et l'envoi, ici, sautait la
        confirmation de quarantaine : il appelait `/envoyer/` en direct. */
-    $('#fSortir').onclick = async () => {
+    if (sortir) $('#fSortir').onclick = async () => {
       if (!c.chantier) {
         $('#fZone').innerHTML = `<div class="banner">N° de chantier obligatoire pour sortir la cabine.</div>
           ${champChantier('fCha', '')}
@@ -3435,6 +3474,7 @@ async function ficheCabine(cabine, retour) {
    qui écrit sans rien journaliser.                                            */
 
 function ouvrirCorrectionCabine(c, apres) {
+  if (refuseSansDroit('cab_corriger')) return;
   const types = REFS_CABINE.types || [{ code: 'normale', libelle: 'Normale' }];
   const ligne = (id, libelle, valeur, extra = '') =>
     `<label for="${id}">${esc(libelle)}</label>
@@ -3482,6 +3522,7 @@ function ouvrirCorrectionCabine(c, apres) {
    l'intention même — mais l'opérateur doit savoir ce qu'il efface, et pouvoir
    corriger plutôt que supprimer quand c'est le bon geste.                    */
 async function supprimerCabine(c, retour) {
+  if (refuseSansDroit('cab_corriger')) return;
   const sup = c.suppression || {};
   const revenir = () => (retour || renderCabines)();
 
@@ -4154,17 +4195,20 @@ async function renderEmplacements() {
   // reprend son nom d'écran, et avec lui le rafraîchissement automatique.
   if (ECRAN !== 'rack') ECRAN = 'emplacements';
   await refsCabine();
-  const gerer = peut('ref');
+  // Créer et supprimer ont leur case ; régler et mettre hors service, les leurs.
+  // Un compte qui n'a aucune des trois consulte, et l'écran le lui dit.
+  const creer = peut('empl_creer');
 
   layout(`
     <div class="tete-ecran">
       <h2 class="title" style="margin:0">Emplacements</h2>
-      ${gerer ? `<div class="actions-tete">
+      ${creer ? `<div class="actions-tete">
         <button class="btn ghost bouton-tete" id="eRack">${icon('grille', 18)} Créer un rack</button>
         <button class="btn orange bouton-tete" id="eNouveau">${icon('plus', 18)} Nouvel emplacement</button>
       </div>` : ''}
     </div>
-    ${gerer ? '' : '<div class="banner">Consultation seule : le droit « référentiel » est nécessaire pour créer, modifier ou supprimer un emplacement.</div>'}
+    ${gereEmplacements() ? '' : `<div class="banner">Consultation seule : ton compte n’a aucune
+      des cases des emplacements (${esc(DROITS_EMPLACEMENTS.map(libelleDroit).join(', '))}).</div>`}
     <div class="card">
       <label for="eSearch">Aller directement à un emplacement</label>
       <input id="eSearch" placeholder="Code de l’emplacement (ex. AC551)" autocomplete="off">
@@ -4172,7 +4216,7 @@ async function renderEmplacements() {
     </div>
     <div id="zone"><div class="empty">Chargement…</div></div>`, 'emplacements');
 
-  if (gerer) {
+  if (creer) {
     $('#eNouveau').onclick = () => ouvrirNouvelEmplacement(() => renderEmplacements());
     $('#eRack').onclick = () => ouvrirNouveauRack(() => renderEmplacements());
   }
@@ -4208,7 +4252,7 @@ async function listerRacks() {
     const emps = await apiAll('/emplacements/');
     const groupes = grouperParRack(emps);
     if (!groupes.length) {
-      zone.innerHTML = `<div class="empty">Aucun emplacement. ${peut('ref') ? 'Commence par créer un rack.' : ''}</div>`;
+      zone.innerHTML = `<div class="empty">Aucun emplacement. ${peut('empl_creer') ? 'Commence par créer un rack.' : ''}</div>`;
       return;
     }
     zone.innerHTML = `<div class="sec">${groupes.length} rack${groupes.length === 1 ? '' : 's'} · ${emps.length} emplacement${emps.length === 1 ? '' : 's'}</div>
@@ -4323,10 +4367,10 @@ function ouvrirRack(nom, emps) {
     ${plan}
     ${orphelins.length ? `<div class="sec">Sans position dans le rack</div>
       <div class="cases-libres">${orphelins.map(cellule).join('')}</div>` : ''}
-    ${peut('ref') ? `<button class="btn ghost" id="selMode" style="margin-top:22px">
+    ${peutUnDe(['empl_regler', 'empl_creer']) ? `<button class="btn ghost" id="selMode" style="margin-top:22px">
         ${SELECTION_RACK.actif ? 'Quitter la sélection'
           : icon('grille', 17) + ' Sélectionner plusieurs emplacements'}</button>` : ''}
-    ${(peut('ref') && !SELECTION_RACK.actif && nom !== '(hors rack)') ? `<button class="btn danger" id="rSupp"
+    ${(peut('empl_creer') && !SELECTION_RACK.actif && nom !== '(hors rack)') ? `<button class="btn danger" id="rSupp"
         style="margin-top:10px">${icon('trash', 17)} Supprimer le rack ${esc(nom)}</button>` : ''}
     ${SELECTION_RACK.actif ? barreSelection(liste.length,
       liste.filter(e => e.est_mp && SELECTION_RACK.ids.has(e.id)).length) : ''}`;
@@ -4375,7 +4419,7 @@ function ouvrirRack(nom, emps) {
 }
 
 /** La barre qui compte les cases cochées, et ce qu'on peut en faire : régler
-    ce qu'elles rangent, ou les supprimer. */
+    ce qu'elles rangent, ou les supprimer — chaque bouton selon sa case. */
 function barreSelection(total, nbMP = 0) {
   const n = SELECTION_RACK.ids.size;
   // « Codes acceptés » ne concerne que les emplacements MP : éteint tant
@@ -4384,23 +4428,23 @@ function barreSelection(total, nbMP = 0) {
     <div class="sel-n">${n === 0 ? 'Touchez les emplacements à sélectionner'
       : `${n} emplacement${n > 1 ? 's' : ''} sélectionné${n > 1 ? 's' : ''}${
         nbMP && nbMP < n ? ` · dont ${nbMP} MP` : ''}`}</div>
-    <div class="row">
+    ${peut('empl_regler') ? `<div class="row">
       <button class="btn" id="selUsage" style="margin-top:0"${n ? '' : ' disabled'}
         >${icon('cog', 17)} Ce qu’ils rangent</button>
       <button class="btn" id="selCodes" style="margin-top:0"${nbMP ? '' : ' disabled'}
         title="${nbMP ? 'Réserver ces emplacements à certains codes' : 'Pour les emplacements MP seulement'}"
         >${icon('couches', 17)} Codes acceptés</button>
-    </div>
+    </div>` : ''}
     <div class="row" style="margin-top:8px">
       <button class="btn ghost" id="selTout" style="margin-top:0"${n >= total ? ' disabled' : ''}
         >Tout le rack</button>
       <button class="btn ghost" id="selVider" style="margin-top:0"${n ? '' : ' disabled'}
         >Tout décocher</button>
     </div>
-    <div class="row" style="margin-top:8px">
+    ${peut('empl_creer') ? `<div class="row" style="margin-top:8px">
       <button class="btn danger" id="selSupp" style="margin-top:0"${n ? '' : ' disabled'}
         >${icon('trash', 17)} Supprimer</button>
-    </div>
+    </div>` : ''}
   </div>`;
 }
 
@@ -4710,7 +4754,7 @@ function blocCodesAcceptes(e, gerer) {
 
 function brancherCodesAcceptes(e, redessiner) {
   const carte = document.getElementById('fCodes');
-  if (!carte || !peut('ref')) return;
+  if (!carte || !peut('empl_regler')) return;
   const codes = (e.codes_acceptes || []).slice();
   // Un enregistrement à la fois : chaque geste envoie la liste ENTIÈRE, et
   // deux retraits rapides partiraient chacun d'une liste où l'autre code est
@@ -4932,7 +4976,10 @@ async function ficheEmplacement(emp, retour) {
   try { e = await api(`/emplacements/${emp.id}/`); }
   catch (err) { toast(err.message, 'err'); return; }
 
-  const gerer = peut('ref');
+  // Trois cases, trois blocs : régler (le formulaire, les codes acceptés),
+  // mettre en service (l'emplacement, ses places), créer et supprimer.
+  const regler = peut('empl_regler'), service = peut('empl_service');
+  const supprimer = peut('empl_creer');
   const sup = e.suppression || {};
 
   layout(`
@@ -4941,26 +4988,27 @@ async function ficheEmplacement(emp, retour) {
     <div id="zone"><div class="empty">Chargement…</div></div>
     <div class="sec" style="margin-top:18px">Réglages de l'emplacement</div>
     <div class="card">
-      ${gerer ? '' : '<div class="banner" style="margin-bottom:12px">Consultation seule : le droit « référentiel » est nécessaire pour modifier.</div>'}
+      ${regler ? '' : `<div class="banner" style="margin-bottom:12px">Consultation seule : il faut la case
+        « ${esc(libelleDroit('empl_regler'))} » pour modifier ces réglages.</div>`}
       <label for="fCode">Code</label>
-      <input id="fCode" value="${esc(e.code)}" ${gerer ? '' : 'disabled'} autocomplete="off" autocapitalize="characters">
+      <input id="fCode" value="${esc(e.code)}" ${regler ? '' : 'disabled'} autocomplete="off" autocapitalize="characters">
       <div class="aide">Renommer l'emplacement rend obsolètes les étiquettes QR déjà collées : réimprimez-la juste après.</div>
       <label for="fMode">Ce qu’il range</label>
-      <select id="fMode" ${gerer ? '' : 'disabled'}>${optionsUsage(choixUsageDe(e))}</select>
+      <select id="fMode" ${regler ? '' : 'disabled'}>${optionsUsage(choixUsageDe(e))}</select>
       <div class="aide">${AIDE_MODE}${(e.nb_cabines || (e.mp && e.mp.lignes))
         ? ' <b>Ce réglage ne change que sur un emplacement vide.</b>' : ''}</div>
       <label for="fDesc">Description</label>
-      <input id="fDesc" value="${esc(e.description || '')}" placeholder="facultatif" ${gerer ? '' : 'disabled'}>
-      ${e.est_mp ? '' : `<label class="case"><input type="checkbox" id="fStaging" ${e.staging ? 'checked' : ''} ${gerer ? '' : 'disabled'}> Zone de réception (« à ranger »)</label>`}
-      ${gerer ? '<button class="btn orange" id="fOk">Enregistrer les modifications</button>' : ''}
+      <input id="fDesc" value="${esc(e.description || '')}" placeholder="facultatif" ${regler ? '' : 'disabled'}>
+      ${e.est_mp ? '' : `<label class="case"><input type="checkbox" id="fStaging" ${e.staging ? 'checked' : ''} ${regler ? '' : 'disabled'}> Zone de réception (« à ranger »)</label>`}
+      ${regler ? '<button class="btn orange" id="fOk">Enregistrer les modifications</button>' : ''}
     </div>
-    ${blocCodesAcceptes(e, gerer)}
-    ${blocMiseEnService(e, gerer)}
+    ${blocCodesAcceptes(e, regler)}
+    ${blocMiseEnService(e, service)}
     <div class="row actions-fiche" style="margin-top:12px">
       <button class="btn ghost" id="fEtiq">${icon('print', 17)} Imprimer l'étiquette QR</button>
-      ${gerer ? `<button class="btn danger" id="fSup" style="margin-top:14px">${icon('trash', 17)} Supprimer</button>` : ''}
+      ${supprimer ? `<button class="btn danger" id="fSup" style="margin-top:14px">${icon('trash', 17)} Supprimer</button>` : ''}
     </div>
-    ${gerer && !sup.possible && sup.message ? `<div class="banner" style="margin-top:12px">${esc(sup.message)}</div>` : ''}`,
+    ${supprimer && !sup.possible && sup.message ? `<div class="banner" style="margin-top:12px">${esc(sup.message)}</div>` : ''}`,
     'more');
 
   $('#fRetour').onclick = retour || renderEmplacements;
@@ -4971,7 +5019,8 @@ async function ficheEmplacement(emp, retour) {
   // Occupation + opérations de rangement : l'écran partagé avec le scanner.
   montrerEmplacement(e, { sansReglages: true });
 
-  if (!gerer) return;
+  if (supprimer) $('#fSup').onclick = () => supprimerEmplacement(e, retour);
+  if (!regler) return;
 
   $('#fOk').onclick = async () => {
     const code = $('#fCode').value.trim();
@@ -4995,8 +5044,6 @@ async function ficheEmplacement(emp, retour) {
       ficheEmplacement({ id: e.id }, retour);
     } catch (err) { bouton.disabled = false; toast(err.message, 'err'); }
   };
-
-  $('#fSup').onclick = () => supprimerEmplacement(e, retour);
 }
 
 /* --- Mise en service : l'emplacement, et chacune de ses deux places ---------
@@ -5252,6 +5299,11 @@ const MOTIF_NUMERO_CABINE = /^\d{2}_\d{2}_\d{1,3}$/;
 
 async function renderEntree() {
   await refsCabine();
+  if (!peut('cab_ranger')) {
+    layout(`<h2 class="title">Entrée d'une cabine</h2>
+      <div class="banner">${esc(sansLeDroit('cab_ranger'))}</div>`, 'entree');
+    return;
+  }
   layout(`<h2 class="title">Entrée d'une cabine</h2>
     <div class="card">
       <div class="sec">1 · Quelle cabine ?</div>
@@ -5323,14 +5375,14 @@ async function interrogerAttendue(numero) {
     blocSaisieManuelle(numero);
     return;
   }
-  if (!ADMIN) {
+  if (!peut('hors_fichier')) {
     etat.innerHTML = '';
     blocRefusHorsFichier(numero);
     return;
   }
   etat.innerHTML = `<div class="banner"><b>${esc(numero)}</b> n’est pas annoncée par le
-    fichier de production. En tant qu’administrateur tu peux la créer quand même —
-    dis pourquoi, ce sera écrit au journal.</div>`;
+    fichier de production. Ton compte peut la créer quand même — dis pourquoi, ce
+    sera écrit au journal.</div>`;
   blocSaisieManuelle(numero, { horsFichier: true });
 }
 
@@ -5387,7 +5439,7 @@ function blocAttendue(a) {
   };
 }
 
-/** Cabine absente du fichier, compte non administrateur : c'est un refus.
+/** Cabine absente du fichier, compte sans la case qui l'autorise : c'est un refus.
 
     Inventer la fiche d'une cabine inconnue n'a plus de sens depuis que la
     production annonce ses caractéristiques : l'opérateur n'a pas les éléments,
@@ -5399,16 +5451,18 @@ function blocRefusHorsFichier(numero) {
     <div class="banner">La cabine <b>${esc(numero)}</b> n’est pas annoncée par le
       fichier de production : elle ne peut pas être enregistrée.</div>
     <div class="meta">Soit le dernier fichier n’a pas encore été importé, soit cette
-      cabine n’y figure pas. Dans les deux cas c’est un administrateur qui tranche :
-      préviens-le avec ce numéro.</div>
+      cabine n’y figure pas. Dans les deux cas, c’est une personne qui a le droit
+      « ${esc(libelleDroit('hors_fichier'))} » qui tranche — un administrateur l’a :
+      préviens-la avec ce numéro.</div>
     <button class="btn ghost" id="eAutre">Une autre cabine</button>
   </div>`;
   $('#eAutre').onclick = renderEntree;
 }
 
-/** Chemin manuel : photo de la fiche puis relecture des champs. Réservé aux
-    administrateurs dès qu'un fichier de production est importé, et alors avec
-    un motif — c'est le serveur qui l'exige, cet écran ne fait que le demander. */
+/** Chemin manuel : photo de la fiche puis relecture des champs. Réservé, dès
+    qu'un fichier de production est importé, aux comptes qui ont la case
+    « enregistrer une cabine absente du fichier », et alors avec un motif —
+    c'est le serveur qui l'exige, cet écran ne fait que le demander. */
 function blocSaisieManuelle(numero, options = {}) {
   $('#eSuite').innerHTML = `<div class="card" style="margin-top:12px">
       <div class="sec">2 · Photographier la fiche (facultatif)</div>
@@ -5474,6 +5528,7 @@ async function creerCabineDepuisEntree() {
    courante quand la caméra ne sert pas, et la faire mériter un appui de plus
    n'apporte rien. */
 async function ecranRangement(cabine, retour) {
+  if (refuseSansDroit('cab_ranger')) return;
   const revenir = retour || (() => ficheCabine(cabine));
   const deja = (cabine.occupations || []).some(o => o.emplacement);
 
@@ -6331,7 +6386,7 @@ async function boot() {
     api('/moi/').catch(() => null),
   ]);
   DROITS = (moi && moi.droits) || {};
-  ADMIN = Boolean(moi && moi.administrateur);
+  LIBELLES_DROITS = (moi && moi.libelles_droits) || {};
   // Le nom affiché vient du serveur : depuis que la casse de l'identifiant est
   // tolérée, ce qui a été tapé n'est pas forcément l'orthographe du compte.
   if (moi && (moi.nom || moi.username)) {
@@ -6368,9 +6423,9 @@ if (token) { boot(); } else { renderLogin(); }
    vraies erreurs de saisie — découvrir après coup qu'on a importé le mauvais
    classeur n'est pas une option.
 
-   Écran réservé aux administrateurs. Le serveur le refuse aussi (403) : ce
-   n'est pas l'interface qui protège, elle évite seulement de proposer un
-   bouton qui ne marcherait pas.
+   Écran réservé à la case « importer le fichier de production ». Le serveur
+   le refuse aussi (403) : ce n'est pas l'interface qui protège, elle évite
+   seulement de proposer un bouton qui ne marcherait pas.
    =========================================================================== */
 
 let IMPORT = { fichier: null, rapport: null };
@@ -6420,7 +6475,7 @@ function dessinerModeles() {
   if (!zone) return;
   const filtre = ModelesCle(MODELES.filtre);
   const vus = MODELES.liste.filter(m => !filtre || ModelesCle(m.nom).includes(filtre));
-  const modifiable = peut('ref');
+  const modifiable = peut('modeles');
 
   /* Les emplacements laissés hors règle par un reclassement. Aucune cabine n'est
      déplacée quand un modèle change de taille — le WMS écrirait une position que
@@ -6473,10 +6528,9 @@ const ModelesCle = (nom) => String(nom || '').split(/\s+/).join(' ').trim().toUp
 
 
 async function renderImport() {
-  if (!ADMIN) {
+  if (!peut('production')) {
     layout(`<h2 class="title">Fichier de production</h2>
-      <div class="banner">L'import du fichier de production est réservé aux comptes
-      administrateurs.</div>`, 'import');
+      <div class="banner">${esc(sansLeDroit('production'))}</div>`, 'import');
     return;
   }
   IMPORT = { fichier: null, rapport: null };
@@ -6726,8 +6780,8 @@ async function renderMP() {
   layout(`<h2 class="title">Matières premières</h2>
     <div class="meta" style="margin:-4px 0 14px">Vitrages et cartons. Tout part de
       l’emplacement : scanne son étiquette, puis entre ou sors.</div>
-    ${agir ? '' : `<div class="banner">Consultation seule : la case « matières
-      premières » de ton compte est nécessaire pour entrer ou sortir du stock.</div>`}
+    ${agir ? '' : `<div class="banner">Consultation seule : il faut la case
+      « ${esc(libelleDroit('mp'))} » pour entrer ou sortir du stock.</div>`}
     <div class="gestes">
       <button class="geste" id="mQr">
         <span class="ic">${icon('scan', 26)}</span>
@@ -6817,8 +6871,8 @@ async function renderMP() {
                                : 'aucun code à recommander'}</div></div>`
       + (c.emplacements_mp ? '' : `<div class="banner" style="grid-column:1/-1;margin:0">
         Aucun emplacement n’est encore réglé pour les matières premières.
-        ${peut('ref') ? 'Emplacements → un rack → « Sélectionner » → « Ce qu’ils rangent ».'
-                      : 'Un responsable du référentiel doit les régler.'}</div>`);
+        ${peut('empl_regler') ? 'Emplacements → un rack → « Sélectionner » → « Ce qu’ils rangent ».'
+          : `Il faut la case « ${esc(libelleDroit('empl_regler'))} » pour les régler.`}</div>`);
     k.querySelectorAll('[data-fam]').forEach(n => n.onclick = () =>
       ouvrirStockMP({ famille: n.dataset.fam }));
     const seuil = k.querySelector('[data-seuil]');
@@ -6933,11 +6987,11 @@ async function montrerEmplacementMP(emp, opts = {}) {
         <div class="row" style="margin-top:8px">
           <button class="btn ghost" id="mpDeplacer" style="margin-top:0"${d.nb_lignes ? '' : ' disabled'}>${
             icon('transfer', 17)} Changer d’emplacement</button>
-        </div>` : `<div class="meta" style="margin-top:10px">Consultation seule : la case
-          « matières premières » est nécessaire pour entrer, sortir ou déplacer.</div>`}
+        </div>` : `<div class="meta" style="margin-top:10px">Consultation seule : il faut la case
+          « ${esc(libelleDroit('mp'))} ».</div>`}
       <div id="mpAct"></div>
     </div>
-    ${(peut('ref') && !opts.sansReglages) ? `<button class="btn ghost" id="mpReglage" style="margin-top:12px">${
+    ${(gereEmplacements() && !opts.sansReglages) ? `<button class="btn ghost" id="mpReglage" style="margin-top:12px">${
       icon('cog', 17)} Régler cet emplacement — codes acceptés, places</button>` : ''}
     ${opts.pied ? piedGestes({ suite: 'Scanner autre chose' }) : ''}`;
   // Le pied et le réglage sont écrits dans un `#zone` : `layout()` ne les a
@@ -7643,7 +7697,7 @@ async function renderStockMP() {
     + liste.map(([v, l]) => `<option value="${esc(v)}"${String(choisie) === String(v) ? ' selected' : ''}>${esc(l)}</option>`).join('');
   const deplie = PANNEAU_MP !== null ? PANNEAU_MP
     : Boolean(window.matchMedia && window.matchMedia('(min-width:1024px)').matches);
-  const regler = peut('ref');
+  const regler = peut('mp_seuils');
   // Le mode n'a de sens qu'avec le droit de régler : un compte qui ne l'a pas
   // n'y reste pas, d'où qu'il y soit arrivé.
   if (SEUILS_MP && !regler) quitterReglageSeuils(false);
@@ -7970,7 +8024,7 @@ async function ficheArticleMP(a, retour) {
       <div style="font-size:14px;line-height:1.45">${esc(x.designation || '')}</div>
       <div class="specs"><table><tbody>${lignesBase.map(([l, v]) =>
         `<tr><td>${esc(l)}</td><td>${esc(String(v))}</td></tr>`).join('')}</tbody></table></div>
-      ${peut('ref') ? `<button class="btn ghost" id="faSeuil">${icon('cloche', 17)} Régler le seuil d’alerte</button>` : ''}
+      ${peut('mp_seuils') ? `<button class="btn ghost" id="faSeuil">${icon('cloche', 17)} Régler le seuil d’alerte</button>` : ''}
     </div>
     <div class="sec" style="margin-top:18px">En stock · ${quantiteMP(x.en_stock || 0, x.famille)}${
       x.positions.length > 1 ? ` sur ${x.positions.length} positions` : ''}
@@ -8184,19 +8238,25 @@ function dessinerGestes() {
   // règle du serveur, autant l'annoncer ici plutôt que d'échouer au bout.
   const sansChantier = !cabine.chantier
     ? 'Il faut d’abord un n° de chantier — corrige la fiche.' : '';
+  // Un geste dont le compte n'a pas la case est éteint, comme les autres
+  // gestes impossibles, et dit laquelle manque.
+  const faute = (droit) => (peut(droit) ? '' : sansLeDroit(droit));
 
   const gestes = [];
   if (partie) {
     gestes.push(gesteBouton('gReprendre', 'La remettre en stock',
-      'Elle est revenue : retour de chantier, livraison refusée', { icone: 'in' }));
+      'Elle est revenue : retour de chantier, livraison refusée',
+      { icone: 'in', empeche: faute('cab_envoyer') }));
   } else if (!range) {
     gestes.push(gesteBouton('gRanger', 'La ranger',
-      'Scanner l’emplacement, puis toucher la place', { icone: 'in' }));
+      'Scanner l’emplacement, puis toucher la place',
+      { icone: 'in', empeche: faute('cab_ranger') }));
   } else {
     gestes.push(gesteBouton('gDeplacer', 'La déplacer',
-      `Elle quitte ${cabine.position} pour un autre emplacement`, { icone: 'transfer' }));
+      `Elle quitte ${cabine.position} pour un autre emplacement`,
+      { icone: 'transfer', empeche: faute('cab_ranger') }));
     gestes.push(gesteBouton('gAjouter', 'Ajouter un emplacement',
-      `Elle reste aussi en ${cabine.position}`, { icone: 'plus' }));
+      `Elle reste aussi en ${cabine.position}`, { icone: 'plus', empeche: faute('cab_ranger') }));
   }
   if (!partie) {
     // UN seul geste de sortie. Il y en avait deux ici aussi — « la sortir de
@@ -8205,12 +8265,13 @@ function dessinerGestes() {
     gestes.push(gesteBouton('gSortir', 'La sortir de l’entrepôt',
       range ? `Définitif : ${cabine.position} se libère et la cabine part`
             : 'Définitif : la cabine part et rejoint les archives',
-      { icone: 'out', empeche: sansChantier }));
+      { icone: 'out', empeche: faute('cab_envoyer') || sansChantier }));
     gestes.push(quarantaine
       ? gesteBouton('gStatut', 'Lever la quarantaine',
-          'Elle redevient conforme', { icone: 'check' })
+          'Elle redevient conforme', { icone: 'check', empeche: faute('cab_statut') })
       : gesteBouton('gStatut', 'La mettre en quarantaine',
-          'Un défaut la bloque : elle ne partira pas', { icone: 'alert' }));
+          'Un défaut la bloque : elle ne partira pas',
+          { icone: 'alert', empeche: faute('cab_statut') }));
   }
 
   layout(`<h2 class="title">${esc(cabine.numero)}</h2>
@@ -8256,6 +8317,7 @@ function dessinerGestes() {
 
 /** Le geste de rangement, ouvert sur une cabine déjà identifiée. */
 function versRangement(cabine, intention) {
+  if (refuseSansDroit('cab_ranger')) return;
   RANGEMENT = RANGEMENT_NEUF();
   RANGEMENT.cabine = cabine;
   RANGEMENT.intention = intention;
@@ -8267,7 +8329,7 @@ function dessinerGestesSansCabine(numero, attendue) {
   if (!attendue) {
     layout(`<h2 class="title">${esc(numero)}</h2><div id="eSuite"></div>
       ${piedGestes()}`, 'scanner');
-    if (REFS_CABINE.fichier_production && !ADMIN) blocRefusHorsFichier(numero);
+    if (REFS_CABINE.fichier_production && !peut('hors_fichier')) blocRefusHorsFichier(numero);
     else { ENTREE_NUMERO = numero; go('entree'); }
     return;
   }
@@ -8282,7 +8344,8 @@ function dessinerGestesSansCabine(numero, attendue) {
     </div>
     <div class="sec">Que faites-vous ?</div>
     <div class="gestes">${gesteBouton('gEntrer', 'La faire entrer en stock',
-      'Ses caractéristiques sont déjà là — rien à recopier', { icone: 'in' })}</div>
+      'Ses caractéristiques sont déjà là — rien à recopier',
+      { icone: 'in', empeche: peut('cab_ranger') ? '' : sansLeDroit('cab_ranger') })}</div>
     ${piedGestes()}`, 'scanner');
   $('#gEntrer').onclick = () => { ENTREE_NUMERO = numero; go('entree'); };
 }

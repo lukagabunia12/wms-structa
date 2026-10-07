@@ -263,10 +263,12 @@ class SuppressionRackTest(BaseEmplacement):
         self.assertEqual(r.status_code, 400)
         self.assertTrue(Emplacement.objects.filter(pk=isole.pk).exists())
 
-    def test_droit_referentiel_exige(self):
+    def test_droit_creer_et_supprimer_exige(self):
+        """Régler les emplacements et les mettre hors service ne suffit pas : la
+        suppression a sa propre case, que les opérateurs n'ont pas d'office."""
         operateur = Utilisateur.objects.create_user(
-            username="cariste", password="motdepasse123",
-            role=Utilisateur.OPERATEUR, droit_cab=True)
+            username="cariste", password="motdepasse123", role=Utilisateur.OPERATEUR,
+            droit_cab_ranger=True, droit_empl_regler=True, droit_empl_service=True)
         self.client.force_authenticate(user=operateur)
         r = self.client.post("/api/emplacements/supprimer-rack/", {"rack": "AC"}, format="json")
         self.assertEqual(r.status_code, 403)
@@ -366,10 +368,10 @@ class SuppressionLotTest(BaseEmplacement):
                             + ",".join(str(i) for i in range(services_emplacements.LOT_MAX + 5)))
         self.assertEqual(r.status_code, 400)
 
-    def test_droit_referentiel_exige(self):
+    def test_droit_creer_et_supprimer_exige(self):
         operateur = Utilisateur.objects.create_user(
-            username="cariste2", password="motdepasse123",
-            role=Utilisateur.OPERATEUR, droit_cab=True)
+            username="cariste2", password="motdepasse123", role=Utilisateur.OPERATEUR,
+            droit_cab_ranger=True, droit_empl_regler=True, droit_empl_service=True)
         self.client.force_authenticate(user=operateur)
         r = self.client.post("/api/emplacements/supprimer-lot/",
                              {"ids": [self.emps[0].pk]}, format="json")

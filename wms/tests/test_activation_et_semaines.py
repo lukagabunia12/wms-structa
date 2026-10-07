@@ -22,7 +22,7 @@ import tempfile
 
 from rest_framework.test import APITestCase
 
-from wms import services_cabines
+from wms import services_cabines, services_remise
 from wms.models import (CabineAttendue, Emplacement, ModeleCabine, Occupation,
                         PlaceCondamnee, Utilisateur, Zone)
 
@@ -318,21 +318,32 @@ class CondamnerUnePlaceTest(BaseActivation):
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(r.data["places_condamnees"], [])
 
-    def test_une_place_condamnee_survit_a_la_remise_a_zero(self):
+    def test_une_place_condamnee_survit_si_l_on_garde_le_plan(self):
         """Un pilier est toujours là après un vidage du stock.
 
-        La condamnation décrit l'entrepôt, pas le stock — l'effacer obligerait à
-        recondamner les mêmes places après chaque essai.
+        La condamnation décrit l'entrepôt, pas le stock : elle appartient au
+        plan, et reste tant qu'on décoche « Le plan de l'entrepôt ».
         """
         services_cabines.condamner_place(
             emplacement=self.e1, place=Occupation.GAUCHE, motif="pilier",
             utilisateur=self.user)
         self.cabine()
         with tempfile.TemporaryDirectory() as dossier:
-            services_cabines.vider_le_stock(utilisateur=self.user, dossier=dossier)
+            services_remise.remettre_a_zero(
+                parties=[services_remise.CABINES, services_remise.MP],
+                utilisateur=self.user, dossier=dossier)
         self.assertEqual(PlaceCondamnee.objects.count(), 1)
         self.assertEqual(
-            services_cabines.etat_du_stock()["conserves"]["places_condamnees"], 1)
+            services_remise.etat()[services_remise.PLAN]["places_condamnees"], 1)
+
+    def test_une_place_condamnee_part_avec_le_plan(self):
+        services_cabines.condamner_place(
+            emplacement=self.e1, place=Occupation.GAUCHE, motif="pilier",
+            utilisateur=self.user)
+        with tempfile.TemporaryDirectory() as dossier:
+            services_remise.remettre_a_zero(parties=services_remise.CLES,
+                                            utilisateur=self.user, dossier=dossier)
+        self.assertEqual(PlaceCondamnee.objects.count(), 0)
 
     def test_supprimer_l_emplacement_emporte_ses_condamnations(self):
         """CASCADE : une condamnation sans emplacement ne veut rien dire."""

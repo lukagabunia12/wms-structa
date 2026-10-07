@@ -84,7 +84,7 @@ class RepriseTest(TestCase):
         self.cab.refresh_from_db()
         self.assertEqual(self.cab.statut, Cabine.LIBRE)
 
-    def test_api_refuse_sans_le_droit_cabines(self):
+    def test_api_refuse_sans_le_droit_de_sortir(self):
         lecteur = Utilisateur.objects.create_user(
             username="lect", password="x", role=Utilisateur.LECTURE)
         c = APIClient()

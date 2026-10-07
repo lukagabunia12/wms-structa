@@ -282,7 +282,7 @@ class EcranDesModelesTest(BaseModeles):
                              format="json")
         self.assertEqual(r.status_code, 400)
 
-    def test_le_droit_referentiel_est_exige(self):
+    def test_le_droit_modeles_est_exige(self):
         lecture = Utilisateur.objects.create_user(
             username="lecture", password="secret123", role=Utilisateur.LECTURE)
         self.client.force_authenticate(user=lecture)

@@ -46,7 +46,7 @@ python manage.py runserver        # développement
 
 ## Tests et style
 ```bash
-python manage.py test           # 684 tests côté serveur
+python manage.py test           # 736 tests côté serveur
 ruff check .                    # style et erreurs de code (pip install ruff)
 node outils/verifier_interface.js   # les écrans de l'interface existent et sont joignables
 node outils/tester_interface.js     # le comportement de l'interface, sans navigateur
@@ -98,8 +98,10 @@ Le suivi des cabines de douche : entrée, rangement, statut, envoi, et le réfé
 emplacements. Depuis octobre 2026, les **matières premières** — vitrages et cartons — :
 emplacements dédiés à trois places (gauche, milieu, droite), réservables à certains codes,
 entrées, sorties, changements d'emplacement en un geste, stock par code, seuils d'alerte et
-cloche des alertes, base des codes prête à l'emploi. Le volet « articles » de la maquette (stock
-d'articles générique) avait été retiré en septembre 2026 : aucun écran ne s'en servait.
+cloche des alertes, base des codes prête à l'emploi. Les droits se donnent case par case, un
+geste par case, et « Repartir de zéro » remet l'outil à neuf (tout, ou ce qu'on coche). Le
+volet « articles » de la maquette (stock d'articles générique) avait été retiré en septembre
+2026 : aucun écran ne s'en servait.
 
 ## Interface opérateur
 Une fois le serveur démarré (`runserver`), l'interface est à **http://127.0.0.1:8000/**

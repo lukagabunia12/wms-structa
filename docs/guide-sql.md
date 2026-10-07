@@ -38,15 +38,15 @@ codes).
 
 ## Les requêtes déjà écrites
 
-**`docs/requetes-sql.sql`** — 26 requêtes prêtes à l'emploi, écrites sur votre
+**`docs/requetes-sql.sql`** — 27 requêtes prêtes à l'emploi, écrites sur votre
 schéma réel et vérifiées. Ouvrir ce fichier dans l'onglet « Exécuter le SQL »,
 sélectionner une requête, `F5`.
 
 Elles couvrent trois usages :
 
-- **Regarder** — combien de lignes par table, les comptes et leurs droits, les
-  emplacements, la composition des racks, les emplacements vides et ce qui est
-  hors service.
+- **Regarder** — combien de lignes par table, les comptes et leurs droits case
+  par case, qui peut créer et supprimer des emplacements, les emplacements, la
+  composition des racks, les emplacements vides et ce qui est hors service.
 - **Suivre les cabines** — celles qui sont présentes, par chantier, en
   quarantaine, et leur journal (qui a fait quoi, quand).
 - **Suivre les matières premières** — le stock de vitrages et de cartons par

@@ -805,19 +805,23 @@ class DroitsCabinesTest(BaseCabines):
                 self.assertEqual(r.status_code, 403)
         self.assertEqual(self.client.get("/api/cabines/").status_code, 200)
 
-    def test_operateur_sans_droit_cab_refuse(self):
+    def test_operateur_sans_la_case_statut_refuse(self):
+        """Toutes les autres cases cochées — ranger, sortir, corriger, le
+        référentiel : aucune ne vaut « changer le statut »."""
         c = self.cabine()
+        autres = {f"droit_{d}": True for d in Utilisateur.DROITS if d != "cab_statut"}
         op = Utilisateur.objects.create_user(username="op2", password="secret123",
-                                             role=Utilisateur.OPERATEUR, droit_ref=True)
+                                             role=Utilisateur.OPERATEUR, **autres)
         self.client.force_authenticate(user=op)
         r = self.client.post(f"/api/cabines/{c.id}/statut/", {"statut": Cabine.QUARANTAINE},
                              format="json")
         self.assertEqual(r.status_code, 403)
 
-    def test_operateur_avec_droit_cab_autorise(self):
+    def test_operateur_avec_la_case_statut_autorise(self):
         c = self.cabine()
         op = Utilisateur.objects.create_user(username="op3", password="secret123",
-                                             role=Utilisateur.OPERATEUR, droit_cab=True)
+                                             role=Utilisateur.OPERATEUR,
+                                             droit_cab_statut=True)
         self.client.force_authenticate(user=op)
         r = self.client.post(f"/api/cabines/{c.id}/statut/",
                              {"statut": Cabine.QUARANTAINE, "motif": "paroi à reprendre"},

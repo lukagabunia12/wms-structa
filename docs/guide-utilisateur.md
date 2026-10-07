@@ -4,8 +4,12 @@
 > Ce guide décrit les opérations métier qu'elle propose.
 
 Selon votre compte, certaines opérations peuvent être refusées : la consultation est ouverte à tous,
-mais les écritures dépendent des droits accordés (**cabines**, **référentiel**,
-**matières premières**). Un compte « lecture seule » ne peut rien modifier.
+mais chaque geste demande sa **case** sur la fiche du compte — entrer et ranger des
+cabines, changer leur statut, les sortir, régler les emplacements, en créer ou en
+supprimer, entrer des matières premières… L'écran ne montre que les boutons de vos
+cases ; un geste que vous ne pouvez pas faire est absent, ou affiché éteint avec le nom
+de la case qui manque — c'est elle qu'il faut demander à l'administrateur du WMS. Un
+compte « lecture seule » ne peut rien modifier.
 
 Au téléphone, quatre onglets en bas de l'écran : **Cabines** (scanner une fiche ou
 une étiquette, et tout ce qui se fait sur une cabine), **Stock** (chercher dans le stock
@@ -52,6 +56,13 @@ l'emplacement. On y trouve, dans l'ordre :
 
 Un emplacement scanné donne accès à la même fiche : bouton « Régler cet emplacement ».
 Pour un emplacement MP, la fiche montre aussi ses **codes acceptés** (voir plus bas).
+
+Chaque bloc suit sa case sur votre compte : **« régler les emplacements »** pour les
+réglages et les codes acceptés, **« mettre hors service, condamner une place »** pour
+la mise en service, **« créer et supprimer des emplacements et des racks »** pour les
+boutons « + Nouvel emplacement », « Créer un rack » et « Supprimer » — sur la fiche,
+dans une sélection ou pour un rack entier. Sans cette dernière case, ces boutons
+n'apparaissent pas.
 
 ### Ce que le WMS refuse de supprimer, et pourquoi
 
@@ -177,8 +188,8 @@ génération non plus, quel que soit son seuil : on l'écoule, on ne la recomman
   rappelle les seuils actuels avant de les remplacer. Laisser le champ vide retire
   l'alerte.
 
-Régler un seuil demande le droit **référentiel** : c'est un réglage de la base des
-codes, pas un geste de poste.
+Régler un seuil demande la case **« régler les seuils d'alerte MP »** : c'est un
+réglage de la base des codes, pas un geste de poste.
 
 ### La cloche
 
@@ -197,8 +208,9 @@ seuil changé ou la palette déplacée. Une alerte qui disparaît puis revient r
 rouge. Toucher une alerte ouvre le code, ou l'emplacement.
 
 La cloche suit l'activité de tous les postes, toutes les dix secondes, même pendant
-une saisie. Elle n'apparaît que sur les comptes qui ont la case **matières
-premières** ou le droit **référentiel** : ceux qui peuvent agir sur ce qu'elle dit.
+une saisie. Elle n'apparaît que sur les comptes qui peuvent agir sur ce qu'elle dit :
+ceux qui ont la case des matières premières, celle des seuils d'alerte, ou celle du
+réglage des emplacements (pour leurs codes acceptés).
 
 ### Régler les emplacements MP
 
@@ -265,9 +277,10 @@ générations. Elle se complète et se corrige dans l'administration (`/admin/` 
 **Codes MP**) : un code retiré se décoche « actif » — il ne se propose plus, mais le
 journal et le stock qui le citent restent lisibles.
 
-Entrer, sortir et changer d'emplacement demandent la case **matières premières** sur
-le compte ; régler les emplacements (ce qu'ils rangent, leurs codes acceptés) et les
-seuils d'alerte, le droit **référentiel**.
+Entrer, sortir et changer d'emplacement demandent la case **« entrer, sortir et
+déplacer des matières premières »** sur le compte ; régler les emplacements (ce qu'ils
+rangent, leurs codes acceptés), la case **« régler les emplacements »** ; les seuils
+d'alerte, la case **« régler les seuils d'alerte MP »**.
 
 ## Corriger ou supprimer une cabine mal saisie
 
@@ -307,7 +320,10 @@ suivante.
 > passés de la cabine restent visibles dans le Journal, recherchables par son numéro.
 > Seule la fiche disparaît.
 
-Ces deux actions demandent le droit **cabines**.
+Ces deux actions demandent la case **« corriger ou supprimer une fiche cabine »**.
+Corriger le numéro vers un numéro que le fichier de production n'annonce pas
+demande en plus la case **« enregistrer une cabine absente du fichier de
+production »** : c'est la règle de l'entrée, et la correction ne la contourne pas.
 
 ## Créer un rack entier en une fois
 

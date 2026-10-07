@@ -19,19 +19,85 @@ class Utilisateur(AbstractUser):
     ROLES = [(ADMIN, "Administrateur"), (OPERATEUR, "Opérateur"), (LECTURE, "Lecture seule")]
 
     nom = models.CharField("nom affiché", max_length=150, blank=True)
-    role = models.CharField(max_length=16, choices=ROLES, default=OPERATEUR)
+    role = models.CharField("rôle", max_length=16, choices=ROLES, default=OPERATEUR)
     pin = models.CharField(max_length=32, blank=True)
-    droit_cab = models.BooleanField("cabines", default=False)
-    droit_ref = models.BooleanField("référentiel", default=False)
-    #: Entrer et sortir des matières premières (vitrages, cartons). Une case à
-    #: part : l'équipe qui reçoit le verre n'est pas forcément celle qui range
-    #: les cabines, et l'inverse.
-    droit_mp = models.BooleanField("matières premières", default=False)
 
-    #: Les droits qui commandent quelque chose : manipuler les cabines, gérer le
-    #: référentiel (emplacements, racks, modèles, étiquettes), et mouvementer
-    #: les matières premières.
-    DROITS = ["cab", "ref", "mp"]
+    # --- Les droits : une case par geste -------------------------------------
+    #: Chaque case ouvre un geste, ou une famille de gestes qui vont ensemble,
+    #: et rien d'autre. Elles ne valent que pour le rôle « Opérateur » :
+    #: l'administrateur a tout, la lecture seule rien.
+    #:
+    #: Il y avait trois cases — cabines, référentiel, matières premières — qui
+    #: ouvraient chacune un bloc entier : donner à quelqu'un le droit de
+    #: condamner une place lui donnait aussi celui de supprimer un rack. La
+    #: migration 0028 a reporté les anciennes cases sur les nouvelles, sauf
+    #: « créer et supprimer des emplacements », que personne n'a reçu d'office.
+    droit_cab_ranger = models.BooleanField(
+        "entrer et ranger des cabines", default=False,
+        help_text="Enregistrer une cabine annoncée par le fichier de production, la "
+                  "ranger, la déplacer, lui ajouter un emplacement.")
+    droit_cab_statut = models.BooleanField(
+        "changer le statut d'une cabine", default=False,
+        help_text="La mettre en quarantaine, lever la quarantaine. Sans cette case, "
+                  "la question « quel est son état ? » qui suit un rangement est sautée.")
+    droit_cab_envoyer = models.BooleanField(
+        "sortir des cabines de l'entrepôt", default=False,
+        help_text="Les envoyer sur chantier (en leur affectant le n° de chantier), et "
+                  "remettre en stock une cabine revenue.")
+    droit_cab_corriger = models.BooleanField(
+        "corriger ou supprimer une fiche cabine", default=False,
+        help_text="Changer le numéro, le chantier, le modèle d'une cabine mal saisie, "
+                  "ou la supprimer.")
+    droit_production = models.BooleanField(
+        "importer le fichier de production", default=False,
+        help_text="Remplacer la liste des cabines annoncées par la production "
+                  "(écran « Fichier de production »).")
+    droit_hors_fichier = models.BooleanField(
+        "enregistrer une cabine absente du fichier de production", default=False,
+        help_text="Avec un motif, écrit au journal. Demande aussi « entrer et ranger "
+                  "des cabines ».")
+    #: Une case à part pour les matières premières : l'équipe qui reçoit le
+    #: verre n'est pas forcément celle qui range les cabines, et l'inverse.
+    droit_mp = models.BooleanField(
+        "entrer, sortir et déplacer des matières premières", default=False,
+        help_text="Vitrages et cartons : entrée, sortie, changement d'emplacement.")
+    droit_mp_seuils = models.BooleanField(
+        "régler les seuils d'alerte MP", default=False,
+        help_text="Le stock sous lequel la cloche signale un code à recommander.")
+    droit_empl_service = models.BooleanField(
+        "mettre hors service, condamner une place", default=False,
+        help_text="Mettre un emplacement hors service ou le remettre en service ; "
+                  "condamner une place ou la rouvrir.")
+    droit_empl_regler = models.BooleanField(
+        "régler les emplacements", default=False,
+        help_text="Leur code, ce qu'ils rangent (cabines, cartons, vitrages), les codes "
+                  "MP qu'ils acceptent, leur description.")
+    droit_empl_creer = models.BooleanField(
+        "créer et supprimer des emplacements et des racks", default=False,
+        help_text="Un emplacement ne se supprime de toute façon pas tant qu'une cabine "
+                  "ou du stock MP y est posé.")
+    droit_modeles = models.BooleanField(
+        "régler la taille des modèles de cabine", default=False,
+        help_text="Grand modèle — il prend tout l'emplacement — ou non.")
+
+    #: Les droits, dans les groupes et l'ordre de la fiche du compte. La clé est
+    #: le nom du champ sans « droit_ » : c'est elle que nomment les vues
+    #: (`droit_ecriture`, `droits_par_action`) et l'écran (`peut('mp')`).
+    GROUPES_DROITS = [
+        ("Cabines", ["cab_ranger", "cab_statut", "cab_envoyer", "cab_corriger"]),
+        ("Fichier de production", ["production", "hors_fichier"]),
+        ("Matières premières", ["mp", "mp_seuils"]),
+        ("Emplacements, racks et modèles",
+         ["empl_service", "empl_regler", "empl_creer", "modeles"]),
+    ]
+    DROITS = [cle for _, cles in GROUPES_DROITS for cle in cles]
+
+    @classmethod
+    def libelle_droit(cls, cle):
+        """Le nom de la case, tel que la fiche du compte l'affiche."""
+        if cle not in cls.DROITS:
+            return str(cle)
+        return str(cls._meta.get_field(f"droit_{cle}").verbose_name)
 
     def droits_effectifs(self):
         """Droits réellement applicables. Appliqué par wms.permissions.DroitWMS.
@@ -46,14 +112,18 @@ class Utilisateur(AbstractUser):
             return {c: False for c in self.DROITS}
         return {c: getattr(self, f"droit_{c}") for c in self.DROITS}
 
+    def peut(self, droit):
+        """Le compte a-t-il ce droit ? Un nom inconnu vaut « non » : une faute de
+        frappe dans une vue ferme le geste au lieu de l'ouvrir à tous."""
+        return bool(self.droits_effectifs().get(droit))
+
     @property
     def est_administrateur(self):
-        """Compte administrateur — au-delà des droits fins.
+        """Compte administrateur — au-delà des cases à cocher.
 
-        Certaines opérations exceptionnelles ne se règlent pas par une case à cocher :
-        importer le fichier de production réécrit des milliers de cabines, vider le
-        stock efface tout le parc. Ce sont des décisions d'exploitation, pas des
-        gestes de poste, et elles sont réservées à ce niveau.
+        Il a toutes les cases, et une opération qu'aucune case n'ouvre :
+        « Repartir de zéro », qui remet l'outil à neuf. Ce n'est pas un geste
+        de poste, c'est une décision d'exploitation.
         """
         return bool(self.is_superuser or self.role == self.ADMIN)
 

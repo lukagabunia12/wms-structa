@@ -11,7 +11,7 @@ Ce que ces tests tiennent :
 """
 from rest_framework.test import APIClient, APITestCase
 
-from wms import services_cabines, services_mp
+from wms import services_cabines, services_mp, services_remise
 from wms.models import (ArticleMP, Cabine, Emplacement, MouvementMP, PlaceCondamnee,
                         StockMP, Utilisateur)
 
@@ -233,7 +233,8 @@ class DroitsTest(BaseMP):
         return client
 
     def test_sans_la_case_mp_on_consulte_mais_on_ne_bouge_rien(self):
-        client = self.connecter(droit_cab=True)
+        client = self.connecter(**{f"droit_{d}": True for d in Utilisateur.DROITS
+                                   if d != "mp"})
         self.assertEqual(client.get("/api/mp/stock/").status_code, 200)
         r = client.post("/api/mp/entrer/", {"emplacement": self.vitrages.id, "place": "G",
                                             "article": self.v470.id, "quantite": 1},
@@ -250,7 +251,7 @@ class DroitsTest(BaseMP):
     def test_la_case_mp_ne_donne_pas_les_cabines(self):
         u = Utilisateur.objects.create_user(username="mp", password="motdepasse123",
                                             droit_mp=True)
-        self.assertEqual(u.droits_effectifs(), {"cab": False, "ref": False, "mp": True})
+        self.assertEqual({d for d, oui in u.droits_effectifs().items() if oui}, {"mp"})
 
 
 class CabinesEtMPNeSeMelangentPasTest(BaseMP):
@@ -299,11 +300,20 @@ class CabinesEtMPNeSeMelangentPasTest(BaseMP):
         with self.assertRaisesMessage(services_cabines.ErreurCabine, "stock MP"):
             services_cabines.condamner_place(emplacement=self.vitrages, place="D", motif="x")
 
-    def test_la_remise_a_zero_ne_touche_pas_au_stock_mp(self):
+    def test_la_remise_a_zero_des_cabines_seules_ne_touche_pas_au_stock_mp(self):
         self.entrer()
-        services_cabines.vider_le_stock(dossier=self._dossier())
+        services_remise.remettre_a_zero(parties=[services_remise.CABINES],
+                                        dossier=self._dossier())
         self.assertEqual(StockMP.objects.count(), 1)
-        self.assertEqual(services_cabines.etat_du_stock()["conserves"]["lignes_stock_mp"], 1)
+        self.assertEqual(services_remise.etat()[services_remise.MP]["lignes"], 1)
+
+    def test_la_remise_a_zero_complete_vide_aussi_le_stock_mp(self):
+        """C'est la demande : « vraiment une réinitialisation complète »."""
+        self.entrer()
+        services_remise.remettre_a_zero(parties=services_remise.CLES,
+                                        dossier=self._dossier())
+        self.assertEqual(StockMP.objects.count(), 0)
+        self.assertEqual(MouvementMP.objects.count(), 0)
 
     def _dossier(self):
         import tempfile
@@ -349,9 +359,10 @@ class UsageDesEmplacementsTest(BaseMP):
         self.assertEqual(bilan["changes"], [])
         self.assertIn("milieu", bilan["bloques"][0]["message"])
 
-    def test_api_droit_referentiel(self):
+    def test_api_droit_regler_les_emplacements(self):
         op = Utilisateur.objects.create_user(username="op", password="motdepasse123",
-                                             droit_cab=True, droit_mp=True)
+                                             **{f"droit_{d}": True for d in Utilisateur.DROITS
+                                                if d != "empl_regler"})
         client = APIClient()
         client.force_authenticate(op)
         r = client.post("/api/emplacements/usage/", {"ids": [self.cabines.id],

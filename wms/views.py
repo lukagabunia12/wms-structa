@@ -20,8 +20,7 @@ from rest_framework.response import Response
 from . import (export_inventaire, export_mp, lecture_fiche, ocr_fiche, services_cabines,
                services_emplacements, services_import, services_mp)
 from .models import (ArticleMP, Cabine, CabineAttendue, Emplacement, ModeleCabine,
-                     MouvementCabine, MouvementMP, Occupation, StockMP)
-from .permissions import EstAdministrateur
+                     MouvementCabine, MouvementMP, Occupation, StockMP, Utilisateur)
 from .serializers import (CabineAttendueSerializer, CabineSerializer, EmplacementSerializer,
                           ModeleCabineSerializer, MouvementCabineSerializer,
                           OccupationSerializer)
@@ -39,10 +38,18 @@ class EmplacementViewSet(viewsets.ModelViewSet):
     search_fields = ["code", "zone", "description"]
     ordering_fields = ["code", "rack"]
     ordering = ["code"]
-    #: Un seul droit pour toutes les écritures de la vue, actions comprises :
-    #: `supprimer-rack` est un POST, il est donc couvert. L'écrire ici évite
-    #: qu'une action future s'ouvre par omission.
-    droit_ecriture = "ref"
+    #: Trois cases pour une seule vue. Créer et supprimer — un emplacement, une
+    #: sélection, un rack — est le droit de la vue : toute écriture que
+    #: `droits_par_action` ne nomme pas tombe sous lui, la plus fermée des
+    #: trois, plutôt que de s'ouvrir par omission.
+    droit_ecriture = "empl_creer"
+    droits_par_action = {
+        # Régler : le code, ce qu'il range, les codes acceptés, la description.
+        "update": "empl_regler", "partial_update": "empl_regler",
+        "usage": "empl_regler", "codes": "empl_regler",
+        # Mettre hors service, condamner une place — et l'inverse.
+        "activation": "empl_service", "place": "empl_service",
+    }
 
     def get_queryset(self):
         """Emplacements avec leurs cabines, filtrables par rack et par colonne.
@@ -269,7 +276,8 @@ class EmplacementViewSet(viewsets.ModelViewSet):
 
         `{ids: [...], choix: "vitrage", apercu: true}` rend le bilan sans rien
         écrire ; sans `apercu`, l'applique aux emplacements qui le peuvent. Les
-        autres sont nommés, avec ce qui les retient. Droit « référentiel ».
+        autres sont nommés, avec ce qui les retient. Droit « régler les
+        emplacements ».
         """
         d = request.data
         ids = d.get("ids")
@@ -292,8 +300,8 @@ class EmplacementViewSet(viewsets.ModelViewSet):
         `{ids: [...], articles: [...], mode: "remplacer" | "ajouter" | "tous",
         apercu: true}` rend le bilan sans rien écrire ; sans `apercu`, l'applique
         à ceux qui le prennent. « tous » retire la réservation : l'emplacement
-        accepte de nouveau toute sa famille. Droit « référentiel », comme tout
-        réglage d'emplacement.
+        accepte de nouveau toute sa famille. Droit « régler les emplacements »,
+        comme tout réglage d'emplacement.
         """
         d = request.data
         ids, articles = d.get("ids"), d.get("articles")
@@ -359,7 +367,7 @@ class EmplacementViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="supprimer-lot")
     def supprimer_lot(self, request):
-        """Supprime une sélection d'emplacements, ou aucun. Droit « référentiel »."""
+        """Supprime une sélection d'emplacements, ou aucun. Droit « créer et supprimer »."""
         d = request.data
         ids = d.get("ids")
         if isinstance(ids, str):
@@ -372,7 +380,7 @@ class EmplacementViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="supprimer-rack")
     def supprimer_rack(self, request):
-        """Supprime tout un rack, ou rien. Exige le droit « référentiel »."""
+        """Supprime tout un rack, ou rien. Droit « créer et supprimer »."""
         d = request.data
         try:
             return Response(services_emplacements.supprimer_rack(
@@ -431,10 +439,18 @@ class CabineViewSet(viewsets.ModelViewSet):
     filter_backends = [OrderingFilter]
     ordering_fields = ["numero", "chantier", "date", "statut", "modele",
                        "type_cabine", "derniere_activite_date"]
+    #: Une case par geste. Toute autre écriture tombe sous la plus fermée,
+    #: « corriger ou supprimer » ; lire la photo d'une fiche n'écrit rien, et
+    #: reste ouvert à tout compte.
+    droit_ecriture = "cab_corriger"
     droits_par_action = {
-        "create": "cab", "update": "cab", "partial_update": "cab", "destroy": "cab",
-        "ranger": "cab", "statut": "cab", "envoyer": "cab",
-        "chantier": "cab", "reprendre": "cab",
+        "create": "cab_ranger", "ranger": "cab_ranger",
+        "statut": "cab_statut",
+        # Le n° de chantier s'affecte au moment de sortir : même case.
+        "envoyer": "cab_envoyer", "reprendre": "cab_envoyer", "chantier": "cab_envoyer",
+        "update": "cab_corriger", "partial_update": "cab_corriger",
+        "destroy": "cab_corriger",
+        "lire_fiche": None,
     }
 
     def get_queryset(self):
@@ -781,9 +797,9 @@ class CabineViewSet(viewsets.ModelViewSet):
     def reprendre(self, request, pk=None):
         """Remet en stock une cabine envoyée — l'inverse d'`envoyer`.
 
-        Même droit que le reste (« cabines ») : c'est une correction de terrain,
-        pas une opération d'administration. L'écran demande confirmation ; le
-        journal garde l'envoi ET le retour.
+        Même case que l'envoi (« sortir des cabines de l'entrepôt ») : c'est une
+        correction de terrain, pas une opération d'administration. L'écran
+        demande confirmation ; le journal garde l'envoi ET le retour.
         """
         return self._run(lambda: services_cabines.reprendre(
             cabine=self.get_object(), utilisateur=request.user,
@@ -863,7 +879,7 @@ class ModeleCabineViewSet(viewsets.GenericViewSet):
 
     queryset = ModeleCabine.objects.all()
     serializer_class = ModeleCabineSerializer
-    droit_ecriture = "ref"
+    droit_ecriture = "modeles"
     pagination_class = None
 
     def list(self, request, *args, **kwargs):
@@ -950,9 +966,10 @@ def moi(request):
     """Identité et droits du compte connecté.
 
     Permet au front de ne pas proposer une commande que le serveur refusera : sans
-    cela l'interface affiche « Créer un rack » à un opérateur sans `droit_ref`,
-    qui ne découvre le refus qu'après avoir rempli le formulaire. Le `pin` n'est
-    volontairement pas exposé.
+    cela l'interface affiche « Créer un rack » à un opérateur qui n'a pas la case,
+    et il ne découvre le refus qu'après avoir rempli le formulaire. Les libellés
+    des cases font le voyage aussi : l'écran dit « il te manque le droit X » avec
+    le mot de la fiche du compte. Le `pin` n'est volontairement pas exposé.
     """
     u = request.user
     return Response({
@@ -960,11 +977,10 @@ def moi(request):
         "nom": u.nom or u.username,
         "role": u.role,
         "is_superuser": u.is_superuser,
-        # Au-delà des droits fins : l'import du fichier de production n'est pas
-        # une case à cocher. Le front en a besoin pour ne pas proposer un écran
-        # que le serveur refusera.
+        # Au-delà des cases : seul « Repartir de zéro », dans l'administration.
         "administrateur": u.est_administrateur,
         "droits": u.droits_effectifs(),
+        "libelles_droits": {cle: Utilisateur.libelle_droit(cle) for cle in Utilisateur.DROITS},
     })
 
 
@@ -1096,16 +1112,17 @@ class CabineAttendueViewSet(viewsets.ReadOnlyModelViewSet):
     l'entrée, l'opérateur saisit le numéro et tout se pré-remplit — c'est la
     raison d'être de l'écran, et pourquoi la lecture est ouverte à tout compte.
 
-    L'écriture, elle, ne passe que par les deux actions d'import, réservées aux
-    administrateurs : un fichier réécrit les caractéristiques de milliers de
-    cabines d'un coup. Aucune création ni modification à l'unité n'est exposée —
-    la source est le fichier, et lui seul, sans quoi la table divergerait de la
-    production sans que personne ne sache laquelle des deux croire.
+    L'écriture, elle, ne passe que par les deux actions d'import, sous la case
+    « importer le fichier de production » : un fichier réécrit les
+    caractéristiques de milliers de cabines d'un coup, et la case ne se coche
+    que pour qui en a la charge. Aucune création ni modification à l'unité
+    n'est exposée — la source est le fichier, et lui seul, sans quoi la table
+    divergerait de la production sans que personne ne sache laquelle croire.
     """
 
     queryset = CabineAttendue.objects.select_related("importe_par").all()
     serializer_class = CabineAttendueSerializer
-    permission_classes = [EstAdministrateur]
+    droit_ecriture = "production"
 
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["numero", "num_unique", "chantier", "chantier_brut", "client",
@@ -1237,16 +1254,16 @@ class MatieresPremieresViewSet(viewsets.ViewSet):
 
     Toutes les routes sont sous `/api/mp/`. La lecture est ouverte à tout
     compte ; les gestes sur le stock — entrer, sortir, changer d'emplacement —
-    exigent la case « matières premières ». Régler un seuil d'alerte est un
-    réglage de la base des codes, pas un geste de poste : il demande le
-    référentiel. Les règles vivent dans `services_mp`, la vue ne fait que
-    traduire les refus en réponses 400.
+    exigent la case « entrer, sortir et déplacer des matières premières ».
+    Régler un seuil d'alerte est un réglage de la base des codes, pas un geste
+    de poste : il a sa propre case. Les règles vivent dans `services_mp`, la
+    vue ne fait que traduire les refus en réponses 400.
     """
 
     droit_ecriture = "mp"
     #: Les exceptions au droit de la vue. Toute autre écriture reste sous
     #: `droit_ecriture` — voir `DroitWMS.droit_requis`.
-    droits_par_action = {"seuils": "ref"}
+    droits_par_action = {"seuils": "mp_seuils"}
 
     @staticmethod
     def _400(e):
@@ -1440,7 +1457,8 @@ class MatieresPremieresViewSet(viewsets.ViewSet):
     def seuils(self, request):
         """Le même seuil d'alerte pour un ou plusieurs codes : `{articles: [...], seuil}`.
 
-        `seuil` vide ou 0 : plus d'alerte pour ces codes. Droit « référentiel ».
+        `seuil` vide ou 0 : plus d'alerte pour ces codes. Droit « régler les
+        seuils d'alerte MP ».
         """
         d = request.data
         try:
