@@ -15,9 +15,16 @@ Ce backend ne relâche AUCUNE autre vérification : le mot de passe reste vérif
 par Django, le compte désactivé reste refusé, et le temps de hachage est
 consommé même quand l'identifiant n'existe pas — sans quoi la durée de la
 réponse dirait quels comptes existent.
+
+Il en ajoute une : le frein aux essais de mot de passe (`wms/connexion.py`).
+Toutes les portes d'entrée — l'application, l'administration, la page de
+connexion de l'API — passent par ici : c'est donc ici qu'il s'applique.
 """
 from django.contrib.auth import get_user_model
 from django.contrib.auth.backends import ModelBackend
+from django.core.exceptions import PermissionDenied
+
+from . import connexion
 
 
 class IdentifiantInsensibleALaCasse(ModelBackend):
@@ -29,6 +36,12 @@ class IdentifiantInsensibleALaCasse(ModelBackend):
             return None
 
         nom = username.strip()
+        # Trop d'échecs récents : refusé AVANT de regarder le mot de passe, sans
+        # quoi le bon finirait par passer au milieu des mauvais. PermissionDenied
+        # arrête Django net — aucun autre moteur n'est essayé.
+        if connexion.attente(request, nom):
+            raise PermissionDenied(connexion.message(connexion.attente(request, nom)))
+
         # Correspondance exacte d'abord : si deux comptes ne diffèrent que par la
         # casse — « Enzo » et « enzo » —, celui qui a été tapé exactement gagne.
         # Sans cette priorité, la connexion deviendrait imprévisible.
@@ -46,5 +59,6 @@ class IdentifiantInsensibleALaCasse(ModelBackend):
 
         utilisateur = candidats[0]
         if utilisateur.check_password(password) and self.user_can_authenticate(utilisateur):
+            connexion.effacer(request, nom)
             return utilisateur
         return None

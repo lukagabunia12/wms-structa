@@ -141,6 +141,48 @@ la cloche. Les alertes vues sont retenues par poste dans `localStorage`
 (`wms_alertes_vues`), et oubliées dès qu'elles disparaissent : une alerte qui revient
 est nouvelle. Une autre sorte d'alerte s'ajoute en ajoutant un groupe.
 
+## Exploitation du serveur
+
+- **`wms/exploitation.py`** : réglages (`WMS_SAUVEGARDE_*`, `WMS_JOURNAUX_JOURS`,
+  `WMS_POSTGRESQL_*`), rotation des jeux (`jeux_a_supprimer` : tout pendant N jours,
+  le premier de chaque mois pendant N mois, jamais moins de N jeux), recherche de
+  `pg_dump`/`pg_restore`/`psql` hors du PATH, état lu par l'accueil de
+  l'administration (`etat_sauvegarde`, gabarit `admin/wms/index.html` via
+  `templatetags/exploitation_admin.py`, qui ne lève jamais).
+- **`manage.py sauvegarder`** : `pg_dump --format=custom` (mot de passe par
+  `PGPASSWORD`, jamais en argument), relu par `pg_restore --list` — chaque table de
+  `connection.introspection` doit y figurer —, écrit en `.partiel` puis renommé ;
+  zip de configuration ; copie vérifiée par empreinte ; état dans
+  `logs/sauvegarde-etat.json`, journal Windows (900/901).
+- **`manage.py restaurer`** : refuse si le WMS tourne ou si la tâche Service est
+  active ; filet (`sauvegarder` d'abord) ; PostgreSQL : `pg_restore --file -` envoyé
+  à `psql` entre un `BEGIN` et un `COMMIT` écrit **seulement** si `pg_restore` a fini
+  sans erreur — un flux interrompu n'est jamais validé (`pg_restore
+  --single-transaction` : pas de COMMIT intermédiaire, même avec des « large
+  objects »). Le schéma `public` est refait : une table ajoutée depuis la
+  sauvegarde ne survit pas pour faire échouer le `migrate` suivant. Échec ou
+  réussite : `logs/sauvegarde.log`, `wms.log`, événements 910/911.
+- **`manage.py nettoyer`** : journaux de PostgreSQL (`data/log`, jamais le plus
+  récent), sessions expirées, `.partiel` abandonnés, mesures.
+- **`outils/serveur_wms.py`** : le XML des tâches planifiées (UTF-16, pas de limite
+  de durée, pas d'arrêt sur batterie, priorité normale), `etat`, `arreter`
+  (désactive la tâche avant de tuer les seuls processus Python à l'écoute),
+  `demarrer`. Les réglages des tâches (heures, ménage, compte dédié) sont gardés
+  dans `.env` (`WMS_TACHE_*`) : une option absente reprend la valeur précédente.
+- **Connexion** : `wms/connexion.py`, le frein aux mots de passe (compteurs en
+  cache par compte et par adresse ; jamais par adresse pour la boucle locale),
+  branché sur le backend, le signal `user_login_failed`, `/api/token/` (429 +
+  `Retry-After`) et le formulaire de l'administration.
+- **Corps des requêtes** : `wms/parseurs.py` refuse un JSON qui n'est pas un objet
+  (400 au lieu d'un 500 sur `[]` ou `"texte"`). Les listes paginées trient par la
+  colonne demandée **puis par `pk`** (`TriStable`) : sans cela, deux lignes égales
+  changeaient de page d'une requête à l'autre.
+
+Tests : `test_exploitation`, `test_restauration`, `test_serveur_windows`,
+`test_frein_connexion`. Les classes `…Reelle…` tournent contre un vrai PostgreSQL si
+`WMS_TEST_PG_PORT` et `WMS_TEST_PG_MOT_DE_PASSE` sont posés (voir leur docstring) ;
+sinon elles sont sautées.
+
 ## Historique
 Le volet « articles » de la maquette d'origine (articles, stock, mouvements, réceptions) a été
 retiré en septembre 2026 : aucun écran ne s'en servait plus. La migration `0023` en a

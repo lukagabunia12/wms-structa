@@ -2,13 +2,13 @@ from django.conf import settings
 from django.contrib import admin
 from django.contrib.staticfiles.views import serve as servir_statique
 from django.urls import include, path, re_path
-from rest_framework.authtoken.views import obtain_auth_token
 
-from wms.views import app_index
+from wms.views import ConnexionJeton, app_index
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("api/token/", obtain_auth_token),
+    # La connexion de l'application, avec le frein aux essais de mot de passe.
+    path("api/token/", ConnexionJeton.as_view()),
     path("api/", include("wms.urls")),
     path("api/auth/", include("rest_framework.urls")),
 ]

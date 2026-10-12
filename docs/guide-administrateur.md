@@ -146,9 +146,12 @@ racks »**, que personne n'a reçu d'office : cochez-la pour qui doit l'avoir.
   l'application, elle, règle le même seuil pour une sélection de codes (Stock →
   MP → « Régler les seuils d'alerte »). Un code réservé sur des emplacements ne
   change pas de famille et ne se décoche pas « actif » tant qu'il y est réservé :
-  l'administration nomme les emplacements à régler d'abord.
-- Dans **Emplacements**, la fiche d'un emplacement MP porte ses **codes
-  acceptés** (vide : toute sa famille). L'administration y applique la règle de
+  l'administration nomme les emplacements à régler d'abord. Il ne change pas
+  non plus de famille tant que du stock est posé sous ce code.
+- Dans **Emplacements**, « actif », son motif et sa date sont en lecture
+  seule : la mise hors service se fait dans l'application, qui refuse un
+  emplacement occupé et écrit qui l'a fait. La fiche d'un emplacement MP porte
+  ses **codes acceptés** (vide : toute sa famille). L'administration y applique la règle de
   l'application : pas de code d'une autre famille, aucun code sur un emplacement
   de cabines. Le réglage courant se fait plutôt dans l'application, à l'unité ou
   en nombre.
@@ -170,6 +173,14 @@ racks »**, que personne n'a reçu d'office : cochez-la pour qui doit l'avoir.
   numéro que le fichier de production n'annonce pas, il faut la case
   « enregistrer une cabine absente du fichier de production » (le journal porte
   alors « hors fichier de production »).
+- **Frein aux mots de passe** : au-delà de 10 échecs sur un compte, ou de 30
+  depuis une même adresse, en 15 minutes, la connexion est refusée jusqu'à la fin
+  de la fenêtre — même avec le bon mot de passe —, dans l'application comme dans
+  l'administration. Le message dit dans combien de minutes réessayer. Réglages :
+  `WMS_CONNEXION_ESSAIS_COMPTE`, `WMS_CONNEXION_ESSAIS_ADRESSE`,
+  `WMS_CONNEXION_FENETRE_MINUTES` dans `.env`.
+- **Téléphone perdu ou volé** : « Jeton d'authentification » → « Jetons »,
+  supprimer celui du compte. Le téléphone revient à l'écran de connexion.
 
 ## Repartir de zéro
 
@@ -225,9 +236,10 @@ repartir de zéro.
 
 ## Mise en serveur et base PostgreSQL
 
-Procédure complète : **[`docs/guide-deploiement.md`](guide-deploiement.md)** —
-préparation de la machine, création de la base, reprise des données, service qui
-démarre tout seul, sauvegarde, supervision.
+Mise en service sur le serveur Windows, pas à pas, puis exploitation au
+quotidien — sauvegardes, restauration, ménage des journaux, mise à jour :
+**[`docs/guide-serveur.md`](guide-serveur.md)**. Le pourquoi de PostgreSQL et la
+répétition sur le PC : [`docs/guide-deploiement.md`](guide-deploiement.md).
 
 En résumé, rien à modifier dans le code : tout se règle dans `.env`.
 
@@ -276,19 +288,41 @@ la base (DB Browser for SQLite aujourd'hui, pgAdmin après la bascule), et
 
 ## Supervision
 
-`GET /api/sante/` répond **200** si la base répond et si le schéma est à jour,
-**503** sinon. Sans authentification (un outil de supervision n'a pas de compte)
-et sans rien divulguer (ni version, ni chemin, ni hôte de base).
+- `GET /api/sante/` répond **200** si la base répond et si le schéma est à jour,
+  **503** sinon. Sans authentification (un outil de supervision n'a pas de
+  compte) et sans rien divulguer (ni version, ni chemin, ni hôte de base).
+- Sur le serveur, `Etat-WMS.bat` montre tout en un écran : tâches planifiées,
+  ports, santé, certificat, sauvegardes, place libre.
+- Le journal Application de Windows, source « WMS Structa » : 900 pour une
+  sauvegarde réussie, 901 pour un échec.
 
 ## Sauvegarde
 
-- **SQLite** : la base est le fichier `db.sqlite3`. Sauvegarde = copie de ce fichier,
-  serveur arrêté, ou `sqlite3 db.sqlite3 ".backup sauvegarde.sqlite3"` à chaud.
-  Conserver plusieurs jours d'historique.
-- **Serveur SQL** : sauvegarde côté serveur (`pg_dump`, `mysqldump`), planifiée.
+L'accueil de l'administration porte, pour les administrateurs, le cadre
+**« Sauvegardes et disque »** :
+
+| Étiquette | Signifie |
+|---|---|
+| OK | dernière sauvegarde réussie, copie hors de la machine à jour |
+| À voir | pas de copie hors de la machine, copie en échec, ou disque presque plein |
+| Alerte | la dernière sauvegarde a échoué, ou aucune n'a réussi depuis 30 heures |
+| Pas encore | aucune sauvegarde automatique n'a tourné sur ce poste |
+
+La phrase dit quoi faire ; dessous, le dossier, le nombre de sauvegardes
+gardées, la place libre et le dernier ménage des journaux.
+
+Sur le serveur, la tâche planifiée « Sauvegarde » tourne à 12:30 et 22:30 ;
+`Sauvegarder-WMS.bat` en fait une tout de suite, `Restaurer-WMS.bat` revient à
+l'une d'elles. Sur un poste de travail, la même commande :
+`python manage.py sauvegarder` (SQLite : copie à chaud, intégrité vérifiée).
+Détail : [`docs/guide-serveur.md`](guide-serveur.md), § 8.
 
 ## Journaux
 
-Les erreurs sont écrites dans `logs/wms.log` (rotation automatique, 5 fichiers de 2 Mo).
-C'est le premier endroit à regarder quand un opérateur signale un problème de la veille.
+Les erreurs et les gestes sensibles sont écrits dans `logs/wms.log` (rotation
+automatique, 6 fichiers de 2 Mo). C'est le premier endroit à regarder quand un
+opérateur signale un problème de la veille. Sur le serveur, `logs/service.log`
+dit pourquoi le WMS n'aurait pas démarré ; la tâche « Nettoyage » efface chaque
+semaine les journaux de PostgreSQL de plus de 30 jours et mesure ce que pèse
+tout le reste (`logs/nettoyage.log`) — détail au § 9 du guide serveur.
 

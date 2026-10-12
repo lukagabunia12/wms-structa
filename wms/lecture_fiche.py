@@ -40,25 +40,43 @@ def normaliser(texte):
     return re.sub(r"\s+", " ", sans_accent).strip().upper()
 
 
+#: Fin d'un numéro : ni chiffre ni lettre juste après. Sans cette garde,
+#: « 25_49_400 » était lu « 25_49_40 » — le dernier groupe s'arrêtait à deux
+#: caractères — et c'est une AUTRE cabine, bien réelle, qui était proposée au
+#: rangement ou à la sortie. Un numéro collé à un mot (« 26_03_47QUATTRO »)
+#: n'est plus lu du tout : l'opérateur le tape, plutôt que d'en deviner un.
+_FIN = r"(?![0-9A-Za-z|])"
+
+
+def _assez_de_chiffres(brut):
+    """Au moins trois vrais chiffres : « BLOGS » se traduirait en « 81065 »."""
+    return sum(c.isdigit() for c in brut) >= 3
+
+
 def _numero(valeur, meme_ligne=False):
-    """« 26_03_47 », « 26-03-47 », « 26 03 47 », « 2G_O3_47 » → « 26_03_47 »."""
+    """« 26_03_47 », « 26-03-47 », « 26 03 47 », « 2G_O3_47 » → « 26_03_47 ».
+
+    Le dernier groupe compte un à trois chiffres, comme le numéro lui-même
+    (`Cabine.MOTIF_NUMERO`) : « 26_03_7 » et « 25_49_400 » existent.
+    """
     # Le séparateur peut être un espace seul : l'OCR perd fréquemment les tirets bas.
-    m = re.search(rf"([{_CH}]{{2}})[\s_\-–—.]+([{_CH}]{{2}})"
-                  rf"[\s_\-–—.]+([{_CH}]{{2}})", valeur)
-    if m:
+    m = re.search(rf"(?<![0-9])([{_CH}]{{2}})[\s_\-–—.]+([{_CH}]{{2}})"
+                  rf"[\s_\-–—.]+([{_CH}]{{1,3}}){_FIN}", valeur)
+    if m and _assez_de_chiffres("".join(m.groups())):
         groupes = [g.translate(_CHIFFRES) for g in m.groups()]
         if all(g.isdigit() for g in groupes):
             return "_".join(groupes)
     if not meme_ligne:
         return None
     # Les tirets bas sont fins : sur une photo d'écran, une impression pâle ou un
-    # cliché de biais, l'OCR les avale et rend « 260347 ». On accepte six chiffres
-    # d'affilée — mais **uniquement sur la ligne de l'étiquette**. Ailleurs, six
-    # chiffres seraient tout aussi bien le numéro de commande, qui en compte six.
-    for brut in re.findall(rf"[{_CH}]{{6}}", valeur):
+    # cliché de biais, l'OCR les avale et rend « 260347 ». On accepte cinq à
+    # sept chiffres d'affilée — deux pour l'année, deux pour la semaine, le
+    # reste pour le rang — mais **uniquement sur la ligne de l'étiquette**.
+    # Ailleurs, six chiffres seraient tout aussi bien le numéro de commande.
+    for brut in re.findall(rf"(?<![0-9A-Za-z])([{_CH}]{{5,7}}){_FIN}", valeur):
         corrige = brut.translate(_CHIFFRES)
-        if corrige.isdigit():
-            return f"{corrige[0:2]}_{corrige[2:4]}_{corrige[4:6]}"
+        if corrige.isdigit() and _assez_de_chiffres(brut):
+            return f"{corrige[0:2]}_{corrige[2:4]}_{corrige[4:]}"
     return None
 
 

@@ -15,6 +15,8 @@ import io
 from django.http import HttpResponse
 from django.utils import timezone
 
+from .export_inventaire import cellule
+
 COLONNES = [
     "Famille", "Code élément", "Désignation", "Fournisseur", "N° article",
     "Ancienne génération", "Emplacement", "Place", "Quantité",
@@ -41,7 +43,7 @@ def reponse(articles, prefixe="stock-mp"):
     graveur = csv.writer(tampon, delimiter=";", lineterminator="\r\n")
     graveur.writerow(COLONNES)
     for ligne in _lignes(articles):
-        graveur.writerow(ligne)
+        graveur.writerow([cellule(v) for v in ligne])
     nom = f"{prefixe}-{timezone.localdate():%Y-%m-%d}.csv"
     r = HttpResponse(tampon.getvalue(), content_type="text/csv; charset=utf-8")
     r["Content-Disposition"] = f'attachment; filename="{nom}"'

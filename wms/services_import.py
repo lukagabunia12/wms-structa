@@ -110,13 +110,41 @@ def _entier(valeur, defaut=1):
     return n if 0 < n < 32767 else defaut
 
 
+def _recopier_fusions(feuille, lignes):
+    """Recopie la valeur d'une cellule fusionnée VERTICALEMENT sur chaque ligne
+    qu'elle couvre. Rend le nombre de plages recopiées.
+
+    Un chantier, une semaine ou un modèle fusionnés sur plusieurs lignes ne
+    portent leur valeur que dans la première cellule : les autres lignes
+    étaient importées vides, sans un mot. Le modèle perdu faisait d'un QUATTRO
+    une cabine ordinaire, et la règle des grands modèles ne s'appliquait plus.
+    Seules les fusions verticales sous les en-têtes sont recopiées : une
+    fusion horizontale ne dit pas à quelle colonne appartient sa valeur.
+    """
+    recopiees = 0
+    for plage in feuille.merged_cells.ranges:
+        if plage.min_col != plage.max_col or plage.min_row < 2:
+            continue
+        colonne = plage.min_col - 1
+        haut = plage.min_row - 1
+        if haut >= len(lignes) or colonne >= len(lignes[haut]):
+            continue
+        valeur = lignes[haut][colonne]
+        for rang in range(plage.min_row, min(plage.max_row, len(lignes))):
+            if colonne < len(lignes[rang]):
+                lignes[rang][colonne] = valeur
+        recopiees += 1
+    return recopiees
+
+
 def lire_classeur(fichier):
     """Rend (en-têtes normalisées, lignes brutes). Ne valide rien encore.
 
-    `read_only` : le fichier de production fait un demi-mégaoctet aujourd'hui et
-    grossit d'une semaine de production à l'autre. Le mode normal d'openpyxl
-    construit tout l'arbre en mémoire, sur un poste d'entrepôt qui tourne déjà
-    le serveur.
+    Le classeur est lu en entier, pas en flux (`read_only`) : le mode flux
+    d'openpyxl ignore les cellules fusionnées, et les lignes qu'une fusion
+    couvre arrivaient vides. Le fichier de production fait un demi-mégaoctet :
+    le lire en entier coûte une seconde et quelques dizaines de mégaoctets,
+    une fois par import.
     """
     try:
         import openpyxl
@@ -126,7 +154,7 @@ def lire_classeur(fichier):
             "lancez « pip install -r requirements.txt », puis redémarrez.") from e
 
     try:
-        classeur = openpyxl.load_workbook(fichier, data_only=True, read_only=True)
+        classeur = openpyxl.load_workbook(fichier, data_only=True)
     except Exception as e:
         raise ErreurImport(
             "Ce fichier n'est pas un classeur Excel lisible (.xlsx attendu). "
@@ -134,7 +162,15 @@ def lire_classeur(fichier):
 
     try:
         feuille = classeur[classeur.sheetnames[0]]
-        lignes = feuille.iter_rows(values_only=True)
+        if feuille.max_row > LIGNES_MAX + 1:
+            raise ErreurImport(
+                f"Fichier trop volumineux : plus de {LIGNES_MAX} lignes. "
+                "Est-ce bien le fichier de production ?")
+        # Depuis A1, pour que (ligne, colonne) d'une fusion tombe juste.
+        tableau = [list(v) for v in feuille.iter_rows(min_row=1, min_col=1,
+                                                      values_only=True)]
+        _recopier_fusions(feuille, tableau)
+        lignes = iter(tableau)
         try:
             entetes_brutes = next(lignes)
         except StopIteration:

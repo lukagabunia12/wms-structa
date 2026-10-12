@@ -257,8 +257,13 @@ class Emplacement(models.Model):
 
         La règle est celle du réglage en nombre (`services_mp.bilan_usage`) :
         une seule définition, la même phrase partout.
+
+        Le code est normalisé ICI, avant le contrôle d'unicité : « ac550 »
+        passait le contrôle de l'administration (la base porte « AC550 »), puis
+        `save()` le mettait en majuscules et la contrainte sautait en erreur 500.
         """
         super().clean()
+        self.code = (self.code or "").strip().upper()
         if not self.pk:
             return
         avant = Emplacement.objects.filter(pk=self.pk).first()

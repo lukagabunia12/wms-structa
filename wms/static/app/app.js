@@ -229,6 +229,12 @@ async function listePaginee(boite, chemin, o) {
   const cle = o.cle || 'id';
   const sep = chemin.includes('?') ? '&' : '?';
   let page = 1, tout = [], total = 0, encore = false;
+  /* Une seule liste vivante par boîte. Taper « 26_03_4 » puis « 26_03_47 »
+     lance deux recherches ; si la première répond après la seconde, elle
+     repeignait la boîte avec les résultats d'une question qu'on ne pose plus. */
+  const jeton = {};
+  boite.__liste = jeton;
+  const perimee = () => boite.__liste !== jeton;
 
   const dessiner = () => {
     const reste = Math.max(0, total - tout.length);
@@ -252,12 +258,14 @@ async function listePaginee(boite, chemin, o) {
   const charger = async () => {
     try {
       const d = await api(`${chemin}${sep}page=${page}`);
+      if (perimee()) return;
       const res = Array.isArray(d) ? d : (d.results || []);
       total = Array.isArray(d) ? res.length : (d.count || 0);
       encore = !Array.isArray(d) && Boolean(d.next);
       tout = tout.concat(res);
       dessiner();
     } catch (e) {
+      if (perimee()) return;
       boite.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     }
   };
@@ -271,6 +279,9 @@ async function listePaginee(boite, chemin, o) {
 // erreurs par champ ({"chantier":["…"]}) qui étaient auparavant réduites à « Erreur 400 ».
 function messageErreur(data, status) {
   if (!data) return 'Erreur ' + status;
+  // Certains refus sont une simple liste de phrases : lue comme un objet, elle
+  // s'affichait « 0 : AC570 porte encore 26_03_48… ».
+  if (Array.isArray(data)) return data.join(' ') || ('Erreur ' + status);
   let m = data.erreur || data.detail;
   if (!m && typeof data === 'object') {
     const parts = [];
@@ -335,8 +346,20 @@ async function apiAll(path) {
 function logout() {
   token = ''; USER = '';
   // Les droits partent avec le compte : le suivant reçoit les siens au boot.
-  DROITS = {}; LIBELLES_DROITS = {};
+  DROITS = {}; LIBELLES_DROITS = {}; DROITS_LUS = false;
   localStorage.removeItem('wms_token'); localStorage.removeItem('wms_user');
+  /* Ce que le compte précédent avait en cours ne passe pas au suivant. Sur un
+     téléphone partagé, le cariste suivant voyait « Rangement en cours :
+     26_03_50 — reprendre », et un toucher rangeait la cabine d'un autre sous
+     son nom. La caméra s'éteint, la fenêtre ouverte se ferme. */
+  repartirRangement();
+  CABINE_A_RANGER = null;
+  try { localStorage.removeItem('wms_recents_cab'); } catch (_) {}
+  arreterCamera();
+  // Fermée sans rappeler la suite prévue : elle redessinerait un écran du
+  // compte qui vient de partir.
+  if (MODALE) MODALE.surFermeture = null;
+  fermerModale();
   // Le compte suivant n'a peut-être ni la cloche ni le droit de régler les
   // seuils : rien ne doit en rester.
   fermerAlertes();
@@ -365,7 +388,10 @@ async function doLogin(u, p) {
     throw new Error('Identifiant ou mot de passe incorrect.');
   }
   if (r.status === 429) {
-    throw new Error('Trop d’essais rapprochés. Attends une minute et recommence.');
+    // Le serveur dit combien attendre : le frein aux essais de mot de passe
+    // bloque quinze minutes, pas une.
+    const d = await r.json().catch(() => null);
+    throw new Error((d && d.detail) || 'Trop d’essais de connexion. Attends quelques minutes et recommence.');
   }
   if (!r.ok) {
     throw new Error(`Le serveur a répondu ${r.status}. Préviens l’administrateur du WMS.`);
@@ -592,14 +618,25 @@ let RANG = -1;              // où l'on se trouve dans cette pile
 let RETOUR_EN_COURS = false;
 
 function ouvrirEcran(rendu, cle) {
+  /* L'écran courant (`ECRAN`) suit ce qui s'ouvre, à chaque fois qu'on le
+     rejoue. Une fiche ouverte depuis le Stock gardait la clé « cabines », un
+     écran rafraîchi en direct : au premier mouvement d'un collègue, la fiche
+     se redessinait sous les doigts, et la place qu'on venait de toucher
+     disparaissait avec le bouton « Ranger ». */
+  const rejouable = cle ? () => { ECRAN = cle; return rendu(); } : rendu;
   // Pendant un retour, on rejoue un écran déjà empilé : le réempiler créerait
   // une entrée par appui sur « retour », et le bouton ne remonterait jamais.
-  if (RETOUR_EN_COURS) return rendu();
+  if (RETOUR_EN_COURS) return rejouable();
+  // Un nouvel écran éteint la caméra de l'ancien. Seuls le menu et le retour
+  // le faisaient : ouvrir une suggestion de « Trouver » ou une alerte de la
+  // cloche laissait le lecteur tourner sans image — voyant allumé, batterie
+  // qui fond, et le rafraîchissement en direct bloqué.
+  arreterCamera();
   RANG += 1;
   PILE = PILE.slice(0, RANG);
-  PILE.push(rendu);
-  try { history.pushState({ rang: RANG }, '', '#' + cle); } catch (_) {}
-  return rendu();
+  PILE.push(rejouable);
+  try { history.pushState({ rang: RANG }, '', '#' + (cle || ECRAN)); } catch (_) {}
+  return rejouable();
 }
 
 /** Redessine l'écran courant à l'identique, sans toucher à l'historique. */
@@ -672,6 +709,12 @@ function rafraichissementPossible() {
 
 async function battement() {
   if (!token) return;
+  // Droits pas encore lus (réseau au démarrage) : on réessaie, puis l'écran se
+  // redessine avec les gestes enfin permis.
+  if (!DROITS_LUS) {
+    await lireDroits([0]);
+    if (DROITS_LUS) { toast('Connexion rétablie : droits du compte chargés.', 'ok'); rejouerEcran(); }
+  }
   let p;
   try { p = await api('/pouls/'); } catch (_) { return; }   // hors réseau : on réessaiera
   // La cloche suit le pouls sur TOUS les écrans, saisie en cours comprise :
@@ -1836,6 +1879,8 @@ async function montrerEmplacement(emp, opts = {}) {
         $('#wOk').onclick = async () => {
           const choix = placeW();
           if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
+          const bouton = $('#wOk');
+          bouton.disabled = true;
           try {
             const corps = { emplacement: emp.id };
             if (choix) corps.place = choix;
@@ -1844,7 +1889,7 @@ async function montrerEmplacement(emp, opts = {}) {
             CABINE_A_RANGER = null;
             ouvrirStatut(c, `Rangée en ${d.code}${corps.place ? ' · place ' + corps.place : ''}. Quel est son état ?`,
                          () => redessiner());
-          } catch (e) { toast(e.message, 'err'); }
+          } catch (e) { bouton.disabled = false; toast(e.message, 'err'); }
         };
       } else if (d.complet) {
         $('#eAct').innerHTML = `<div class="banner" style="margin-top:12px">Cabine ${esc(c.numero)} en attente, mais cet emplacement est complet : scanne-en un autre.</div>`;
@@ -1874,22 +1919,36 @@ async function montrerEmplacement(emp, opts = {}) {
             const cab = res.find(x => String(x.id) === it.dataset.id);
             $('#cres').innerHTML = '';
             champ.value = cab.numero;
+            /* Déjà rangée ailleurs : le dire, et laisser choisir entre la
+               déplacer et lui ajouter cet emplacement. Sans rien dire, le
+               rangement la DÉPLAÇAIT et son ancienne place se vidait. */
+            const ailleurs = cab.rangee && cab.position;
             // En capacité illimitée il n'y a pas de place à choisir.
-            $('#cform').innerHTML = blocPlaces(d)
-              + `<button class="btn orange" id="cok">Ranger ${esc(cab.numero)}</button>`;
+            $('#cform').innerHTML = (ailleurs ? `<div class="banner">${esc(cab.numero)} est
+                actuellement en <b>${esc(cab.position)}</b>. La ranger ici la
+                <b>déplace</b> : cette place sera libérée.</div>` : '')
+              + blocPlaces(d)
+              + `<button class="btn orange" id="cok">${ailleurs ? 'La déplacer en ' + esc(d.code)
+                                                               : 'Ranger ' + esc(cab.numero)}</button>`
+              + (ailleurs ? `<button class="btn ghost" id="cajout">Ajouter cet emplacement — elle
+                  reste aussi en ${esc(cab.position)}</button>` : '');
             const placeC = choixPlace(d, $('#cok'));
-            $('#cok').onclick = async () => {
+            const ranger = async (bouton, ajouter) => {
               const choix = placeC();
               if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
+              bouton.disabled = true;
               try {
                 const corps = { emplacement: emp.id };
                 if (choix) corps.place = choix;
+                if (ajouter) corps.ajouter = true;
                 await api(`/cabines/${cab.id}/ranger/`, { method: 'POST', body: corps });
                 toast('Cabine rangée', 'ok');
                 ouvrirStatut(cab, `Rangée en ${d.code}${corps.place ? ' · place ' + corps.place : ''}. Quel est son état ?`,
                              () => redessiner());
-              } catch (e) { toast(e.message, 'err'); }
+              } catch (e) { bouton.disabled = false; toast(e.message, 'err'); }
             };
+            $('#cok').onclick = () => ranger($('#cok'), false);
+            if ($('#cajout')) $('#cajout').onclick = () => ranger($('#cajout'), true);
           });
         } catch (e) { toast(e.message, 'err'); }
       }, 250);
@@ -1901,30 +1960,14 @@ async function montrerEmplacement(emp, opts = {}) {
           l'entrepôt et rejoint les archives.</div>
         <div class="list">${occupants.map(p => `<div class="item" data-cab="${p.cabine.id}">
           <div class="r">${d.illimite ? '' : p.code + ' · '}${esc(p.cabine.numero)} ${badgeStatut(p.cabine)}</div>
-          <div class="d">Chantier ${p.cabine.chantier ? esc(p.cabine.chantier) : '<em>à affecter</em>'}</div></div>`).join('')}</div>
-        <div id="sform"></div>`;
+          <div class="d">Chantier ${p.cabine.chantier ? esc(p.cabine.chantier) : '<em>à affecter — il sera demandé</em>'}</div></div>`).join('')}</div>`;
       $('#eAct').querySelectorAll('[data-cab]').forEach(it => it.onclick = async () => {
         const cab = occupants.find(p => String(p.cabine.id) === it.dataset.cab).cabine;
-        if (!cab.chantier) {
-          // Règle métier : pas de sortie sans chantier, quel que soit le type.
-          $('#sform').innerHTML = `<div class="banner">Cette cabine n’a pas de chantier : affecte-le avant de l’envoyer.</div>
-            ${champChantier('scha', '')}
-            <button class="btn orange" id="sok">Affecter puis envoyer</button>`;
-          $('#sok').onclick = async () => {
-            try {
-              await api(`/cabines/${cab.id}/chantier/`, { method: 'POST', body: { chantier: $('#scha').value } });
-              if (!(await envoyerCabine(cab))) return;
-              toast(cab.numero + ' envoyée', 'ok');
-              redessiner();
-            } catch (e) { toast(e.message, 'err'); }
-          };
-          return;
-        }
-        try {
-          if (!(await envoyerCabine(cab))) return;
-          toast(cab.numero + ' envoyée — ' + d.code + ' libéré', 'ok');
-          redessiner();
-        } catch (e) { toast(e.message, 'err'); }
+        // Règle métier : pas de sortie sans chantier, quel que soit le type —
+        // `sortirAvecChantier` le demande, l'enregistre, puis sort la cabine.
+        // L'écran se redessine aussi quand la sortie est abandonnée après que
+        // le chantier a été posé : la liste doit le montrer.
+        await sortirAvecChantier(cab, () => redessiner());
       });
     };
   } catch (e) { zone.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
@@ -2217,17 +2260,8 @@ async function ouvrirScanFiche(emp, d, redessiner) {
 async function lireFichePourRangement(fichier, emp, d, redessiner) {
   if (!fichier) return;
   const etat = $('#fEtat');
-  etat.innerHTML = '<div class="meta">Lecture de la photo en cours… (quelques secondes)</div>';
   try {
-    const r = await fetchReseau(API + '/cabines/lire-fiche/', {
-      method: 'POST',
-      headers: token ? { Authorization: 'Token ' + token } : {},
-      body: (() => { const c = new FormData(); c.append('photo', fichier); return c; })(),
-    });
-    const txt = await r.text();
-    let rep = null;
-    try { rep = txt ? JSON.parse(txt) : null; } catch (_) { throw new Error('Réponse illisible du serveur.'); }
-    if (!r.ok) throw new Error(messageErreur(rep, r.status));
+    const rep = await envoyerPhotoFicheServeur(fichier, etat);
 
     if (rep.cabine_existante) {
       etat.innerHTML = `<div class="banner" style="background:var(--ok-tint);color:var(--ok)">
@@ -2409,6 +2443,12 @@ function ouvrirStatut(cabine, contexte, apres, opts = {}) {
   const proposes = opts.statuts
     ? STATUTS_PROPOSES.filter(([code]) => opts.statuts.includes(code))
     : STATUTS_PROPOSES;
+  /* `apres` est appelé UNE fois, quelle que soit la façon de quitter : les deux
+     boutons, mais aussi le ✕, le voile, Échap ou le retour d'Android. Ces
+     derniers ne rappelaient rien, et l'écran restait figé sur un bouton
+     désactivé. */
+  let fini = false;
+  const terminer = (valeur) => { if (fini) return; fini = true; if (apres) apres(valeur); };
   modale(`Statut de ${esc(cabine.numero)}`, `
     <div class="meta">${esc(contexte)}</div>
     ${blocQuarantaine(cabine)}
@@ -2423,7 +2463,7 @@ function ouvrirStatut(cabine, contexte, apres, opts = {}) {
     <div class="row" style="margin-top:12px">
       <button class="btn orange" id="stOk" style="margin-top:0">Enregistrer le statut</button>
       <button class="btn ghost" id="stNon" style="margin-top:0">Laisser tel quel</button>
-    </div>`);
+    </div>`, { surFermeture: () => terminer(null) });
 
   let choisi = actuel;
   const cases = Array.from(document.querySelectorAll('#stListe .statut'));
@@ -2448,23 +2488,25 @@ function ouvrirStatut(cabine, contexte, apres, opts = {}) {
   });
   majMotif();
 
-  $('#stNon').onclick = () => { fermerModale(); if (apres) apres(null); };
+  $('#stNon').onclick = () => fermerModale();
   $('#stOk').onclick = async () => {
     const motif = ($('#stMotif').value || '').trim();
-    if (choisi === actuel) { fermerModale(); if (apres) apres(null); return; }
+    if (choisi === actuel) { fermerModale(); return; }
     if (choisi === 'quarantaine' && !motif) {
       $('#stManque').textContent = 'Sans motif, personne ne saura quoi réparer '
                                  + 'pour la lever.';
       $('#stMotif').focus();
       return;
     }
+    const bouton = $('#stOk');
+    bouton.disabled = true;
     try {
       await api(`/cabines/${cabine.id}/statut/`, { method: 'POST', body: { statut: choisi, motif } });
       const nom = (proposes.find(s => s[0] === choisi) || [])[1] || choisi;
       toast(cabine.numero + ' : ' + nom, 'ok');
+      terminer(choisi);
       fermerModale();
-      if (apres) apres(choisi);
-    } catch (e) { toast(e.message, 'err'); }
+    } catch (e) { bouton.disabled = false; toast(e.message, 'err'); }
   };
 }
 
@@ -2494,6 +2536,68 @@ async function sortirDefinitivement(cabine, apres) {
   return frais;
 }
 
+/* Sortir exige un n° de chantier, pour tous les types. Le geste « La sortir »
+   s'ÉTEIGNAIT sur une cabine sans chantier, avec « corrige la fiche » — or
+   corriger une fiche demande la case `cab_corriger`, que le cariste n'a souvent
+   pas, alors qu'affecter un chantier relève de la même case que sortir
+   (`cab_envoyer`). Il restait devant un bouton gris sans issue.
+
+   Le geste DEMANDE donc le chantier, l'enregistre, puis continue la sortie.
+   Rend la cabine sortie, ou null. Si le chantier est posé mais que la sortie
+   est abandonnée ensuite, `apres` est rappelé quand même : l'écran doit
+   montrer le chantier qui vient d'être enregistré. */
+async function sortirAvecChantier(cabine, apres) {
+  if (refuseSansDroit('cab_envoyer')) return null;
+  if (cabine.chantier) return sortirDefinitivement(cabine, apres);
+  const chantier = await demanderChantier(cabine);
+  if (!chantier) return null;
+  const frais = await sortirDefinitivement({ ...cabine, chantier }, apres);
+  if (!frais && apres) apres(null);
+  return frais;
+}
+
+/** La fenêtre « n° de chantier » d'une cabine qui va sortir : contrôle la
+    forme, enregistre, et rend le chantier posé — '' si l'opérateur renonce. */
+function demanderChantier(cabine) {
+  return new Promise((resoudre) => {
+    let pose = '';
+    const corps = modale(`Chantier de ${cabine.numero}`, `
+      <p class="modal-texte">Une cabine ne sort pas sans n° de chantier. Il sera
+        enregistré sur sa fiche, puis la sortie continue.</p>
+      ${champChantier('mCha', '')}
+      <div class="manque" id="mChaManque"></div>
+      <div class="modal-actions">
+        <button class="btn orange" type="button" id="mChaOk">Enregistrer et continuer</button>
+        <button class="btn ghost" type="button" id="mChaNon">Annuler</button>
+      </div>`, { surFermeture: () => resoudre(pose) });
+    const champ = corps.querySelector('#mCha');
+    const dit = corps.querySelector('#mChaManque');
+    const ok = corps.querySelector('#mChaOk');
+    const refus = (texte) => {
+      dit.textContent = texte;
+      champ.setAttribute('aria-invalid', 'true');
+      champ.focus();
+    };
+    corps.querySelector('#mChaNon').onclick = fermerModale;
+    champ.onkeydown = (ev) => { if (ev.key === 'Enter') ok.click(); };
+    ok.onclick = async () => {
+      const valeur = champ.value.trim();
+      if (!valeur) { refus('Le n° de chantier est obligatoire pour sortir.'); return; }
+      if (!motifChantier().test(valeur)) {
+        refus(`« ${valeur} » n’est pas un n° de chantier. ${aideChantier()}`);
+        return;
+      }
+      ok.disabled = true;
+      try {
+        await api(`/cabines/${cabine.id}/chantier/`, { method: 'POST', body: { chantier: valeur } });
+      } catch (e) { ok.disabled = false; refus(e.message); return; }
+      pose = valeur;
+      fermerModale();
+    };
+    champ.focus();
+  });
+}
+
 /** Range la zone de prise de vue : la cabine est identifiée, on passe à la place. */
 function replierPriseDeVue() {
   arreterCamera();
@@ -2507,38 +2611,44 @@ function proposerRangement(cabine, emp, d, redessiner, cible) {
   const zone = $(cible || '#fSuite') || $('#eAct');
   if (!zone) return;
   replierPriseDeVue();
-  // Une cabine n'occupe aujourd'hui qu'UN emplacement : la ranger ailleurs la
-  // DÉPLACE. Sans cet avertissement, rescanner la même fiche à un second rack
-  // vidait le premier en silence — et personne ne s'en apercevait avant d'aller
-  // chercher la cabine là où elle n'était plus.
-  const ailleurs = cabine.emplacement && cabine.emplacement_code
-                   && cabine.emplacement_code !== d.code;
+  // Déjà rangée : la ranger ici la DÉPLACE. Sans cet avertissement, rescanner
+  // la même fiche à un second rack vidait le premier en silence — et personne
+  // ne s'en apercevait avant d'aller chercher la cabine là où elle n'était
+  // plus. L'avertissement testait un champ que l'API ne rend pas : il ne
+  // s'affichait jamais. `rangee` et `position` sont ceux qu'elle rend.
+  const ailleurs = cabine.rangee && cabine.position;
   zone.innerHTML = `<div class="card" style="margin-top:10px">
       <div class="r" style="font-size:16px;font-weight:700">${esc(cabine.numero)} ${badgeStatut(cabine)}</div>
       <div class="d">Chantier ${cabine.chantier ? esc(cabine.chantier) : '<em>à affecter</em>'}${cabine.modele ? ' · ' + esc(cabine.modele) : ''}</div>
       ${ailleurs ? `<div class="banner" style="margin-top:10px">Cette cabine est
-          actuellement en <b>${esc(cabine.emplacement_code)}</b>${cabine.place ? ' · place ' + esc(cabine.place) : ''}.
-          La ranger ici la <b>déplace</b> : ${esc(cabine.emplacement_code)} sera libéré.</div>` : ''}
+          actuellement en <b>${esc(cabine.position)}</b>. La ranger ici la
+          <b>déplace</b> : cette place sera libérée.</div>` : ''}
       ${blocPlaces(d)}
       <button class="btn orange" id="pOk">${ailleurs
-        ? 'Déplacer de ' + esc(cabine.emplacement_code) + ' vers ' + esc(d.code)
+        ? 'Déplacer vers ' + esc(d.code)
         : 'Ranger en ' + esc(d.code)}</button>
+      ${ailleurs ? `<button class="btn ghost" id="pAjout">Ajouter cet emplacement — elle
+          reste aussi en ${esc(cabine.position)}</button>` : ''}
     </div>`;
   const place = choixPlace(d, $('#pOk'));
-  $('#pOk').onclick = async () => {
+  const ranger = async (bouton, ajouter) => {
+    const choix = place();
+    if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
+    bouton.disabled = true;
     try {
-      const choix = place();
-      if (!sansPlaceAChoisir(d) && !choix) { toast('Touche la place où tu poses la cabine.', 'err'); return; }
       const corps = { emplacement: emp.id };
       if (choix) corps.place = choix;
+      if (ajouter) corps.ajouter = true;
       await api(`/cabines/${cabine.id}/ranger/`, { method: 'POST', body: corps });
       toast('Cabine ' + cabine.numero + ' rangée en ' + d.code, 'ok');
       noterRecentCabine(cabine);
       arreterCamera();
       ouvrirStatut(cabine, `Rangée en ${d.code}${corps.place ? ' · place ' + corps.place : ''}. Quel est son état ?`,
                    () => redessiner());
-    } catch (e) { toast(e.message, 'err'); }
+    } catch (e) { bouton.disabled = false; toast(e.message, 'err'); }
   };
+  $('#pOk').onclick = () => ranger($('#pOk'), false);
+  if ($('#pAjout')) $('#pAjout').onclick = () => ranger($('#pAjout'), true);
 }
 
 /* ===========================================================================
@@ -2787,37 +2897,54 @@ const ko = (n) => Math.max(1, Math.round(n / 1024));
 const blocLecture = (titre, sous) => `<div class="lecture">
   <div class="l">${esc(titre)}</div><div class="s">${esc(sous)}</div></div>`;
 
+/** La photo d'une fiche, réduite puis envoyée au serveur, avec un délai maximum.
+
+    LE chemin vers `/cabines/lire-fiche/`, pour les trois écrans qui lisent une
+    fiche. Deux d'entre eux envoyaient l'original de l'appareil — 6 à 12 Mo —
+    sans délai maximum : sur un Wi-Fi faible, « Lecture en cours… » restait
+    affiché indéfiniment, et une photo de plus de 12 Mo était refusée.
+    `etat` : où dire ce qui se passe. Rend la réponse du serveur, ou lève une
+    erreur à la phrase lisible. */
+async function envoyerPhotoFicheServeur(fichier, etat) {
+  if (etat) etat.innerHTML = blocLecture('Préparation de la photo…',
+    'Réduction avant l’envoi : l’image de l’appareil pèse trop lourd.');
+  const photo = await preparerPhoto(fichier);
+  if (etat) etat.innerHTML = blocLecture('Lecture de la fiche…',
+    `${ko(photo.size)} Ko envoyés au serveur — quelques secondes.`);
+  // Sans délai maximum, un réseau qui ne répond plus laisse « Lecture en
+  // cours… » indéfiniment : l'opérateur attend devant un écran qui ne dira
+  // jamais rien. Quarante-cinq secondes, puis on rend la main et la saisie.
+  const minuteur = new AbortController();
+  const stop = setTimeout(() => minuteur.abort(), 45000);
+  let r;
+  try {
+    // fetchReseau, comme tout appel : une panne réseau dit « Pas de réseau »,
+    // jamais « Failed to fetch ». L'abandon au bout de 45 s, lui, remonte tel
+    // quel et reçoit ici son propre message.
+    r = await fetchReseau(API + '/cabines/lire-fiche/', {
+      method: 'POST',
+      signal: minuteur.signal,
+      headers: token ? { Authorization: 'Token ' + token } : {},
+      body: (() => { const c = new FormData(); c.append('photo', photo); return c; })(),
+    });
+  } catch (e) {
+    throw new Error(e && e.name === 'AbortError'
+      ? 'Le serveur n’a pas répondu en 45 secondes.'
+      : (e && e.message) || 'Pas de réseau');
+  } finally { clearTimeout(stop); }
+  if (r.status === 401) { logout(); throw new Error('Session expirée, reconnecte-toi.'); }
+  const txt = await r.text();
+  let rep = null;
+  try { rep = txt ? JSON.parse(txt) : null; } catch (_) { throw new Error('Réponse illisible du serveur.'); }
+  if (!r.ok) throw new Error(messageErreur(rep, r.status));
+  return rep;
+}
+
 async function lireFiche(fichier, surCabine, surInconnue, chercher) {
   if (!fichier) return;
   const etat = $('#fEtat');
-  if (etat) etat.innerHTML = blocLecture('Préparation de la photo…',
-    'Réduction avant l’envoi : l’image de l’appareil pèse trop lourd.');
   try {
-    const photo = await preparerPhoto(fichier);
-    if (etat) etat.innerHTML = blocLecture(`Lecture de la fiche…`,
-      `${ko(photo.size)} Ko envoyés au serveur — quelques secondes.`);
-    // Sans délai maximum, un réseau qui ne répond plus laisse « Lecture en
-    // cours… » indéfiniment : l'opérateur attend devant un écran qui ne dira
-    // jamais rien. Quarante-cinq secondes, puis on rend la main et la saisie.
-    const minuteur = new AbortController();
-    const stop = setTimeout(() => minuteur.abort(), 45000);
-    let r;
-    try {
-      r = await fetch(API + '/cabines/lire-fiche/', {
-        method: 'POST',
-        signal: minuteur.signal,
-        headers: token ? { Authorization: 'Token ' + token } : {},
-        body: (() => { const c = new FormData(); c.append('photo', photo); return c; })(),
-      });
-    } catch (e) {
-      throw new Error(e && e.name === 'AbortError'
-        ? 'Le serveur n’a pas répondu en 45 secondes.'
-        : 'Pas de réseau');
-    } finally { clearTimeout(stop); }
-    const txt = await r.text();
-    let rep = null;
-    try { rep = txt ? JSON.parse(txt) : null; } catch (_) { throw new Error('Réponse illisible du serveur.'); }
-    if (!r.ok) throw new Error(messageErreur(rep, r.status));
+    const rep = await envoyerPhotoFicheServeur(fichier, etat);
 
     if (rep.cabine_existante) {
       await arreterCamera();
@@ -2954,11 +3081,12 @@ function blocIntention(c) {
   // sortir une cabine à moitié laisserait une place réservée par un morceau
   // qu'on croit parti.
   const plusieurs = (c.nb_emplacements || 1) > 1;
-  // Sortir exige un n° de chantier, pour tous les types sans exception — et la
-  // case « sortir des cabines ». Le dire ici plutôt que de laisser le geste
-  // échouer après coup.
+  // Sortir demande la case « sortir des cabines » : sans elle, le geste est
+  // éteint et dit pourquoi. Le n° de chantier, lui, n'éteint plus rien — il
+  // est demandé au moment de sortir (`sortirAvecChantier`). « À affecter sur
+  // la fiche » envoyait faire un détour pour un champ qu'on peut saisir ici.
   const sansDroit = !peut('cab_envoyer');
-  const bloque = sansDroit || !c.chantier;
+  const bloque = sansDroit;
   return `<div class="card">
     <div class="sec" style="margin-top:0">Déjà rangée en ${esc(c.position)}</div>
     <div class="meta" style="margin:-2px 0 12px">Que voulez-vous faire ?</div>
@@ -2978,8 +3106,8 @@ function blocIntention(c) {
       <button class="geste" data-intention="sortir"${bloque ? ' disabled' : ''}>
         <span class="ic">${icon('out', 26)}</span>
         <span class="t">La sortir de l’entrepôt</span>
-        <span class="s">${sansDroit ? esc(sansLeDroit('cab_envoyer')) : bloque
-          ? 'Impossible sans n° de chantier : à affecter sur la fiche de la cabine'
+        <span class="s">${sansDroit ? esc(sansLeDroit('cab_envoyer')) : !c.chantier
+          ? 'C’est définitif — son n° de chantier sera demandé avant'
           : `C'est définitif : ${plusieurs ? 'ses emplacements se libèrent'
              : esc(c.position) + ' se libère'}, la cabine part et rejoint les archives`}</span>
       </button>
@@ -2995,7 +3123,13 @@ function brancherIntention(c) {
     if (geste !== 'sortir') { RANGEMENT.intention = geste; etapeRangement(); return; }
     // Un seul geste de sortie dans toute l'application, et il est définitif :
     // la confirmation et le motif sont posés par `envoyerCabine`.
-    const frais = await sortirDefinitivement(c);
+    const frais = await sortirAvecChantier(c, async (sortie) => {
+      if (sortie) return;
+      // Chantier posé, sortie abandonnée : la cabine en mémoire doit le porter,
+      // sinon le geste le redemanderait.
+      try { RANGEMENT.cabine = await api(`/cabines/${c.id}/`); } catch (_) { return; }
+      etapeRangement();
+    });
     if (!frais) return;
     // La cabine est PARTIE : il n'y a plus rien à ranger. On repart à zéro,
     // prêt pour la suivante — proposer de la reposer quelque part serait
@@ -3108,6 +3242,11 @@ function etapePlace() {
       if (choix) corps.place = choix;
       if (ajout) corps.ajouter = true;
       c = await api(`/cabines/${c.id}/ranger/`, { method: 'POST', body: corps });
+      // Rangée : le rangement est TERMINÉ, quoi qu'il advienne de la question
+      // du statut. Fermée d'un ✕, d'un geste « retour » ou d'Échap, elle
+      // laissait l'accueil afficher « Rangement en cours » pour une cabine déjà
+      // posée, avec sa place annoncée libre.
+      repartirRangement();
       noterRecentCabine(c);
       arreterCamera();
       const ou = `${d.code}${choix ? ' · place ' + choix : ''}`;
@@ -3449,21 +3588,7 @@ async function ficheCabine(cabine, retour) {
        Ce bouton était double — « Sortir de l'emplacement » et « Envoyer
        (définitif) » l'un sous l'autre — et l'envoi, ici, sautait la
        confirmation de quarantaine : il appelait `/envoyer/` en direct. */
-    if (sortir) $('#fSortir').onclick = async () => {
-      if (!c.chantier) {
-        $('#fZone').innerHTML = `<div class="banner">N° de chantier obligatoire pour sortir la cabine.</div>
-          ${champChantier('fCha', '')}
-          <button class="btn orange" id="fChaOk">Affecter puis continuer</button>`;
-        $('#fChaOk').onclick = async () => {
-          try {
-            await api(`/cabines/${c.id}/chantier/`, { method: 'POST', body: { chantier: $('#fCha').value } });
-          } catch (e) { toast(e.message, 'err'); return; }
-          sortirDefinitivement(c, () => ficheCabine(c, retour));
-        };
-        return;
-      }
-      sortirDefinitivement(c, () => ficheCabine(c, retour));
-    };
+    if (sortir) $('#fSortir').onclick = () => sortirAvecChantier(c, () => ficheCabine(c, retour));
   } catch (e) { zone.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
@@ -3833,9 +3958,11 @@ function resumeFiltresCab() {
     endroits, c'est exporter autre chose que ce qui est affiché le jour où l'un
     des deux évolue. */
 function requeteCabines() {
-  const vide = FILTRES_CAB_VIDE();
+  // Le tri part TOUJOURS, celui par défaut compris : omis, il laissait le
+  // serveur trier par date de création, alors que l'écran annonçait « N° de
+  // cabine ».
   return Object.entries(FILTRES_CAB)
-    .filter(([k, v]) => v !== '' && !(k === 'ordering' && v === vide.ordering))
+    .filter(([, v]) => v !== '')
     .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
 }
 
@@ -5199,13 +5326,21 @@ async function supprimerEmplacement(e, retour) {
 }
 
 // --- Journal : qui a fait quoi, quand --------------------------------------
+/* Les filtres des journaux vivent ici, pas seulement dans la page : le
+   rafraîchissement en direct redessine l'écran, et les relire dans la page
+   redessinée les remettait à blanc — « 26_03_48 » filtré, trois événements
+   affichés, puis onze au battement suivant. */
+const FILTRE_JOURNAL = { q: '', ty: '' };
+const FILTRE_JOURNAL_MP = { q: '', ty: '' };
+
 async function renderJournal() {
   await refsCabine();
   layout(`<h2 class="title">Journal des cabines</h2>
-    <div class="card"><label for="q">Filtrer</label><input id="q" placeholder="N° de cabine, chantier ou auteur">
-      <label for="ty">Type d'événement</label><select id="ty"><option value="">Tous</option>${(REFS_CABINE.types_mouvement || []).map(t => `<option value="${t.code}">${esc(t.libelle)}</option>`).join('')}</select></div>
+    <div class="card"><label for="q">Filtrer</label><input id="q" placeholder="N° de cabine, chantier ou auteur" value="${esc(FILTRE_JOURNAL.q)}">
+      <label for="ty">Type d'événement</label><select id="ty"><option value="">Tous</option>${(REFS_CABINE.types_mouvement || []).map(t => `<option value="${t.code}"${t.code === FILTRE_JOURNAL.ty ? ' selected' : ''}>${esc(t.libelle)}</option>`).join('')}</select></div>
     <div id="zone"><div class="empty">Chargement…</div></div>`, 'more');
   const charger = () => {
+    FILTRE_JOURNAL.q = $('#q').value; FILTRE_JOURNAL.ty = $('#ty').value;
     const t = $('#q').value.trim(), ty = $('#ty').value;
     const q = [t ? 'search=' + encodeURIComponent(t) : '', ty ? 'type=' + ty : ''].filter(Boolean).join('&');
     return listePaginee($('#zone'), '/mouvements-cabine/?' + q, {
@@ -5247,19 +5382,8 @@ const CHAMPS_ENTREE = [
 async function envoyerPhotoFiche(fichier) {
   if (!fichier) return;
   const etat = $('#ocrEtat');
-  etat.innerHTML = '<div class="meta">Lecture de la photo en cours… (quelques secondes)</div>';
-  const corps = new FormData();
-  corps.append('photo', fichier);
   try {
-    const r = await fetchReseau(API + '/cabines/lire-fiche/', {
-      method: 'POST',
-      headers: token ? { Authorization: 'Token ' + token } : {},
-      body: corps,   // pas de Content-Type : le navigateur pose la frontière multipart
-    });
-    const txt = await r.text();
-    let d = null;
-    try { d = txt ? JSON.parse(txt) : null; } catch (_) { throw new Error('Réponse illisible du serveur.'); }
-    if (!r.ok) throw new Error(messageErreur(d, r.status));
+    const d = await envoyerPhotoFicheServeur(fichier, etat);
 
     let lus = 0;
     CHAMPS_ENTREE.forEach(([cle]) => {
@@ -5333,7 +5457,15 @@ async function renderEntree() {
 /** Le numéro saisi est-il déjà en stock, annoncé par la production, ou inconnu ?
     Trois réponses, trois écrans. L'ordre compte : une cabine déjà en stock ne se
     recrée pas, et le dire tout de suite évite un 400 après onze champs remplis. */
+//: Numéro de la dernière question posée par l'écran d'entrée. Une réponse qui
+//: arrive pour une question plus ancienne est jetée : sur un Wi-Fi lent,
+//: « 26_03_5 » (le temps d'une pause) répondait après « 26_03_52 », et le
+//: bouton proposait de créer 26_03_5 sous le numéro 26_03_52 affiché.
+let QUESTION_ENTREE = 0;
+
 async function interrogerAttendue(numero) {
+  const moi = ++QUESTION_ENTREE;
+  const perimee = () => moi !== QUESTION_ENTREE;
   const etat = $('#eEtat'), suite = $('#eSuite');
   if (!etat || !suite) return;
   if (!numero) { etat.innerHTML = ''; suite.innerHTML = ''; return; }
@@ -5347,8 +5479,26 @@ async function interrogerAttendue(numero) {
   // Déjà en stock ? La question se pose d'abord : `?numero=` cherche « contient »,
   // on retient donc la correspondance exacte et rien d'autre.
   try {
-    const d = await api('/cabines/?numero=' + encodeURIComponent(numero));
+    // `toutes=1` : une cabine envoyée existe encore. Sans lui, l'écran offrait
+    // de « créer » une cabine revenue de chantier, et le serveur refusait le
+    // doublon sans proposer de la remettre en stock.
+    const d = await api('/cabines/?toutes=1&numero=' + encodeURIComponent(numero));
+    if (perimee()) return;
     const deja = (d.results || []).find(c => c.numero === numero);
+    if (deja && deja.envoyee) {
+      etat.innerHTML = `<div class="banner">La cabine ${esc(numero)} existe : elle a été
+        <b>envoyée</b>${deja.envoi_date ? ' le ' + esc(dateCourte(deja.envoi_date)) : ''}.
+        Revenue à l’entrepôt ? Remettez-la en stock plutôt que de la recréer.</div>`;
+      suite.innerHTML = `<div class="card" style="margin-top:12px">
+        ${peut('cab_envoyer') ? '<button class="btn orange" id="eReprendre">La remettre en stock</button>' : ''}
+        <button class="btn ghost" id="eVoir">Ouvrir sa fiche</button></div>`;
+      $('#eVoir').onclick = () => ouvrirEcran(() => ficheCabine(deja, renderEntree), 'fiche');
+      if ($('#eReprendre')) $('#eReprendre').onclick = async () => {
+        const frais = await reprendreCabine(deja);
+        if (frais) ouvrirEcran(() => ficheCabine(frais, renderEntree), 'fiche');
+      };
+      return;
+    }
     if (deja) {
       etat.innerHTML = `<div class="banner">La cabine ${esc(numero)} est <b>déjà enregistrée</b>${deja.position ? ` — rangée en ${esc(deja.position)}` : ''}.</div>`;
       suite.innerHTML = `<div class="card" style="margin-top:12px">
@@ -5356,12 +5506,16 @@ async function interrogerAttendue(numero) {
       $('#eVoir').onclick = () => ouvrirEcran(() => ficheCabine(deja, renderEntree), 'fiche');
       return;
     }
-  } catch (e) { etat.innerHTML = `<div class="banner">${esc(e.message)}</div>`; return; }
+  } catch (e) {
+    if (!perimee()) etat.innerHTML = `<div class="banner">${esc(e.message)}</div>`;
+    return;
+  }
 
   let attendue = null;
   try {
     attendue = await api('/cabines-attendues/' + encodeURIComponent(numero) + '/');
   } catch (_) { attendue = null; }   // 404 : pas dans le fichier, saisie manuelle
+  if (perimee()) return;
 
   if (attendue) { etat.innerHTML = ''; blocAttendue(attendue); return; }
 
@@ -5508,7 +5662,14 @@ async function creerCabineDepuisEntree() {
       return;
     }
   }
-  try { await creerCabine(corps); } catch (e) { toast(e.message, 'err'); }
+  // Un double appui créait deux fois la même cabine : le second se heurtait au
+  // premier, et l'opérateur lisait une erreur alors que la cabine existait.
+  const bouton = $('#eCreer');
+  if (bouton) bouton.disabled = true;
+  try { await creerCabine(corps); } catch (e) {
+    if (bouton) bouton.disabled = false;
+    toast(e.message, 'err');
+  }
 }
 
 /* --- Ranger une cabine : UN écran, trois façons d'y désigner l'emplacement ---
@@ -6380,18 +6541,39 @@ function renderLogin() {
   el().querySelector(essai ? '#go' : '#u').focus();
 }
 
+/* Les droits du compte, lus au démarrage. Une seule lecture ratée — le Wi-Fi
+   qui hoquette à l'ouverture — laissait la session entière en lecture seule,
+   sans un mot : chaque geste grisé, « ton compte n'a pas le droit cab_ranger ».
+   On réessaie, on le dit, et le battement du pouls réessaie ensuite. */
+let DROITS_LUS = false;
+
+async function lireDroits(essais = [0, 1500, 4000]) {
+  for (const attente of essais) {
+    if (attente) await new Promise(r => setTimeout(r, attente));
+    if (!token) return null;            // déconnecté entre-temps (401)
+    try {
+      const moi = await api('/moi/');
+      DROITS = (moi && moi.droits) || {};
+      LIBELLES_DROITS = (moi && moi.libelles_droits) || {};
+      // Le nom affiché vient du serveur : depuis que la casse de l'identifiant
+      // est tolérée, ce qui a été tapé n'est pas forcément l'orthographe du compte.
+      if (moi && (moi.nom || moi.username)) {
+        USER = moi.nom || moi.username;
+        try { localStorage.setItem('wms_user', USER); } catch (_) {}
+      }
+      DROITS_LUS = true;
+      return moi;
+    } catch (_) { /* nouvel essai */ }
+  }
+  return null;
+}
+
 async function boot() {
-  const [, moi] = await Promise.all([
-    rafraichirEmplacements(),
-    api('/moi/').catch(() => null),
-  ]);
-  DROITS = (moi && moi.droits) || {};
-  LIBELLES_DROITS = (moi && moi.libelles_droits) || {};
-  // Le nom affiché vient du serveur : depuis que la casse de l'identifiant est
-  // tolérée, ce qui a été tapé n'est pas forcément l'orthographe du compte.
-  if (moi && (moi.nom || moi.username)) {
-    USER = moi.nom || moi.username;
-    try { localStorage.setItem('wms_user', USER); } catch (_) {}
+  DROITS_LUS = false;
+  await Promise.all([rafraichirEmplacements(), lireDroits()]);
+  if (token && !DROITS_LUS) {
+    toast('Le serveur répond mal : les droits du compte n’ont pas pu être lus. '
+          + 'Nouvel essai automatique dans quelques secondes.', 'err');
   }
   // Premier barreau de la pile : sans lui, le tout premier « retour » sortirait
   // de l'application au lieu de ramener à l'accueil.
@@ -8065,14 +8247,17 @@ function ligneMouvementMP(m) {
 }
 
 async function renderJournalMP() {
+  const option = (valeur, libelle) =>
+    `<option value="${valeur}"${valeur === FILTRE_JOURNAL_MP.ty ? ' selected' : ''}>${libelle}</option>`;
   layout(`<h2 class="title">Journal MP</h2>
     <div class="card"><label for="jq">Filtrer</label>
-      <input id="jq" placeholder="Code, emplacement, auteur ou motif" autocomplete="off" spellcheck="false">
+      <input id="jq" placeholder="Code, emplacement, auteur ou motif" autocomplete="off" spellcheck="false" value="${esc(FILTRE_JOURNAL_MP.q)}">
       <label for="jty">Mouvement</label>
-      <select id="jty"><option value="">Tous</option><option value="entree">Entrées</option><option value="sortie">Sorties</option>
-        <option value="transfert">Changements d’emplacement</option></select></div>
+      <select id="jty">${option('', 'Tous')}${option('entree', 'Entrées')}${option('sortie', 'Sorties')}
+        ${option('transfert', 'Changements d’emplacement')}</select></div>
     <div id="zone"><div class="empty">Chargement…</div></div>`, 'mp');
   const charger = () => {
+    FILTRE_JOURNAL_MP.q = $('#jq').value; FILTRE_JOURNAL_MP.ty = $('#jty').value;
     const t = $('#jq').value.trim(), ty = $('#jty').value;
     const q = [t ? 'search=' + encodeURIComponent(t) : '', ty ? 'type=' + ty : ''].filter(Boolean).join('&');
     listePaginee($('#zone'), '/mp/journal/' + (q ? '?' + q : ''), {
@@ -8234,10 +8419,6 @@ function dessinerGestes() {
   const range = cabineRangee(cabine);
   const partie = cabine.statut === 'envoye';
   const quarantaine = cabine.statut === 'quarantaine';
-  // Sortir et envoyer exigent un n° de chantier pour TOUS les types : c'est la
-  // règle du serveur, autant l'annoncer ici plutôt que d'échouer au bout.
-  const sansChantier = !cabine.chantier
-    ? 'Il faut d’abord un n° de chantier — corrige la fiche.' : '';
   // Un geste dont le compte n'a pas la case est éteint, comme les autres
   // gestes impossibles, et dit laquelle manque.
   const faute = (droit) => (peut(droit) ? '' : sansLeDroit(droit));
@@ -8262,10 +8443,13 @@ function dessinerGestes() {
     // UN seul geste de sortie. Il y en avait deux ici aussi — « la sortir de
     // son emplacement » et « l'envoyer » — aux conséquences opposées et aux
     // libellés jumeaux.
+    // Sans chantier, le geste reste allumé : il le demande avant de sortir
+    // (`sortirAvecChantier`) au lieu de renvoyer vers une correction de fiche.
     gestes.push(gesteBouton('gSortir', 'La sortir de l’entrepôt',
-      range ? `Définitif : ${cabine.position} se libère et la cabine part`
-            : 'Définitif : la cabine part et rejoint les archives',
-      { icone: 'out', empeche: faute('cab_envoyer') || sansChantier }));
+      !cabine.chantier ? 'Définitif — son n° de chantier sera demandé avant'
+        : range ? `Définitif : ${cabine.position} se libère et la cabine part`
+          : 'Définitif : la cabine part et rejoint les archives',
+      { icone: 'out', empeche: faute('cab_envoyer') }));
     gestes.push(quarantaine
       ? gesteBouton('gStatut', 'Lever la quarantaine',
           'Elle redevient conforme', { icone: 'check', empeche: faute('cab_statut') })
@@ -8294,7 +8478,7 @@ function dessinerGestes() {
   sur('#gRanger', () => versRangement(cabine, null));
   sur('#gDeplacer', () => versRangement(cabine, 'deplacer'));
   sur('#gAjouter', () => versRangement(cabine, 'ajouter'));
-  sur('#gSortir', () => sortirDefinitivement(cabine, () => rafraichirGestes()));
+  sur('#gSortir', () => sortirAvecChantier(cabine, () => rafraichirGestes()));
   sur('#gStatut', () => {
     const vers = quarantaine ? 'libre' : 'quarantaine';
     confirmerChangementStatut(cabine, vers, () => rafraichirGestes());

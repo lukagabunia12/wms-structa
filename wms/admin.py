@@ -3,6 +3,7 @@ from datetime import datetime
 
 from django import forms
 from django.contrib import admin, messages
+from django.contrib.admin.forms import AdminAuthenticationForm
 from django.contrib.auth.admin import UserAdmin
 from django.core.exceptions import PermissionDenied
 from django.db import DatabaseError
@@ -12,7 +13,7 @@ from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils import timezone
 
-from . import services_mp, services_remise
+from . import connexion, services_mp, services_remise
 from .models import (ArticleMP, Cabine, Emplacement, MouvementCabine, MouvementMP,
                      Occupation, StockMP, Utilisateur, Zone)
 
@@ -249,6 +250,11 @@ class EmplacementAdmin(admin.ModelAdmin):
     contournait toutes, et détachait en silence les cabines rangées.
     """
     form = EmplacementForm
+    #: Hors service et retour en service passent par l'application : motif
+    #: obligatoire, refus tant qu'une cabine ou du stock est posé, trace au
+    #: journal. Une case « actif » décochée ici retirait du stock un
+    #: emplacement occupé, sans motif — et avec la seule case « régler ».
+    readonly_fields = ("actif", "motif_inactif", "actif_le", "actif_par")
     list_display = ("code", "rack", "usage", "zone_cabine", "mode_places", "staging", "actif")
     list_filter = ("actif", "usage", "mode_places", "zone_cabine")
     search_fields = ("code", "rack", "description")
@@ -291,6 +297,15 @@ class ArticleMPForm(forms.ModelForm):
         donnees = super().clean()
         if not self.instance.pk:
             return donnees
+        if "famille" in donnees and donnees["famille"] != self.instance.famille:
+            # Du stock posé : un carton deviendrait un vitrage, sur un
+            # emplacement de cartons qui ne l'accepterait plus.
+            poses = sorted(set(StockMP.objects.filter(article=self.instance)
+                               .values_list("emplacement__code", flat=True)))
+            if poses:
+                self.add_error("famille", "Ce code a du stock posé sur "
+                                          f"{services_mp.liste_codes(poses)} : sortez-le "
+                                          "avant de changer sa famille.")
         reserves = sorted(self.instance.emplacements_reserves.values_list("code", flat=True))
         if not reserves:
             return donnees
@@ -508,7 +523,23 @@ class ZoneAdmin(admin.ModelAdmin):
     list_editable = ("ordre", "actif")
 
 
+class ConnexionAdministration(AdminAuthenticationForm):
+    """La connexion à l'administration, avec le frein aux essais de mot de passe.
+
+    Le refus lui-même vient du moteur d'authentification ; ce formulaire le
+    consulte d'abord pour dire « trop d'essais, réessayez dans N minutes » au
+    lieu d'un « identifiants incorrects » qui ferait douter du bon mot de passe.
+    """
+
+    def clean(self):
+        reste = connexion.attente(self.request, self.cleaned_data.get("username") or "")
+        if reste:
+            raise forms.ValidationError(connexion.message(reste), code="trop_d_essais")
+        return super().clean()
+
+
 admin.site.site_header = "Administration WMS Structa"
+admin.site.login_form = ConnexionAdministration
 #: L'accueil de l'administration porte un lien vers « Repartir de zéro » pour les
 #: administrateurs : la page vit sous « Cabines » pour des raisons d'adresse,
 #: mais elle remet à zéro tout l'outil, et personne ne la chercherait là.

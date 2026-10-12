@@ -19,13 +19,27 @@ vérifie ensuite qu'aucun fichier interdit ne s'y trouve.
     python outils/preparer_copie.py                 # dossier + archive .zip
     python outils/preparer_copie.py --sans-donnees  # sans exporter les données
     python outils/preparer_copie.py --sans-zip
+    python outils/preparer_copie.py --avec-autorite # emporte l'autorité HTTPS
+
+LE JOUR DE LA BASCULE, l'export doit être la DERNIÈRE écriture du poste : ce
+qui serait saisi ensuite sur le PC ne partirait pas. Le script refuse donc
+d'exporter tant que le WMS tourne sur ce poste (fermez sa fenêtre d'abord).
+
+`--avec-autorite` emporte l'autorité de certification (`ac-structa.crt` et sa
+clé), et elle seule : le serveur signe alors son propre certificat avec la même
+autorité, et les téléphones qui l'ont déjà installée n'ont RIEN à refaire. La
+clé de l'autorité permet de se faire passer pour n'importe quel site auprès de
+ces téléphones : la copie doit voyager sur une clé chiffrée ou un partage
+réservé, et être effacée une fois l'installation faite.
 """
 import argparse
 import os
 import shutil
+import socket
 import subprocess
 import sys
 from datetime import datetime
+from fnmatch import fnmatch
 from pathlib import Path
 
 RACINE = Path(__file__).resolve().parent.parent
@@ -40,7 +54,12 @@ DOSSIERS_EXCLUS = {
     "_a_supprimer": "mise au rebut",
     "_sauvegarde-avant-maj-claude": "ancienne sauvegarde",
     "node_modules": "dépendances JavaScript, non utilisées ici",
+    "sauvegardes": "sauvegardes de ce poste : la base part par reprise/",
+    "staticfiles": "fichiers statiques regroupés, refaits sur place",
 }
+
+#: Dossiers écartés par leur nom (rangements de Ranger-Le-Dossier.bat).
+MOTIFS_DOSSIERS_EXCLUS = ["_archive_*", "WMS-Structa_a-copier_*"]
 
 # Motifs de fichiers exclus.
 FICHIERS_EXCLUS = [
@@ -55,7 +74,17 @@ FICHIERS_EXCLUS = [
     # cette ligne, chaque copie emporte la precedente : la taille double a
     # chaque tour.
     ("*.zip", "archives des copies precedentes"),
+    # Les classeurs de production (clients, chantiers, montants) déposés à la
+    # racine : ils s'importent par l'écran « Fichier de production », ils n'ont
+    # pas à voyager. Ceux de docs/ partent.
+    ("*.xlsx", "classeurs de production"),
+    ("*.xlsm", "classeurs de production"),
 ]
+
+#: Ce que `--avec-autorite` emporte de certificats/ — l'autorité seule. Le
+#: certificat du serveur (wms.crt, wms.key) est refait sur place, pour ses
+#: propres adresses.
+AUTORITE = ["ac-structa.crt", "ac-structa.key", "ac-structa.mobileconfig"]
 
 # Emporté malgré sa taille : tant que le port 8443 n'est pas ouvert, le tunnel
 # est le SEUL chemin d'accès depuis les téléphones. Un serveur livré sans lui
@@ -67,23 +96,48 @@ INTERDITS = [".env", "db.sqlite3", "certificats/ac-structa.key",
              "certificats/wms.key", ".venv"]
 
 
+def dossier_exclu(nom):
+    return nom in DOSSIERS_EXCLUS or any(fnmatch(nom, m) for m in MOTIFS_DOSSIERS_EXCLUS)
+
+
 def exclus(nom, chemin_relatif):
-    if nom in DOSSIERS_EXCLUS:
+    if dossier_exclu(nom):
         return True
-    from fnmatch import fnmatch
+    if fnmatch(nom.lower(), "*.xls[xm]") and chemin_relatif.parts[:1] == ("docs",):
+        return False
     return any(fnmatch(nom, motif) for motif, _ in FICHIERS_EXCLUS)
 
 
+def wms_en_marche():
+    """Vrai si le WMS tourne sur ce poste (8443 ou 8000 répond)."""
+    for port in (8443, 8000):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1)
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+    return False
+
+
 def exporter_donnees(python):
-    """Écrit reprise/ depuis la base active. Rend True si des données suivent."""
+    """Écrit reprise/ depuis la base active. Rend True si l'export a réussi.
+
+    L'ancien dossier reprise/ est effacé AVANT : un export qui échouait laissait
+    l'ancien en place, et le serveur importait sans broncher les données d'une
+    répétition vieille de plusieurs semaines — son manifeste de comptages
+    était cohérent avec lui-même.
+    """
     print("  Export des données depuis la base active…")
+    ancien = RACINE / "reprise"
+    if ancien.exists():
+        shutil.rmtree(ancien)
     r = subprocess.run([python, "manage.py", "reprise_sql", "exporter", "--vers", "reprise"],
                        cwd=str(RACINE), capture_output=True, text=True)
     if r.returncode != 0:
-        print("\n  L'export a échoué — la copie se fera SANS données.")
+        print("\n  L'export a échoué : AUCUNE copie n'est faite.")
         for ligne in [x for x in r.stderr.splitlines() if x.strip()][-4:]:
             print("    " + ligne)
-        print("  Le serveur démarrera alors sur une base vierge.\n")
+        print("\n  Pour une copie volontairement sans données (base vierge sur le")
+        print("  serveur) : Preparer-Copie.bat --sans-donnees\n")
         return False
     for ligne in r.stdout.splitlines():
         if ligne.strip():
@@ -91,8 +145,13 @@ def exporter_donnees(python):
     return True
 
 
-def copier(destination):
-    """Copie l'arborescence en appliquant les exclusions. Rend le nombre de fichiers."""
+def copier(destination, avec_autorite=False, sans_donnees=False):
+    """Copie l'arborescence en appliquant les exclusions. Rend le nombre de fichiers.
+
+    `sans_donnees` écarte aussi `reprise/` : un export resté là d'une copie
+    précédente serait parti dans une copie annoncée « sans données » — toute
+    la base d'alors, mots de passe chiffrés et jetons compris, dans l'archive
+    d'une simple mise à jour du code."""
     nombre = 0
     for dossier, sous_dossiers, fichiers in os.walk(RACINE):
         courant = Path(dossier)
@@ -100,7 +159,8 @@ def copier(destination):
         # Élaguer sur place : os.walk ne descend pas dans ce qu'on retire de
         # `sous_dossiers`. Filtrer après coup copierait quand même .venv, qui
         # pèse plus que tout le reste du projet réuni.
-        sous_dossiers[:] = [d for d in sous_dossiers if d not in DOSSIERS_EXCLUS]
+        sous_dossiers[:] = [d for d in sous_dossiers if not dossier_exclu(d)
+                            and not (sans_donnees and relatif == Path(".") and d == "reprise")]
         cible = destination / relatif
         cible.mkdir(parents=True, exist_ok=True)
         for fichier in fichiers:
@@ -108,6 +168,14 @@ def copier(destination):
                 continue
             shutil.copy2(courant / fichier, cible / fichier)
             nombre += 1
+    if avec_autorite:
+        cible = destination / "certificats"
+        cible.mkdir(parents=True, exist_ok=True)
+        for nom in AUTORITE:
+            source = RACINE / "certificats" / nom
+            if source.is_file():
+                shutil.copy2(source, cible / nom)
+                nombre += 1
     # Les dossiers devenus vides après filtrage n'apportent rien.
     for dossier, sous_dossiers, fichiers in list(os.walk(destination, topdown=False)):
         p = Path(dossier)
@@ -116,17 +184,21 @@ def copier(destination):
     return nombre
 
 
-def controler(destination):
+def controler(destination, avec_autorite=False):
     """Aucun fichier interdit ne doit avoir survécu. Rend la liste des fautifs."""
+    permis = {"certificats/ac-structa.key"} if avec_autorite else set()
     fautifs = []
     for interdit in INTERDITS:
-        if (destination / interdit).exists():
+        if interdit not in permis and (destination / interdit).exists():
             fautifs.append(interdit)
     # Ceinture et bretelles : une recherche large, au cas où un motif serait
     # passé à côté d'un fichier place ailleurs qu'attendu.
     for chemin in destination.rglob("*"):
+        relatif = chemin.relative_to(destination).as_posix()
+        if relatif in permis:
+            continue
         if chemin.is_file() and (chemin.name == ".env" or chemin.suffix in (".key", ".pem")):
-            fautifs.append(str(chemin.relative_to(destination)))
+            fautifs.append(relatif)
     return sorted(set(fautifs))
 
 
@@ -138,6 +210,11 @@ def main():
                    help="ne pas exporter les données de la base")
     p.add_argument("--sans-zip", action="store_true", dest="sans_zip",
                    help="laisser le dossier, sans en faire une archive")
+    p.add_argument("--avec-autorite", action="store_true", dest="avec_autorite",
+                   help="emporter l'autorité de certification : les téléphones "
+                        "n'auront rien à réinstaller")
+    p.add_argument("--pendant-service", action="store_true", dest="pendant_service",
+                   help="exporter même si le WMS tourne (répétition seulement)")
     args = p.parse_args()
 
     horodatage = datetime.now().strftime("%Y%m%d-%H%M")
@@ -158,18 +235,26 @@ def main():
     print(f"  Destination : {destination}\n")
 
     if not args.sans_donnees:
+        if wms_en_marche() and not args.pendant_service:
+            print("  Le WMS tourne sur ce poste : l'export doit être la DERNIÈRE écriture,")
+            print("  sinon ce qui serait saisi après ne partirait pas sur le serveur.")
+            print("  Fermez la fenêtre « WMS Structa - serveur », puis relancez.\n")
+            return 1
         python = RACINE / ".venv" / "Scripts" / "python.exe"
         if not python.is_file():
             python = RACINE / ".venv" / "bin" / "python"
-        if python.is_file():
-            exporter_donnees(str(python))
-        else:
-            print("  .venv introuvable : copie sans export de données.\n")
+        if not python.is_file():
+            print("  .venv introuvable : impossible d'exporter les données.")
+            print("  Pour une copie sans données : --sans-donnees\n")
+            return 1
+        if not exporter_donnees(str(python)):
+            return 1
 
-    nombre = copier(destination)
+    nombre = copier(destination, avec_autorite=args.avec_autorite,
+                    sans_donnees=args.sans_donnees)
     print(f"\n  {nombre} fichier(s) copié(s).")
 
-    fautifs = controler(destination)
+    fautifs = controler(destination, avec_autorite=args.avec_autorite)
     if fautifs:
         print("\n  ANOMALIE : des fichiers qui ne devaient pas partir sont présents :")
         for f in fautifs:
@@ -177,7 +262,15 @@ def main():
         print("\n  La copie est supprimée : elle exposerait des secrets.")
         shutil.rmtree(destination, ignore_errors=True)
         return 1
-    print("  Contrôle : aucun secret dans la copie (ni .env, ni clé privée).")
+    if args.avec_autorite:
+        print("  Contrôle : ni .env, ni clé du serveur. L'autorité de certification est")
+        print("  emportée, AVEC SA CLÉ : les téléphones n'auront rien à réinstaller.")
+    else:
+        print("  Contrôle : ni .env, ni clé privée dans la copie.")
+    if not args.sans_donnees:
+        print("  La copie contient TOUTE la base (comptes, mots de passe chiffrés,")
+        print("  jetons de connexion) : clé USB chiffrée ou partage réservé, et à")
+        print("  effacer une fois le serveur installé.")
 
     tunnel = destination / "cloudflared.exe"
     if tunnel.is_file():
@@ -209,6 +302,11 @@ def main():
     print("   1. installer Python et PostgreSQL (voir docs/guide-serveur.md)")
     print("   2. copier ce dossier où il doit rester")
     print("   3. double-cliquer Installer-WMS.bat\n")
+    if not args.sans_donnees:
+        print("  À partir de maintenant, ne saisissez plus rien sur ce poste : ce")
+        print("  serait perdu. Une fois le serveur en service, empêchez ce poste de")
+        print("  redémarrer le WMS par habitude — ajoutez à son fichier .env :")
+        print("      WMS_REMPLACE_PAR=https://wms.structa.fr:8443\n")
     return 0
 
 

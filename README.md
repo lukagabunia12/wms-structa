@@ -46,7 +46,7 @@ python manage.py runserver        # développement
 
 ## Tests et style
 ```bash
-python manage.py test           # 736 tests côté serveur
+python manage.py test           # 889 tests côté serveur
 ruff check .                    # style et erreurs de code (pip install ruff)
 node outils/verifier_interface.js   # les écrans de l'interface existent et sont joignables
 node outils/tester_interface.js     # le comportement de l'interface, sans navigateur
@@ -128,9 +128,13 @@ puis, sur le poste serveur, `Installer-WMS.bat`. Pas à pas, et liste de ce qu'i
 faut y télécharger : **`docs/guide-serveur.md`**.
 
 ## Mise en serveur
-Détail des choix et de l'exploitation : **`docs/guide-deploiement.md`**. Tout est
-scripté dans `deploiement/` — création de la base, reprise des données avec
-contrôle de comptages, service qui démarre sans session ouverte, sauvegarde planifiée, sonde de supervision.
+Pas à pas sur le serveur Windows, puis l'exploitation : **`docs/guide-serveur.md`**
+(le pourquoi : `docs/guide-deploiement.md`). Tout est scripté — base, reprise des
+données avec contrôle de comptages, trois tâches planifiées (le WMS au démarrage de
+Windows et relancé s'il tombe, sauvegarde vérifiée deux fois par jour avec rotation
+et copie hors machine, ménage hebdomadaire des journaux), restauration en une seule
+transaction, sonde de supervision. Au quotidien : `Etat-WMS.bat`, `Arreter-WMS.bat`,
+`Redemarrer-WMS.bat`, `Sauvegarder-WMS.bat`, `Restaurer-WMS.bat`.
 
 Contrôle avant d'ouvrir le service aux postes :
 ```bash

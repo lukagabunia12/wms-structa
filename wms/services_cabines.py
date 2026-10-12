@@ -16,6 +16,7 @@ import logging
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import (Cabine, CabineAttendue, Emplacement, ModeleCabine,
@@ -97,8 +98,19 @@ def _libelle(emplacement, place):
     return f"{zone} / {position}" if zone else position
 
 
+def _coupe(texte, champ):
+    """Le texte, à la taille de sa colonne. SQLite laisse passer un texte trop
+    long ; PostgreSQL le refuse, en erreur 500 — l'envoi d'une cabine posée sur
+    quatre emplacements aux noms de zone un peu longs échouait ainsi, et
+    seulement en production."""
+    longueur = MouvementCabine._meta.get_field(champ).max_length
+    texte = texte or ""
+    return texte if len(texte) <= longueur else texte[:longueur - 1] + "…"
+
+
 def _tracer(cabine, type, utilisateur=None, depuis="", vers="",
             statut_avant="", statut_apres="", note=""):
+    depuis, vers, note = _coupe(depuis, "depuis"), _coupe(vers, "vers"), _coupe(note, "note")
     return MouvementCabine.objects.create(
         cabine=cabine, cabine_numero=cabine.numero, chantier=cabine.chantier,
         type=type, utilisateur=utilisateur if getattr(utilisateur, "pk", None) else None,
@@ -252,6 +264,13 @@ def emplacements_pour(cabine, texte="", limite=60):
 
     # Une lecture, pour tout l'entrepôt.
     grand = cabine is not None and cabine.prend_tout_l_emplacement
+    # Là où la cabine est déjà : la proposer « ici » n'a pas de sens, et sa
+    # propre présence faisait passer l'emplacement pour « entamé » — le premier
+    # proposé était donc la place d'à côté de celle qu'elle occupe.
+    ici = set()
+    if cabine is not None and cabine.pk:
+        ici = set(Occupation.objects.filter(cabine=cabine, emplacement__isnull=False)
+                  .values_list("emplacement_id", flat=True))
 
     lignes = []
     for e in emplacements:
@@ -260,12 +279,14 @@ def emplacements_pour(cabine, texte="", limite=60):
                                condamnees=set(bloquees), grand=grand)
         # Une aire à capacité illimitée n'a pas de place nommée : elle prend la
         # cabine tant qu'elle est en service.
-        possible = e.actif and not e.est_mp and (e.illimite or bool(libres))
+        possible = (e.actif and not e.est_mp and (e.illimite or bool(libres))
+                    and e.pk not in ici)
         lignes.append({
             "emplacement": e,
             "libres": libres,
             "possible": possible,
-            "pourquoi": _pourquoi_pas(e, grand, prises[e.pk], bloquees, possible),
+            "pourquoi": ("la cabine y est déjà" if e.pk in ici else
+                         _pourquoi_pas(e, grand, prises[e.pk], bloquees, possible)),
             "cabines": combien[e.pk],
             "rang": _rang_emplacement(e, libres),
         })
@@ -546,7 +567,19 @@ def creer_cabine(*, numero, chantier="", type_cabine=Cabine.NORMALE, modele="",
     for champ in CHAMPS_FICHE:
         if fiche.get(champ):
             setattr(cabine, champ, str(fiche[champ]).strip()[:120])
-    cabine.save()   # crée aussi la ligne d'occupation n° 1, vide (invariant)
+    try:
+        # Point de reprise : deux appuis sur « Créer », ou deux opérateurs sur la
+        # même fiche, envoient la même cabine deux fois. La base refuse le
+        # doublon ; sans ce point, l'opérateur lisait une erreur 500.
+        with transaction.atomic():
+            cabine.save()   # crée aussi la ligne d'occupation n° 1, vide (invariant)
+    except IntegrityError:
+        if Cabine.objects.filter(numero=cabine.numero).exists():
+            raise ErreurCabine(
+                f"La cabine {cabine.numero} est déjà enregistrée — elle vient "
+                "probablement de l'être à l'instant. Rouvrez-la plutôt que de la "
+                "recréer.") from None
+        raise
     # Une création forcée se relit dans le journal : le type, puis le motif et le
     # nom de celui qui a passé outre. Sans cette note, la cabine ressemblerait à
     # n'importe quelle autre et l'exception serait introuvable.
@@ -612,10 +645,16 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
     refusée — c'est le modèle qui décide, pas l'écran, et un écran qui ignore
     encore la règle ne doit pas empêcher de ranger.
 
-    Sans précision, une cabine déjà rangée est DÉPLACÉE — le comportement de
-    toujours. `ajouter=True` lui donne un emplacement DE PLUS, sans libérer le
-    premier : c'est le cas de la cabine qui ne tient pas dans un seul
-    emplacement.
+    Trois gestes :
+
+    - sans précision, la cabine est DÉPLACÉE, tout entière : elle quitte TOUS
+      ses emplacements pour celui-ci, comme l'écran l'annonce (« sa place
+      actuelle sera libérée »). Seule la ligne la plus ancienne était déplacée :
+      une cabine répartie sur trois emplacements en laissait deux bloqués par
+      un fantôme, que rien dans l'écran ne permettait plus de libérer ;
+    - `ajouter=True` lui donne un emplacement DE PLUS, sans libérer les
+      autres : la cabine qui ne tient pas dans un seul emplacement ;
+    - `occupation` nommée : seule cette ligne-là change d'emplacement.
     """
     _refuser_si_envoyee(cabine)
     _verrouiller(emplacement)
@@ -627,7 +666,22 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
     if not emplacement.actif:
         raise ErreurCabine(f"L'emplacement {emplacement.code} est inactif.")
 
-    cible = _occupation_de(cabine, occupation, ajouter=ajouter)
+    deplacement = occupation is None and not ajouter
+    if deplacement:
+        lignes = list(cabine.occupations.select_related(
+            "emplacement", "emplacement__zone_cabine").order_by("numero"))
+        if not lignes:
+            # Cabine antérieure au modèle, ou créée hors service : remise d'aplomb.
+            lignes = [Occupation.objects.create(cabine=cabine, numero=1)]
+        occupees = [o for o in lignes if o.emplacement_id]
+        # Les lignes de la cabine ne se gênent pas entre elles : elles partent.
+        propres = Q(cabine=cabine)
+        cible = None
+    else:
+        lignes, occupees = [], []
+        cible = _occupation_de(cabine, occupation, ajouter=ajouter)
+        propres = Q(pk=cible.pk)
+
     place = (place or "").strip().upper()
     if emplacement.illimite:
         if place:
@@ -636,7 +690,7 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
                 "il ne se range pas par place G ou D.")
     elif cabine.prend_tout_l_emplacement:
         place = Occupation.ENTIER
-        voisine = (occupations_presentes(emplacement).exclude(pk=cible.pk)
+        voisine = (occupations_presentes(emplacement).exclude(propres)
                    .exclude(place="").select_related("cabine").first())
         if voisine:
             raise ErreurCabine(
@@ -665,7 +719,7 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
                 f"La place {place} de {emplacement.code} est condamnée : "
                 f"{condamnee}. Choisissez l'autre place, ou levez la "
                 "condamnation depuis l'écran de l'emplacement.")
-        entier = (occupations_presentes(emplacement).exclude(pk=cible.pk)
+        entier = (occupations_presentes(emplacement).exclude(propres)
                   .filter(place=Occupation.ENTIER).select_related("cabine").first())
         if entier:
             raise ErreurCabine(
@@ -673,30 +727,55 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
                 f"{entier.cabine.numero}, un {entier.cabine.modele or 'grand modèle'} : "
                 "il n'y reste aucune place.")
 
-    if cible.emplacement_id == emplacement.pk and cible.place == place:
-        raise ErreurCabine("La cabine est déjà à cet emplacement." if emplacement.illimite
-                           else "La cabine est déjà à cette place.")
+    deja = ("La cabine est déjà à cet emplacement." if emplacement.illimite
+            else "La cabine est déjà à cette place.")
+    if deplacement:
+        # Déplacée là où l'un de ses morceaux se trouve déjà : c'est ce morceau
+        # qui reste, et les autres partent — la cabine est regroupée.
+        meme = next((o for o in occupees
+                     if o.emplacement_id == emplacement.pk and o.place == place), None)
+        if meme is not None and len(occupees) == 1:
+            raise ErreurCabine(deja)
+        cible = meme or (occupees[0] if occupees else lignes[0])
+        autres = [o for o in lignes if o.pk != cible.pk]
+        avant = ", ".join(_libelle(o.emplacement, o.place) for o in occupees)
+        etait_range = bool(occupees)
+    else:
+        if cible.emplacement_id == emplacement.pk and cible.place == place:
+            raise ErreurCabine(deja)
+        autres = []
+        avant = _libelle(cible.emplacement, cible.place)
+        etait_range = bool(cible.emplacement_id)
 
     if not emplacement.illimite:
         occupant = (Occupation.objects.select_for_update()
                     .filter(emplacement=emplacement, place=place)
-                    .exclude(cabine__statut=Cabine.ENVOYE).exclude(pk=cible.pk)
+                    .exclude(cabine__statut=Cabine.ENVOYE).exclude(propres)
                     .select_related("cabine").first())
         if occupant:
             raise ErreurCabine(
                 f"La place {place} de {emplacement.code} est déjà occupée par la "
                 f"cabine {occupant.cabine.numero}.")
 
-    avant = _libelle(cible.emplacement, cible.place)
-    etait_range = bool(cible.emplacement_id)
-    cible.emplacement = emplacement
-    cible.place = place
     try:
         # Point de reprise : si la contrainte refuse, on revient ici et la
         # transaction reste utilisable. Sans lui, tout ce qui suit échouerait à
         # son tour et l'opérateur verrait une erreur sans rapport.
         with transaction.atomic():
-            cible.save(update_fields=["emplacement", "place"])
+            champs = ["emplacement", "place"]
+            if autres:
+                # Les autres emplacements sont libérés : leurs lignes partent,
+                # vides comprises (une ligne vide restée là recevait le
+                # rangement suivant, et la cabine se retrouvait à deux endroits).
+                Occupation.objects.filter(pk__in=[o.pk for o in autres]).delete()
+                cible.numero = 1
+                # Le contenu (« parois », « plateau ») décrivait un morceau :
+                # la cabine est maintenant entière au même endroit.
+                cible.libelle = ""
+                champs += ["numero", "libelle"]
+            cible.emplacement = emplacement
+            cible.place = place
+            cible.save(update_fields=champs)
     except IntegrityError as souci:
         # La place a été prise entre le contrôle et l'écriture — deux caristes,
         # la même place, la même seconde. La base a refusé le doublon : rien
@@ -788,8 +867,14 @@ def envoyer(*, cabine, utilisateur=None, note=""):
     cabine.envoi_date = maintenant
     cabine.save(update_fields=["statut", "statut_date", "envoi_date"])
     # Tous les emplacements sont libérés : la cabine part entière, y compris le
-    # morceau qui dormait dans un autre emplacement.
-    cabine.occupations.update(emplacement=None, place="")
+    # morceau qui dormait dans un autre emplacement. Une seule ligne reste, vide
+    # (l'invariant) : des lignes vides en surnombre recevaient les rangements
+    # suivants d'une cabine reprise, qui se retrouvait à deux endroits.
+    lignes = list(cabine.occupations.order_by("numero").values_list("pk", flat=True))
+    if lignes:
+        Occupation.objects.filter(pk__in=lignes[1:]).delete()
+        Occupation.objects.filter(pk=lignes[0]).update(
+            emplacement=None, place="", libelle="", numero=1)
     _tracer(cabine, MouvementCabine.ENVOI, utilisateur, depuis=avant_position,
             statut_avant=avant_statut, statut_apres=Cabine.ENVOYE, note=note)
     return _rafraichir(cabine)
@@ -809,18 +894,35 @@ def reprendre(*, cabine, utilisateur=None, motif=""):
 
     La cabine revient « en stock, non rangée » — pas à sa place d'avant : cette
     place a pu être réattribuée entre-temps, et c'est le rangement qui tranche.
+
+    Elle revient avec le statut qu'elle avait AVANT l'envoi, lu au journal :
+    une cabine en quarantaine sortie par erreur revenait « Conforme », et le
+    départ suivant ne montrait plus aucun avertissement de quarantaine.
     """
     if not cabine.envoyee:
         raise ErreurCabine(f"La cabine {cabine.numero} n'est pas envoyée.")
 
+    envoi = (MouvementCabine.objects.filter(cabine=cabine, type=MouvementCabine.ENVOI)
+             .order_by("-date", "-id").first())
+    retour = envoi.statut_avant if envoi and envoi.statut_avant in (
+        Cabine.LIBRE, Cabine.QUARANTAINE) else Cabine.LIBRE
     maintenant = timezone.now()
-    cabine.statut = Cabine.LIBRE
+    cabine.statut = retour
     cabine.statut_date = maintenant
     cabine.envoi_date = None
     cabine.save(update_fields=["statut", "statut_date", "envoi_date"])
+    note = (motif or "").strip() or "Retour en stock d'une cabine envoyée"
+    if retour == Cabine.QUARANTAINE:
+        # Le motif de la quarantaine est relu sur le DERNIER passage en
+        # quarantaine : le reprendre ici garde l'écran juste (« bloquée :
+        # rayure paroi gauche ») au lieu d'afficher la phrase du retour.
+        avant = (MouvementCabine.objects
+                 .filter(cabine=cabine, type=MouvementCabine.STATUT,
+                         statut_apres=Cabine.QUARANTAINE)
+                 .order_by("-date", "-id").values_list("note", flat=True).first())
+        note = f"{note} — toujours en quarantaine : {avant or 'motif inconnu'}"
     _tracer(cabine, MouvementCabine.STATUT, utilisateur,
-            statut_avant=Cabine.ENVOYE, statut_apres=Cabine.LIBRE,
-            note=(motif or "").strip() or "Retour en stock d'une cabine envoyée")
+            statut_avant=Cabine.ENVOYE, statut_apres=retour, note=note[:255])
     return cabine
 
 
@@ -882,6 +984,14 @@ def corriger_fiche(*, cabine, utilisateur=None, **champs):
     if not modifs:
         raise ErreurCabine("Aucune modification : la fiche est déjà dans cet état.")
 
+    if cabine.envoyee and not (cabine.chantier or "").strip():
+        # « Aucune cabine ne sort sans chantier » : la règle de l'envoi doit
+        # tenir après coup. Passer une cabine partie en « express », chantier
+        # vidé, effaçait de l'archive le seul renseignement qui dit où elle est.
+        raise ErreurCabine(
+            f"La cabine {cabine.numero} est envoyée : elle garde un n° de chantier. "
+            "Corrigez-le plutôt que de le vider.")
+
     if "numero" in champs and Cabine.objects.filter(
             numero=cabine.numero).exclude(pk=cabine.pk).exists():
         # `numero` est unique en base : sans ce contrôle, le doublon remonte en
@@ -919,7 +1029,9 @@ def diagnostic_suppression(cabine):
     place : c'est le cas de la faute de frappe, la suppression est sans conséquence.
     """
     if cabine.envoyee:
-        date = cabine.envoi_date.strftime("%d/%m/%Y") if cabine.envoi_date else "—"
+        # À l'heure de Paris : une sortie à 00 h 30 le 15 s'affichait « le 14 ».
+        date = (timezone.localtime(cabine.envoi_date).strftime("%d/%m/%Y")
+                if cabine.envoi_date else "—")
         return BLOCAGE_ENVOYEE, (
             f"La cabine {cabine.numero} a été envoyée le {date} : elle est archivée et "
             f"rattachée au chantier {cabine.chantier or '—'}. La supprimer efface la trace "

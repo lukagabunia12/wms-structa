@@ -185,7 +185,14 @@ def serveur_appli(port):
     py = python_du_projet()
     waitress = py.parent / ("waitress-serve.exe" if os.name == "nt" else "waitress-serve")
     if waitress.is_file():
+        # Mêmes options que le lanceur HTTPS (voir OPTIONS_WAITRESS dans
+        # demarrer_https.py) : cloudflared arrive de 127.0.0.1 et pose
+        # X-Forwarded-Proto et X-Forwarded-For, que waitress 3 jetterait sinon —
+        # Django se croyait alors en clair, et tous les visiteurs du tunnel
+        # partageaient la même adresse pour le frein aux essais de connexion.
         return [str(waitress), f"--listen=127.0.0.1:{port}", "--threads=8",
+                "--connection-limit=300", "--trusted-proxy=127.0.0.1",
+                "--trusted-proxy-headers=x-forwarded-for x-forwarded-proto",
                 "config.wsgi:application"]
     return [str(py), "manage.py", "runserver", f"127.0.0.1:{port}", "--noreload"]
 

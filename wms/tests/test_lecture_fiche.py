@@ -401,3 +401,41 @@ class LecturesDegradees(unittest.TestCase):
 
     def test_texte_sans_rapport(self):
         self.assertIsNone(self.analyser("FACTURE 2026 TOTAL 1234.56 EUROS").get("numero"))
+
+
+class LongueurDuDernierGroupe(unittest.TestCase):
+    """Le rang de la cabine compte un à trois chiffres.
+
+    Le dernier groupe était lu sur deux caractères exactement : « 25_49_400 »
+    devenait « 25_49_40 », une AUTRE cabine bien réelle, que l'écran proposait
+    aussitôt au rangement ou à la sortie. « 26_03_7 » n'était pas lu du tout.
+    """
+
+    def numero(self, texte):
+        return lecture_fiche.analyser(texte)[0].get("numero")
+
+    def test_trois_chiffres(self):
+        self.assertEqual(self.numero("REF. CABINE 25_49_400\nCABINE QUATTRO"), "25_49_400")
+
+    def test_un_chiffre(self):
+        self.assertEqual(self.numero("REF. CABINE 26_03_7"), "26_03_7")
+
+    def test_trois_chiffres_sur_la_ligne_suivante(self):
+        self.assertEqual(self.numero("REF. CABINE\n25 49 400\nCABINE\nDUO"), "25_49_400")
+
+    def test_tirets_avales_sept_chiffres(self):
+        self.assertEqual(self.numero("REF. CABINE 2549400"), "25_49_400")
+
+    def test_tirets_avales_cinq_chiffres(self):
+        self.assertEqual(self.numero("REF. CABINE 26037"), "26_03_7")
+
+    def test_quatre_chiffres_au_bout_ne_sont_pas_un_numero(self):
+        """Mieux vaut ne rien lire que lire une autre cabine."""
+        self.assertIsNone(self.numero("REF. CABINE 25_49_4000"))
+
+    def test_numero_colle_a_un_mot_n_est_pas_devine(self):
+        self.assertIsNone(self.numero("REF. CABINE 26_03_47QUATTRO"))
+
+    def test_un_mot_de_lettres_confondables_n_est_pas_un_numero(self):
+        """B, L, O, G, S se lisent 8, 1, 0, 6, 5 : « BLOGS » n'est pas 81_06_5."""
+        self.assertIsNone(self.numero("REF. CABINE BLOGS"))

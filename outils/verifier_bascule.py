@@ -25,8 +25,11 @@ django.setup()
 from django.contrib.auth.models import Group  # noqa: E402
 from django.db import connection, transaction  # noqa: E402
 
-from wms.models import (Article, Cabine, Emplacement, Mouvement,  # noqa: E402
-                        MouvementCabine, Utilisateur, Zone)
+# Les anciens modèles « Article » et « Mouvement » ont été retirés (migration
+# 0024) : leur import faisait échouer ce contrôle avant même de commencer, et
+# Basculer-PostgreSQL concluait à tort qu'il fallait revenir sur SQLite.
+from wms.models import (Cabine, Emplacement, MouvementCabine,  # noqa: E402
+                        MouvementMP, StockMP, Utilisateur, Zone)
 
 MARQUE = "__controle_bascule__"
 
@@ -39,9 +42,10 @@ def etat():
         cible += f"  sur {reglages['HOST']}:{reglages['PORT'] or 5432}"
     print(f"  Base     : {cible}")
     print(f"  Contenu  : {Emplacement.objects.count()} emplacements · "
-          f"{Article.objects.count()} articles · {Cabine.objects.count()} cabines · "
-          f"{Mouvement.objects.count()} mouvements · "
-          f"{MouvementCabine.objects.count()} événements · "
+          f"{Cabine.objects.count()} cabines · "
+          f"{MouvementCabine.objects.count()} événements cabines · "
+          f"{StockMP.objects.count()} lignes de stock MP · "
+          f"{MouvementMP.objects.count()} mouvements MP · "
           f"{Utilisateur.objects.count()} comptes")
 
 

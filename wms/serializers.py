@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
@@ -182,19 +183,47 @@ class EmplacementSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         """Un emplacement qui change de famille perd ses codes acceptés : ils
-        appartenaient à l'ancienne, et n'y voudraient plus rien dire."""
-        usage_avant = instance.usage
-        instance = super().update(instance, validated_data)
-        if instance.usage != usage_avant:
-            services_mp.oublier_codes([instance.pk])
+        appartenaient à l'ancienne, et n'y voudraient plus rien dire.
+
+        Le changement d'usage se décide SOUS le verrou de l'emplacement, celui
+        que prennent l'entrée de stock MP et le rangement d'une cabine : sinon
+        une palette entrée entre le contrôle (`validate`) et l'écriture laissait
+        du stock MP sur un emplacement passé aux cabines, et plus rien ne
+        permettait de l'en sortir proprement.
+        """
+        with transaction.atomic():
+            list(Emplacement.objects.select_for_update().filter(pk=instance.pk)
+                 .values_list("pk", flat=True))
+            usage = validated_data.get("usage", instance.usage)
+            mode = validated_data.get("mode_places", instance.mode_places)
+            if usage == Emplacement.CABINES:
+                choix = "cabines-illimite" if mode == Emplacement.ILLIMITE else "cabines-gd"
+            else:
+                choix = usage
+            if choix != services_mp.choix_de(instance):
+                refus = services_mp.refus_changement_usage(instance, choix)
+                if refus:
+                    raise serializers.ValidationError({"usage": f"{instance.code} : {refus}"})
+            usage_avant = instance.usage
+            instance = super().update(instance, validated_data)
+            if instance.usage != usage_avant:
+                services_mp.oublier_codes([instance.pk])
         return instance
 
     def get_places_libres(self, obj):
-        # Un emplacement MP n'offre aucune place à une cabine.
-        if obj.illimite or obj.est_mp:
-            return []
+        """Les places encore libres pour une cabine ordinaire.
+
+        La règle est celle de `services_cabines.places_libres` — la seule. Une
+        liste calculée à part ignorait un grand modèle posé en entier (« T ») et
+        les places condamnées : le plan de l'entrepôt affichait « 1 cabine » sur
+        un emplacement complet, et envoyait le cariste vers une place que le
+        serveur refuserait. Les places condamnées viennent du préchargement de
+        la vue : une requête pour toute la liste.
+        """
         prises = {c.place for c in self._occupations_actives(obj) if c.place}
-        return [code for code, _ in Cabine.PLACES if code not in prises]
+        condamnees = {p.place for p in obj.places_condamnees.all()} if obj.pk else set()
+        return services_cabines.places_libres(obj, prises=prises, condamnees=condamnees,
+                                              grand=False)
 
     def validate(self, attrs):
         """Changer ce que range un emplacement : seulement s'il est vide.
@@ -336,7 +365,10 @@ class CabineSerializer(serializers.ModelSerializer):
         if not obj.pk:
             return None
         active = obj.statut == Cabine.QUARANTAINE
-        en_liste = getattr(self.context.get("view"), "action", None) in ("list", "export")
+        # Une liste : l'action de la vue le dit, ou le sérialiseur est l'élément
+        # d'une liste (les cabines d'un emplacement, par exemple).
+        en_liste = (getattr(self.context.get("view"), "action", None) in ("list", "export")
+                    or isinstance(getattr(self, "parent", None), serializers.ListSerializer))
         if en_liste and hasattr(obj, "quarantaine_motif"):
             motif = (obj.quarantaine_motif or "").strip()
             if not (motif or active):

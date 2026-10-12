@@ -136,6 +136,24 @@ def main():
         noter(ORANGE, "Journaux non inscriptibles",
               f"{dossier_logs} — un incident ne laissera aucune trace. {e}")
 
+    # --- Exploitation ---------------------------------------------------------
+    if getattr(settings, "ACCES_TEST", None):
+        noter(ORANGE, "Accès de test publié (WMS_ACCES_TEST)",
+              "L'écran de connexion donne un identifiant ET son mot de passe à "
+              "quiconque ouvre l'adresse. À retirer de .env avant l'exploitation.")
+    if os.environ.get("WMS_REMPLACE_PAR", "").strip():
+        noter(ORANGE, "WMS_REMPLACE_PAR est posé",
+              "Ce poste se déclare remplacé par un autre serveur : le lanceur "
+              "refusera de démarrer. À retirer de .env si c'est CE poste le serveur.")
+    try:
+        from wms import exploitation
+        etat = exploitation.etat_sauvegarde()
+        noter(VERT if etat["niveau"] == "ok" else ORANGE,
+              "Sauvegardes" + ("" if etat["niveau"] == "ok" else " à surveiller"),
+              etat["phrase"])
+    except Exception as e:  # noqa: BLE001 - un contrôle ne doit jamais bloquer le démarrage
+        noter(ORANGE, "État des sauvegardes illisible", str(e))
+
     return rendu()
 
 

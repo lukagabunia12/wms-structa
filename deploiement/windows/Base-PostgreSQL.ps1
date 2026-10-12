@@ -25,6 +25,34 @@ function Echapper-SQL {
     return $Texte.Replace("'", "''")
 }
 
+function Script-RoleApplicatif {
+    <#
+        L'ordre SQL qui cree le role applicatif, ou remet son mot de passe.
+
+        Le corps du bloc DO est delimite par un marqueur tire au hasard, et
+        non par $$ : un mot de passe contenant "$$" fermait le bloc, la
+        requete cassait, et le message accusait le mot de passe du compte
+        postgres. log_min_error_statement : si l'ordre echoue malgre tout,
+        PostgreSQL ne recopie pas la requete -- mot de passe compris -- dans
+        son journal.
+    #>
+    param([string]$Utilisateur, [string]$MotDePasse)
+    $mdp = Echapper-SQL $MotDePasse
+    do {
+        $marque = '$wms' + [guid]::NewGuid().ToString('N').Substring(0, 12) + '$'
+    } while ($MotDePasse.Contains($marque))
+    return @"
+SET log_min_error_statement TO panic;
+DO $marque BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$Utilisateur') THEN
+    CREATE ROLE $Utilisateur WITH LOGIN PASSWORD '$mdp';
+  ELSE
+    ALTER ROLE $Utilisateur WITH LOGIN PASSWORD '$mdp';
+  END IF;
+END $marque;
+"@
+}
+
 function Tester-ServicePostgreSQL {
     <#
         Le service repond-il ? A verifier AVANT de faire saisir un mot de passe.
@@ -55,6 +83,12 @@ function Preparer-BasePostgreSQL {
         existante et VIDE est reutilisee. Une base qui porte deja des tables
         n'est jamais ecrasee -- la fonction leve une erreur et laisse la
         decision a un humain.
+
+        L'ordre compte : la base est examinee AVANT que le role ne soit
+        touche. Dans l'ordre inverse, un Installer-WMS relance sur un serveur
+        en service changeait le mot de passe du role, puis s'arretait sur
+        "base non vide" sans l'avoir ecrit dans .env : le WMS perdait sa base
+        dans la minute.
     #>
     param(
         [Parameter(Mandatory)][string]$Base,
@@ -68,25 +102,14 @@ function Preparer-BasePostgreSQL {
 
     if ([string]::IsNullOrWhiteSpace($MotDePasse)) { throw "Mot de passe applicatif vide : abandon." }
 
-    $mdp = Echapper-SQL $MotDePasse
+    # Windows PowerShell 5.1 envoie le texte aux programmes en ASCII : un mot
+    # de passe accentue arrivait a psql avec un "?" a la place de l'accent,
+    # alors que .env recevait le vrai. migrate echouait ensuite a se connecter.
+    $OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $env:PGCLIENTENCODING = "UTF8"
     $env:PGPASSWORD = $MotDePasseAdmin
     try {
-        # --- Role applicatif ---------------------------------------------------
-        $sql = @"
-DO `$`$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$Utilisateur') THEN
-    CREATE ROLE $Utilisateur WITH LOGIN PASSWORD '$mdp';
-  ELSE
-    ALTER ROLE $Utilisateur WITH LOGIN PASSWORD '$mdp';
-  END IF;
-END `$`$;
-"@
-        $sql | & psql -h $Hote -p $Port -U $CompteAdmin -v ON_ERROR_STOP=1 -q
-        if ($LASTEXITCODE -ne 0) {
-            throw "Creation du role '$Utilisateur' impossible : mot de passe du compte '$CompteAdmin' incorrect ?"
-        }
-
-        # --- Base --------------------------------------------------------------
+        # --- 1. La base existe-t-elle, et porte-t-elle deja des tables ? -------
         # Les guillemets "$( )" ne sont pas cosmetiques : quand la base n'existe
         # pas, psql ne renvoie AUCUNE ligne et PowerShell recupere $null. Appeler
         # .Trim() dessus leve "You cannot call a method on a null-valued
@@ -102,14 +125,27 @@ END `$`$;
             if ([int]$tables -gt 0) {
                 Write-Host ""
                 Write-Host "  La base '$Base' existe deja et contient $tables table(s)." -ForegroundColor Red
-                Write-Host "  Rien n'est ecrase : c'est a vous de decider." -ForegroundColor Red
+                Write-Host "  Rien n'est touche, ni la base, ni le mot de passe du compte '$Utilisateur'." -ForegroundColor Red
                 Write-Host ""
+                Write-Host "  Si c'est la base en service de ce serveur, relancez simplement" -ForegroundColor Yellow
+                Write-Host "  Installer-WMS.bat : il la reconnait et saute les etapes de la base." -ForegroundColor Yellow
                 Write-Host "  Si ces donnees sont a jeter :" -ForegroundColor Yellow
                 Write-Host "     psql -U $CompteAdmin -c ""DROP DATABASE $Base;""" -ForegroundColor Yellow
                 Write-Host "  Sinon, relancez en nommant une autre base :  -Base wms2" -ForegroundColor Yellow
                 Write-Host ""
                 throw "Base '$Base' non vide."
             }
+        }
+
+        # --- 2. Role applicatif ---------------------------------------------------
+        $sql = Script-RoleApplicatif -Utilisateur $Utilisateur -MotDePasse $MotDePasse
+        $sql | & psql -h $Hote -p $Port -U $CompteAdmin -v ON_ERROR_STOP=1 -q
+        if ($LASTEXITCODE -ne 0) {
+            throw "Creation du role '$Utilisateur' impossible : mot de passe du compte '$CompteAdmin' incorrect ?"
+        }
+
+        # --- 3. Base ----------------------------------------------------------------
+        if ($existe -eq "1") {
             Write-Host "     Base '$Base' deja presente et vide : reutilisee." -ForegroundColor Gray
         } else {
             # Pas de LC_COLLATE force : 'fr_FR.UTF-8' n'existe pas sous Windows.
@@ -119,7 +155,7 @@ END `$`$;
             Write-Host "     Base '$Base' creee." -ForegroundColor Gray
         }
 
-        # --- Droits sur le schema ---------------------------------------------
+        # --- 4. Droits sur le schema ---------------------------------------------
         # Depuis PostgreSQL 15, le schema public n'est plus inscriptible par
         # tout le monde : sans ces trois ordres, migrate tombe beaucoup plus
         # loin en "permission denied for schema public", une erreur sans
@@ -132,7 +168,28 @@ END `$`$;
         # Toujours, meme sur erreur : le mot de passe administrateur ne doit pas
         # rester dans l'environnement de la console.
         Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
+        Remove-Item Env:\PGCLIENTENCODING -ErrorAction SilentlyContinue
     }
 
     Write-Host "     Droits attribues a '$Utilisateur' sur le schema public." -ForegroundColor Gray
+}
+
+function Tester-MotDePasseEnv {
+    <#
+        Le mot de passe applicatif finit dans .env, relu par python-dotenv : une
+        valeur qui commence ou finit par une espace, qui contient " #" (lu comme
+        un commentaire), qui commence par un guillemet ou contient "${" y serait
+        relue de travers -- et le WMS ne se connecterait plus a sa base, avec un
+        message qui accuserait PostgreSQL. Rend la raison du refus, ou "".
+    #>
+    param([string]$Texte)
+    # Lettres sans accent, chiffres, ponctuation : un accent ne passe pas de la
+    # meme facon par psql, par .env et par pg_dump (variable d'environnement
+    # lue dans l'encodage de Windows) -- la sauvegarde echouerait chaque nuit.
+    if ($Texte -match '[^\x21-\x7E]') { return "il contient un accent, une espace ou un caractere special" }
+    if ($Texte -ne $Texte.Trim()) { return "il commence ou finit par une espace" }
+    if ($Texte -match '\s#') { return "il contient un # precede d'une espace" }
+    if ($Texte.StartsWith("'") -or $Texte.StartsWith('"')) { return "il commence par un guillemet" }
+    if ($Texte.Contains('${')) { return 'il contient ${' }
+    return ""
 }

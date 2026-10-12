@@ -7,6 +7,7 @@ ranger, déplacer, envoyer, condamner une place, mettre un emplacement hors
 service — vit dans `services_cabines`.
 """
 import logging
+import re
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
@@ -231,6 +232,8 @@ def supprimer_lot(ids, *, utilisateur=None, motif=""):
 #: des milliers de lignes qu'il faudrait ensuite supprimer une par une.
 GENERATION_MAX = 500
 COLONNES_MAX, NIVEAUX_MAX, PAS_MAX = 300, 26, 10000
+#: Bornes des colonnes de la base : `rack` en 32 caractères, `colonne` en entier.
+RACK_MAX, COLONNE_MAX = 32, 2_147_483_647
 
 
 def _entier(valeur, nom, mini, maxi):
@@ -259,10 +262,18 @@ def codes_de_rack(*, prefixe, debut, pas=10, colonnes, niveaux=1, separateur="")
     prefixe = (prefixe or "").strip().upper()
     if not prefixe:
         raise ErreurEmplacement("Le préfixe du rack est obligatoire (ex. AC).")
+    # Le préfixe devient le nom du rack, limité à 32 caractères en base.
+    # SQLite l'ignore ; PostgreSQL refuse — en erreur 500, le jour même de la
+    # mise en service.
+    if len(prefixe) > RACK_MAX:
+        raise ErreurEmplacement(f"Le préfixe du rack tient en {RACK_MAX} caractères au plus.")
     separateur = (separateur or "").strip()
 
     brut = str(debut if debut is not None else "").strip()
-    if not brut.isdigit():
+    # Les chiffres 0 à 9 seulement : `isdigit()` accepte « ² » (la touche à
+    # gauche du 1 sur un clavier français), que `int()` refuse ensuite — une
+    # erreur 500 à chaque frappe, l'aperçu se recalculant à chaque touche.
+    if not re.fullmatch(r"[0-9]+", brut):
         raise ErreurEmplacement("Le numéro de la première colonne doit être un nombre "
                                 "(ex. 550, ou 050 pour garder le zéro).")
     largeur = len(brut)
@@ -280,6 +291,11 @@ def codes_de_rack(*, prefixe, debut, pas=10, colonnes, niveaux=1, separateur="")
             f"Avec un pas de {pas}, il ne peut pas y avoir {niveaux} niveaux : les "
             f"codes d'une colonne déborderaient sur la suivante. Augmentez le pas "
             f"(au moins {niveaux}) ou réduisez le nombre de niveaux.")
+
+    # La colonne est un entier en base (2 147 483 647 au plus sur PostgreSQL).
+    if premier + (colonnes - 1) * pas + niveaux > COLONNE_MAX:
+        raise ErreurEmplacement(
+            f"Numéros de colonne trop grands : la dernière dépasserait {COLONNE_MAX}.")
 
     total = colonnes * niveaux
     if total > GENERATION_MAX:

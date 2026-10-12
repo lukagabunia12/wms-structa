@@ -8,7 +8,18 @@ rem  contiennent que ce qui doit voyager : ni environnement Python, ni
 rem  cle secrete, ni certificat, ni ancienne base.
 rem
 rem  Les donnees de l'entrepot sont exportees au passage : elles suivent
-rem  dans le dossier reprise\.
+rem  dans le dossier reprise\. LE WMS DOIT ETRE ARRETE sur ce poste (fermer
+rem  sa fenetre) : l'export est la derniere ecriture, ce qui serait saisi
+rem  ensuite ne partirait pas.
+rem
+rem  Options :
+rem    Preparer-Copie.bat --avec-autorite
+rem      emporte aussi l'autorite de certification : les telephones qui
+rem      l'ont deja n'auront rien a reinstaller. La copie porte alors une
+rem      cle sensible : cle USB chiffree, puis effacee apres installation.
+rem    Preparer-Copie.bat --sans-donnees
+rem      copie du code seul, sans aucune donnee : pour une MISE A JOUR du
+rem      serveur (docs\guide-serveur.md), ou un serveur sur base vierge.
 rem =====================================================================
 title WMS Structa - preparation de la copie
 cd /d "%~dp0"

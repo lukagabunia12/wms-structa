@@ -1,11 +1,44 @@
 {% extends "admin/index.html" %}
+{% load exploitation_admin %}
 {# L'accueil de l'administration, avec « Repartir de zéro » pour les
    administrateurs du WMS. La page vit sous « Cabines » pour des raisons
    d'adresse, mais elle remet à zéro tout l'outil : personne ne la chercherait
-   dans la liste des cabines. #}
+   dans la liste des cabines.
+
+   Et l'état des sauvegardes : le serveur tourne sans écran, et une sauvegarde
+   qui échoue en silence ne se découvre que le jour où l'on en a besoin. C'est
+   ici qu'un administrateur passe — c'est donc ici qu'on le lui dit. #}
+{% block extrastyle %}{{ block.super }}
+<style>
+  .wms-exploitation { margin-bottom: 20px; }
+  .wms-exploitation .phrase { padding: 10px 12px; border-left: 6px solid var(--hairline-color);
+    font-size: 14px; line-height: 1.45; color: var(--body-fg); }
+  .wms-exploitation .niveau-ok .phrase { border-left-color: #2E7D32; }
+  .wms-exploitation .niveau-attention .phrase { border-left-color: #E8A33D; }
+  .wms-exploitation .niveau-alerte .phrase { border-left-color: #B3261E; font-weight: 600; }
+  .wms-exploitation .niveau-inconnu .phrase { border-left-color: var(--body-quiet-color); }
+  .wms-exploitation .etiquette { display: inline-block; font-size: 11px; font-weight: 700;
+    letter-spacing: .04em; text-transform: uppercase; padding: 1px 7px; border-radius: 3px;
+    margin-right: 8px; color: #fff; vertical-align: 1px; }
+  .wms-exploitation .niveau-ok .etiquette { background: #2E7D32; }
+  .wms-exploitation .niveau-attention .etiquette { background: #A15C00; }
+  .wms-exploitation .niveau-alerte .etiquette { background: #B3261E; }
+  .wms-exploitation .niveau-inconnu .etiquette { background: #5F6368; }
+  .wms-exploitation ul { margin: 0; padding: 4px 12px 10px 30px; color: var(--body-quiet-color); }
+  .wms-exploitation li { margin: 3px 0; list-style: disc; }
+</style>
+{% endblock %}
 {% block content %}
 <div id="content-main">
   {% if user.est_administrateur %}
+  {% etat_exploitation as ex %}
+  <div class="module wms-exploitation" id="etat-sauvegardes">
+    <h2>Sauvegardes et disque</h2>
+    <div class="niveau-{{ ex.niveau }}">
+      <p class="phrase"><span class="etiquette">{% if ex.niveau == "ok" %}OK{% elif ex.niveau == "attention" %}À voir{% elif ex.niveau == "alerte" %}Alerte{% else %}Pas encore{% endif %}</span>{{ ex.phrase }}</p>
+      {% if ex.details %}<ul>{% for d in ex.details %}<li>{{ d }}</li>{% endfor %}</ul>{% endif %}
+    </div>
+  </div>
   <div class="module">
     <table>
       <caption>Outils</caption>

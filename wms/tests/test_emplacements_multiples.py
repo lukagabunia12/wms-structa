@@ -247,3 +247,79 @@ class SuppressionEmplacementTest(BaseMulti):
                                 utilisateur=self.u)
         from wms.services_emplacements import diagnostic_suppression
         self.assertIn("1 cabine", diagnostic_suppression(self.e1))
+
+
+class DeplacerUneCabineRepartieTest(BaseMulti):
+    """« La déplacer » emmène la cabine ENTIÈRE.
+
+    Seule la ligne la plus ancienne bougeait : une cabine répartie sur deux ou
+    trois emplacements, « déplacée », en laissait les autres bloqués par un
+    fantôme que plus rien dans l'écran ne permettait de libérer.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.e3 = Emplacement.objects.create(code="AC-120-1", rack="AC", colonne="120",
+                                             niveau=1, zone_cabine=self.zone)
+
+    def repartie(self):
+        cabine = self.cabine()
+        services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
+                                utilisateur=self.u)
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="G",
+                                ajouter=True, utilisateur=self.u)
+        return cabine
+
+    def test_deplacer_libere_tous_les_emplacements(self):
+        cabine = self.repartie()
+        services_cabines.ranger(cabine=cabine, emplacement=self.e3, place="D",
+                                utilisateur=self.u)
+        cabine.refresh_from_db()
+        self.assertEqual(cabine.position, "AC-120-1·D")
+        self.assertEqual(cabine.occupations.count(), 1)
+        self.assertIn("G", services_cabines.places_libres(self.e1))
+        self.assertIn("G", services_cabines.places_libres(self.e2))
+        dernier = cabine.historique.order_by("-date", "-id").first()
+        self.assertEqual(dernier.type, "transfert")
+        self.assertIn("AC-100-1·G", dernier.depuis)
+        self.assertIn("AC-110-1·G", dernier.depuis)
+
+    def test_deplacer_sur_l_un_de_ses_morceaux_la_regroupe(self):
+        cabine = self.repartie()
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="G",
+                                utilisateur=self.u)
+        cabine.refresh_from_db()
+        self.assertEqual(cabine.position, "AC-110-1·G")
+        self.assertEqual(cabine.occupations.count(), 1)
+        self.assertIn("G", services_cabines.places_libres(self.e1))
+
+    def test_une_cabine_reprise_ne_se_retrouve_pas_a_deux_endroits(self):
+        """Envoyée, reprise, rangée, puis déplacée : une ligne vide restée de
+        l'envoi recevait le déplacement, et la cabine occupait deux places."""
+        cabine = self.repartie()
+        services_cabines.envoyer(cabine=cabine, utilisateur=self.u, note="camion 3")
+        cabine.refresh_from_db()
+        self.assertEqual(cabine.occupations.count(), 1)
+        services_cabines.reprendre(cabine=cabine, utilisateur=self.u)
+        services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
+                                utilisateur=self.u)
+        services_cabines.ranger(cabine=cabine, emplacement=self.e2, place="D",
+                                utilisateur=self.u)
+        cabine.refresh_from_db()
+        self.assertEqual(cabine.position, "AC-110-1·D")
+        self.assertIn("G", services_cabines.places_libres(self.e1))
+        dernier = cabine.historique.order_by("-date", "-id").first()
+        self.assertEqual(dernier.type, "transfert")
+
+    def test_le_compteur_des_non_rangees_suit_la_liste(self):
+        """Une cabine rangée qui gardait une ligne vide était comptée « non
+        rangée », alors que la liste des non rangées ne la montrait pas."""
+        cabine = self.cabine()
+        services_cabines.ranger(cabine=cabine, emplacement=self.e1, place="G",
+                                utilisateur=self.u)
+        # Une ligne vide en trop, comme en laissaient les envois d'avant.
+        cabine.occupations.create(numero=2)
+        r = self.c.get("/api/cabines/filtres/")
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        liste = self.c.get("/api/cabines/?rangee=0").json()
+        self.assertEqual(r.json()["compteurs"]["non_rangees"], liste["count"])

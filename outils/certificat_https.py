@@ -17,6 +17,7 @@ avertissement — y compris après renouvellement.
 import argparse
 import datetime as dt
 import ipaddress
+import re
 import socket
 import sys
 from pathlib import Path
@@ -48,7 +49,7 @@ def _crypto():
         return x509, hashes, serialization, rsa, NameOID
     except ImportError:
         sys.exit("Le module « cryptography » est absent.\n"
-                 "  .venv\\Scripts\\python.exe -m pip install -r requirements-https.txt")
+                 "  .venv\\Scripts\\python.exe -m pip install -r requirements.txt")
 
 
 def adresses_locales():
@@ -77,8 +78,59 @@ def adresses_locales():
     return sorted(trouvees)
 
 
+def valeur_env(cle, defaut=""):
+    """Un réglage, lu dans l'environnement puis dans `.env`.
+
+    Les outils du lanceur tournent AVANT Django, qui seul charge `.env` : sans
+    cette lecture, un réglage écrit dans `.env` ne les atteignait pas. La lecture
+    passe par python-dotenv quand il est là — la même que celle de Django, donc
+    les mêmes guillemets, les mêmes commentaires.
+    """
+    import os
+    if os.environ.get(cle):
+        return os.environ[cle]
+    env = RACINE / ".env"
+    if not env.is_file():
+        return defaut
+    try:
+        from dotenv import dotenv_values
+        valeur = dotenv_values(env).get(cle)
+        return valeur if valeur else defaut
+    except ImportError:
+        pass
+    for ligne in env.read_text(encoding="utf-8", errors="ignore").splitlines():
+        nom, _, valeur = ligne.partition("=")
+        if nom.strip() == cle:
+            return valeur.split(" #", 1)[0].strip().strip('"').strip("'") or defaut
+    return defaut
+
+
+def noms_publies():
+    """Les noms de domaine donnés au WMS (`WMS_NOMS` dans `.env`, séparés par
+    des virgules) : ex. `WMS_NOMS=wms.structa.fr`. Le certificat les couvre, et
+    Django les accepte. Lus ici, dans l'environnement puis dans `.env` : le
+    lanceur passe ses réglages AVANT ceux du `.env`, qui ne les verrait pas.
+
+    Une adresse collée depuis le navigateur (« https://wms.structa.fr:8443/ »)
+    est ramenée à son nom ; ce qui n'est pas un nom d'hôte est écarté plutôt
+    qu'écrit dans le certificat, où il ne couvrirait rien."""
+    noms = set()
+    for brut in valeur_env("WMS_NOMS").split(","):
+        nom = re.sub(r"^[a-z][a-z0-9+.-]*://", "", brut.strip().lower())
+        nom = re.split(r"[:/]", nom, maxsplit=1)[0].rstrip(".")
+        if _NOM_D_HOTE.match(nom):
+            noms.add(nom)
+    return sorted(noms)
+
+
+#: Un nom d'hôte : des étiquettes de lettres, chiffres et tirets, séparées par
+#: des points.
+_NOM_D_HOTE = re.compile(
+    r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$")
+
+
 def noms_locaux():
-    noms = {"localhost"}
+    noms = {"localhost", *noms_publies()}
     try:
         h = socket.gethostname()
         noms.add(h)
@@ -229,6 +281,30 @@ def profil_ios():
     return chemin
 
 
+def non_couverts():
+    """Ce que le certificat serveur devrait couvrir et ne couvre pas : les
+    adresses actuelles de la machine et les noms de `WMS_NOMS`. None s'il n'y a
+    pas de certificat lisible."""
+    x509 = _crypto()[0]
+    try:
+        srv = x509.load_pem_x509_certificate(SRV_CERT.read_bytes())
+        san = srv.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except Exception:
+        return None
+    couverts = {str(n.value).lower() for n in san}
+    return sorted((set(adresses_locales()) | set(noms_publies())) - couverts)
+
+
+def refaire_certificat_serveur():
+    """Refait le certificat serveur pour les noms et adresses d'aujourd'hui,
+    signé par l'autorité existante : rien à refaire sur les téléphones.
+    Rend (noms, adresses)."""
+    ac_cert, ac_cle = charger_autorite()
+    noms, ips = noms_locaux(), adresses_locales()
+    creer_certificat_serveur(ac_cert, ac_cle, noms, ips)
+    return noms, ips
+
+
 def etat():
     x509, hashes, serialization, rsa, NameOID = _crypto()
     if not AC_CERT.is_file():
@@ -248,11 +324,10 @@ def etat():
     print(f"               valable jusqu'au {srv.not_valid_after_utc:%d/%m/%Y} "
           f"({reste} jour(s))")
     print(f"  Couvre     : {', '.join(noms)}")
-    actuelles = set(adresses_locales())
-    manquantes = actuelles - set(noms)
+    manquantes = non_couverts() or []
     if manquantes:
-        print(f"\n  ATTENTION : l'adresse {', '.join(sorted(manquantes))} n'est pas couverte.")
-        print("  L'adresse de la machine a changé — relancez avec --refaire.\n")
+        print(f"\n  ATTENTION : {', '.join(sorted(manquantes))} n'est pas couvert.")
+        print("  Adresse ou nom de domaine nouveau — relancez avec --refaire.\n")
         return 1
     print()
     return 0
@@ -263,11 +338,15 @@ def main():
     p.add_argument("--refaire", action="store_true",
                    help="regénère le certificat serveur (après un changement d'adresse)")
     p.add_argument("--etat", action="store_true", help="ce qui existe, et jusqu'à quand")
+    p.add_argument("--si-besoin", action="store_true", dest="si_besoin",
+                   help="refait le certificat serveur s'il ne couvre pas un nom ou une "
+                        "adresse d'aujourd'hui (réinstallation, nouveau WMS_NOMS)")
     args = p.parse_args()
     if args.etat:
         return etat()
 
-    if AC_CERT.is_file() and AC_CLE.is_file():
+    autorite_neuve = not (AC_CERT.is_file() and AC_CLE.is_file())
+    if not autorite_neuve:
         ac_cert, ac_cle = charger_autorite()
         print(f"  Autorité existante : {AC_CERT.name} (conservée)")
     else:
@@ -284,9 +363,20 @@ def main():
             print(f"  (profil iOS non écrit : {e})")
 
     if SRV_CERT.is_file() and not args.refaire:
-        print(f"  Certificat serveur existant : {SRV_CERT.name}")
-        print("  (--refaire pour le regénérer, après un changement d'adresse IP)")
-        return etat()
+        # Réinstallation avec un nouveau nom (-Noms), sur une nouvelle adresse :
+        # l'ancien certificat ne couvrait plus ce que tapent les téléphones, et
+        # l'installation annonçait « certificat NON fabriqué » sans le refaire.
+        manquants = non_couverts() if args.si_besoin else []
+        if args.si_besoin and manquants is None:
+            print("  Certificat serveur illisible : il est refait.")
+        elif manquants:
+            print(f"  Certificat serveur à refaire : il ne couvre pas {', '.join(manquants)}.")
+        else:
+            print(f"  Certificat serveur existant : {SRV_CERT.name}")
+            if not args.si_besoin:
+                print("  (--refaire pour le regénérer, après un changement d'adresse IP)")
+            code = etat()
+            return 0 if args.si_besoin else code
 
     noms, ips = noms_locaux(), adresses_locales()
     creer_certificat_serveur(ac_cert, ac_cle, noms, ips)
@@ -298,6 +388,9 @@ def main():
     print(f"  Certificat serveur créé, valable {JOURS_SERVEUR} jours.")
     print(f"  Noms  : {', '.join(noms)}")
     print(f"  IP    : {', '.join(ips)}")
+    if not autorite_neuve:
+        print("\n  Signé par l'autorité existante : rien à refaire sur les téléphones.\n")
+        return 0
     print("\n  À FAIRE UNE FOIS SUR CHAQUE TÉLÉPHONE :")
     print(f"  installer {AC_CERT.name} — voir docs/guide-https.md")
     print("  Sans cela, le navigateur affiche un avertissement à chaque ouverture.\n")

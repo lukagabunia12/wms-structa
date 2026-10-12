@@ -227,11 +227,39 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["wms.permissions.DroitWMS"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
-    # Seul `/api/token/` est joignable sans compte : ce quota borne les essais de
-    # mot de passe, ce qui compte dès que l'application est publiée sur internet.
+    # Un corps JSON qui n'est pas un objet est refusé en 400 (wms/parseurs.py).
+    "DEFAULT_PARSER_CLASSES": [
+        "wms.parseurs.ObjetJSON",
+        "rest_framework.parsers.FormParser",
+        "rest_framework.parsers.MultiPartParser",
+    ],
+    # Quota des points joignables sans compte (la sonde /api/sante/). Il ne
+    # protège PAS la connexion : la vue de DRF qui délivre les jetons l'ignore.
+    # Les essais de mot de passe ont leur propre frein, compte par compte et
+    # adresse par adresse : voir wms/connexion.py et WMS_CONNEXION_* plus bas.
     "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.AnonRateThrottle"],
     "DEFAULT_THROTTLE_RATES": {"anon": os.environ.get("DJANGO_QUOTA_ANONYME", "30/min")},
+    # L'adresse du client est REMOTE_ADDR, que waitress renseigne d'après
+    # l'entête X-Forwarded-For posé par le terminateur TLS — qui écrase celui du
+    # client. Sans ce réglage, DRF lirait X-Forwarded-For brut : un client qui
+    # l'invente obtiendrait un compteur neuf à chaque requête.
+    "NUM_PROXIES": 0,
 }
+
+# --- Frein aux essais de mot de passe ----------------------------------------
+# Toutes les portes d'entrée passent par lui : l'application (jeton),
+# l'administration et la page de connexion de l'API. Au-delà de N échecs en
+# quinze minutes, la connexion est refusée — même avec le bon mot de passe —
+# jusqu'à la fin de la fenêtre, avec un message qui dit combien attendre.
+#   - par compte ET par adresse : un collègue qui se trompe ne bloque pas le
+#     compte depuis un autre téléphone ;
+#   - par adresse, tous comptes confondus : on n'essaie pas cent comptes ;
+#   - jamais par adresse quand elle est celle de la machine elle-même
+#     (127.0.0.1) : tous les clients d'un proxy mal réglé la partageraient, et
+#     un seul maladroit bloquerait l'entrepôt.
+CONNEXION_FENETRE_MINUTES = int(os.environ.get("WMS_CONNEXION_FENETRE_MINUTES", "15"))
+CONNEXION_ESSAIS_PAR_COMPTE = int(os.environ.get("WMS_CONNEXION_ESSAIS_COMPTE", "10"))
+CONNEXION_ESSAIS_PAR_ADRESSE = int(os.environ.get("WMS_CONNEXION_ESSAIS_ADRESSE", "30"))
 
 # CORS : ouvert seulement en développement. En exploitation, l'interface est servie
 # par le même serveur que l'API — aucune origine tierce n'a de raison d'appeler.
@@ -248,6 +276,12 @@ try:
 except OSError:  # dossier non inscriptible : on se rabat sur la console seule
     _fichier_log = None
 
+# La console en plus du fichier, sauf quand le WMS tourne en service : la
+# tâche planifiée recueille déjà la sortie du lanceur dans logs/service.log, et
+# chaque avertissement y serait écrit deux fois — dans un fichier que rien ne
+# fait tourner, contrairement à wms.log.
+_console = _bool("DJANGO_LOG_CONSOLE", True)
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -255,7 +289,8 @@ LOGGING = {
         "horodate": {"format": "{asctime} {levelname} {name} — {message}", "style": "{"},
     },
     "handlers": {
-        "console": {"class": "logging.StreamHandler", "formatter": "horodate"},
+        **({"console": {"class": "logging.StreamHandler", "formatter": "horodate"}}
+           if _console else {}),
         **({"fichier": {
             "class": "logging.handlers.RotatingFileHandler",
             "filename": _fichier_log,
@@ -263,10 +298,17 @@ LOGGING = {
             "backupCount": 5,
             "encoding": "utf-8",
             "formatter": "horodate",
+            # Ouvert à la première ligne écrite, pas au démarrage. Sous Windows,
+            # un fichier ouvert par deux processus ne peut pas tourner : le
+            # serveur le tient, et une commande lancée à côté (la sauvegarde de
+            # la nuit, un `migrate`) qui l'ouvrait sans rien y écrire faisait
+            # échouer la rotation — ou, si elle n'avait pas le droit d'écrire
+            # dans logs/, refusait carrément de démarrer.
+            "delay": True,
         }} if _fichier_log else {}),
     },
     "root": {
-        "handlers": ["console"] + (["fichier"] if _fichier_log else []),
+        "handlers": (["console"] if _console else []) + (["fichier"] if _fichier_log else []),
         "level": "INFO" if DEBUG else "WARNING",
     },
 }

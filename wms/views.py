@@ -6,26 +6,50 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db.models import Count, Max, OuterRef, Prefetch, Q, Subquery
+from django.db.models import (Case, Count, IntegerField, Max, OuterRef, Prefetch, Q,
+                              Subquery, Value, When)
 from django.db.models.functions import Coalesce
 from django.shortcuts import render
 from django.utils import timezone
 from rest_framework import status, viewsets
+from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import ValidationError as ErreurAPI
 from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from . import (export_inventaire, export_mp, lecture_fiche, ocr_fiche, services_cabines,
-               services_emplacements, services_import, services_mp)
+from . import (connexion, export_inventaire, export_mp, lecture_fiche, ocr_fiche,
+               services_cabines, services_emplacements, services_import, services_mp)
 from .models import (ArticleMP, Cabine, CabineAttendue, Emplacement, ModeleCabine,
                      MouvementCabine, MouvementMP, Occupation, StockMP, Utilisateur)
+from .parseurs import ObjetJSON
 from .serializers import (CabineAttendueSerializer, CabineSerializer, EmplacementSerializer,
                           ModeleCabineSerializer, MouvementCabineSerializer,
                           OccupationSerializer)
 
 logger = logging.getLogger(__name__)
+
+
+class TriStable(OrderingFilter):
+    """Le tri demandé, puis toujours l'identifiant.
+
+    Trier par chantier, par statut ou par modèle laisse des ex aequo, et
+    PostgreSQL rend des ex aequo dans un ordre qui peut changer d'une requête
+    à l'autre : la liste se chargeant page par page, « Voir la suite »
+    montrait deux fois une cabine, ou en sautait une. Un dernier critère
+    unique rend l'ordre stable.
+    """
+
+    def get_ordering(self, request, queryset, view):
+        ordre = super().get_ordering(request, queryset, view)
+        if not ordre:
+            return ordre
+        ordre = list(ordre)
+        if not any(champ.lstrip("-") in ("pk", "id") for champ in ordre):
+            ordre.append("-pk" if ordre[0].startswith("-") else "pk")
+        return ordre
 
 #: Au-delà de ce délai sans le moindre mouvement, une cabine est signalée comme stagnante.
 SEUIL_IMMOBILE_JOURS = 7
@@ -34,7 +58,7 @@ SEUIL_IMMOBILE_JOURS = 7
 class EmplacementViewSet(viewsets.ModelViewSet):
     queryset = Emplacement.objects.all()
     serializer_class = EmplacementSerializer
-    filter_backends = [SearchFilter, OrderingFilter]
+    filter_backends = [SearchFilter, TriStable]
     search_fields = ["code", "zone", "description"]
     ordering_fields = ["code", "rack"]
     ordering = ["code"]
@@ -71,7 +95,10 @@ class EmplacementViewSet(viewsets.ModelViewSet):
                                 Prefetch("stock_mp", queryset=StockMP.objects.order_by("place"),
                                          to_attr="lignes_mp"),
                                 # Les codes acceptés : idem, une requête en tout.
-                                "codes_acceptes"))
+                                "codes_acceptes",
+                                # Les places condamnées : le calcul des places
+                                # libres en a besoin pour chaque case du plan.
+                                "places_condamnees"))
         if p.get("rack"):
             qs = qs.filter(rack__iexact=p["rack"].strip())
         # `?usage=mp` : les emplacements de matières premières, toutes familles.
@@ -147,7 +174,14 @@ class EmplacementViewSet(viewsets.ModelViewSet):
         if demande.isdigit():
             cabine = Cabine.objects.filter(pk=int(demande)).first()
         occupees = services_cabines.occupation(emplacement)
-        presentes = services_cabines.cabines_presentes(emplacement)
+        # Le parc annoté, comme la liste des cabines : dernière activité et
+        # motif de quarantaine en une sous-requête, occupations préchargées.
+        # Sans lui, une aire de réception de deux cents cabines coûtait trois
+        # requêtes par cabine — six cents pour ouvrir un écran.
+        presentes = (CabineViewSet._parc_annote()
+                     .filter(pk__in=services_cabines.cabines_presentes(emplacement)
+                             .values("pk"))
+                     .order_by("numero"))
         # Condamnée n'est pas occupée, et l'écran doit faire la différence : une
         # place qui disparaît sans explication passe pour un défaut d'affichage,
         # et quelqu'un finit par y poser une cabine à la main.
@@ -214,7 +248,9 @@ class EmplacementViewSet(viewsets.ModelViewSet):
             raise ErreurAPI("Indiquez la cabine à ranger : ?cabine=<id>.")
         texte = (request.query_params.get("q")
                  or request.query_params.get("search") or "")
-        lignes = services_cabines.emplacements_pour(cabine, texte)
+        # Toute la liste : « Voir tous les emplacements » s'arrêtait à 60 sans
+        # le dire, et « 1re sur 60 possibles » comptait la liste coupée.
+        lignes = services_cabines.emplacements_pour(cabine, texte, limite=0)
         possibles = [ligne for ligne in lignes if ligne["possible"]]
         return Response({
             "cabine": {
@@ -428,6 +464,21 @@ def _filtre_id(params, nom):
         raise ErreurAPI({"erreur": [f"Le filtre « {nom} » doit être un identifiant numérique."]})
 
 
+def _texte(valeur, longueur=None):
+    """Une valeur texte du corps d'une requête.
+
+    Un nombre devient du texte (« 251213 » envoyé sans guillemets) ; une liste,
+    un objet ou un booléen sont refusés en 400. Sans cela, `.strip()` sur un
+    nombre levait une AttributeError, rendue en erreur 500.
+    """
+    if valeur is None:
+        return ""
+    if isinstance(valeur, bool) or not isinstance(valeur, (str, int, float)):
+        raise ErreurAPI({"erreur": ["Valeur illisible : du texte était attendu."]})
+    texte = str(valeur).strip()
+    return texte[:longueur] if longueur else texte
+
+
 class CabineViewSet(viewsets.ModelViewSet):
     """Le parc. Les cabines envoyées n'apparaissent dans les listes qu'avec
     `?toutes=1` ; leur fiche, elle, reste toujours consultable."""
@@ -436,7 +487,7 @@ class CabineViewSet(viewsets.ModelViewSet):
     serializer_class = CabineSerializer
     # La recherche libre est traitée dans `get_queryset` : « 260347 » doit
     # ramener la cabine 26_03_47, ce que `SearchFilter` ne sait pas faire.
-    filter_backends = [OrderingFilter]
+    filter_backends = [TriStable]
     ordering_fields = ["numero", "chantier", "date", "statut", "modele",
                        "type_cabine", "derniere_activite_date"]
     #: Une case par geste. Toute autre écriture tombe sous la plus fermée,
@@ -529,8 +580,18 @@ class CabineViewSet(viewsets.ModelViewSet):
     @staticmethod
     def _filtrer_egalites(qs, p):
         """Les filtres qui portent sur un champ de la cabine elle-même."""
-        for param, champ in [("numero", "numero__icontains"),
-                             ("statut", "statut"),
+        numero = (p.get("numero") or "").strip()
+        if numero:
+            # « Contient », mais la correspondance EXACTE d'abord. Les écrans
+            # cherchent un numéro précis et lisent la première page : dans une
+            # semaine de plus de cent cabines, « 25_49_1 » en ramenait 105, et
+            # 25_49_1 n'était pas sur la première page — le scanner la disait
+            # inconnue et l'entrée proposait de la recréer.
+            qs = (qs.filter(numero__icontains=numero)
+                  .annotate(_exacte=Case(When(numero__iexact=numero, then=Value(0)),
+                                         default=Value(1), output_field=IntegerField()))
+                  .order_by("_exacte", "numero", "pk"))
+        for param, champ in [("statut", "statut"),
                              ("type", "type_cabine"),
                              # Valeur choisie dans une liste déroulante : elle est
                              # complète, donc exacte. « contient » y répondrait à
@@ -590,6 +651,10 @@ class CabineViewSet(viewsets.ModelViewSet):
         except (TypeError, ValueError):
             raise ErreurAPI({"erreur": [
                 "Le filtre « immobile » se donne en nombre de jours."]})
+        # Un milliard de jours dépassait ce que sait compter une date : erreur 500.
+        if not 0 <= seuil <= 36500:
+            raise ErreurAPI({"erreur": [
+                "Le filtre « immobile » se donne en jours, entre 0 et 36 500."]})
         return qs.filter(derniere_activite_date__lt=timezone.now() - timedelta(days=seuil))
 
     @action(detail=False, methods=["get"], url_path="export")
@@ -742,7 +807,11 @@ class CabineViewSet(viewsets.ModelViewSet):
             "seuil_immobile_jours": SEUIL_IMMOBILE_JOURS,
             "compteurs": {
                 "total": parc.count(),
-                "non_rangees": parc.filter(occupations__emplacement__isnull=True).distinct().count(),
+                # « Non rangée » : AUCUN emplacement — la même définition que le
+                # filtre `?rangee=0`. Compter les cabines qui ont une ligne vide
+                # comptait aussi des cabines rangées, que la liste ne montrait pas.
+                "non_rangees": parc.exclude(occupations__emplacement__isnull=False)
+                                   .distinct().count(),
                 "quarantaine": parc.filter(statut=Cabine.QUARANTAINE).count(),
                 "sans_chantier": parc.filter(chantier="").count(),
                 "immobiles": parc.filter(derniere_activite_date__lt=limite).count(),
@@ -759,7 +828,10 @@ class CabineViewSet(viewsets.ModelViewSet):
         """Résout l'emplacement visé. Absent : le service choisit lui-même."""
         if brut in (None, ""):
             return None
-        occupation = cabine.occupations.filter(pk=brut).first()
+        identifiant = _entier(brut)
+        if identifiant is None:
+            raise ErreurAPI({"erreur": ["Emplacement de la cabine illisible."]})
+        occupation = cabine.occupations.filter(pk=identifiant).first()
         if occupation is None:
             raise ErreurAPI({"erreur": [
                 "Cet emplacement n'appartient pas à cette cabine."]})
@@ -774,7 +846,7 @@ class CabineViewSet(viewsets.ModelViewSet):
             emplacement = self._emplacement_requis(d.get("emplacement"))
             return services_cabines.ranger(
                 cabine=cabine, emplacement=emplacement,
-                place=(d.get("place") or "").strip().upper(),
+                place=_texte(d.get("place")).upper(),
                 occupation=self._occupation_optionnelle(cabine, d.get("occupation")),
                 # `ajouter` : un emplacement DE PLUS, sans libérer le premier.
                 ajouter=str(d.get("ajouter", "")).lower() in ("1", "true"),
@@ -783,15 +855,25 @@ class CabineViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def statut(self, request, pk=None):
+        statut = _texte(request.data.get("statut"))
+        # Le statut « envoyé » passe par l'envoi (motif, chantier) : c'est une
+        # sortie, et elle exige la case de la sortie. La seule case « changer le
+        # statut » suffisait jusqu'ici à faire partir une cabine.
+        if statut == Cabine.ENVOYE and not request.user.peut("cab_envoyer"):
+            return Response(
+                {"detail": "Votre compte n'a pas le droit « "
+                           f"{request.user.libelle_droit('cab_envoyer')} ». Demandez-le "
+                           "à l'administrateur du WMS."},
+                status=status.HTTP_403_FORBIDDEN)
         return self._run(lambda: services_cabines.changer_statut(
-            cabine=self.get_object(), statut=(request.data.get("statut") or "").strip(),
-            utilisateur=request.user, motif=(request.data.get("motif") or "")[:255]))
+            cabine=self.get_object(), statut=statut,
+            utilisateur=request.user, motif=_texte(request.data.get("motif"), 255)))
 
     @action(detail=True, methods=["post"])
     def envoyer(self, request, pk=None):
         return self._run(lambda: services_cabines.envoyer(
             cabine=self.get_object(), utilisateur=request.user,
-            note=(request.data.get("note") or "")[:255]))
+            note=_texte(request.data.get("note"), 255)))
 
     @action(detail=True, methods=["post"])
     def reprendre(self, request, pk=None):
@@ -803,12 +885,12 @@ class CabineViewSet(viewsets.ModelViewSet):
         """
         return self._run(lambda: services_cabines.reprendre(
             cabine=self.get_object(), utilisateur=request.user,
-            motif=(request.data.get("motif") or "")[:255]))
+            motif=_texte(request.data.get("motif"), 255)))
 
     @action(detail=True, methods=["post"])
     def chantier(self, request, pk=None):
         return self._run(lambda: services_cabines.affecter_chantier(
-            cabine=self.get_object(), chantier=request.data.get("chantier"),
+            cabine=self.get_object(), chantier=_texte(request.data.get("chantier")),
             utilisateur=request.user))
 
     @staticmethod
@@ -824,7 +906,7 @@ class CabineViewSet(viewsets.ModelViewSet):
 class MouvementCabineViewSet(viewsets.ReadOnlyModelViewSet):
     """Journal de vie des cabines — lecture seule, y compris pour un administrateur."""
     serializer_class = MouvementCabineSerializer
-    filter_backends = [SearchFilter, OrderingFilter]
+    filter_backends = [SearchFilter, TriStable]
     search_fields = ["cabine_numero", "chantier", "utilisateur_nom", "note"]
     ordering_fields = ["date", "cabine_numero"]
 
@@ -1029,6 +1111,29 @@ def alertes(request):
     return Response(services_mp.alertes())
 
 
+class ConnexionJeton(ObtainAuthToken):
+    """`/api/token/` : la vue de DRF, plus le frein aux essais de mot de passe.
+
+    La vue d'origine déclare `throttle_classes = ()` : le quota anonyme des
+    réglages ne s'y appliquait pas, et c'était la seule porte de l'application
+    ouverte sans compte. Le frein lui-même est dans `wms/connexion.py` ; ici, on
+    le consulte avant tout pour répondre 429 avec le temps d'attente, plutôt
+    qu'« identifiants incorrects » à quelqu'un qui tape le bon mot de passe.
+    """
+
+    # La vue d'origine fixe ses propres analyseurs : on y remet le JSON strict.
+    parser_classes = [ObjetJSON, FormParser, MultiPartParser]
+
+    def post(self, request, *args, **kwargs):
+        donnees = request.data if isinstance(request.data, dict) else {}
+        reste = connexion.attente(request, str(donnees.get("username") or ""))
+        if reste:
+            return Response({"detail": connexion.message(reste)},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS,
+                            headers={"Retry-After": str(reste)})
+        return super().post(request, *args, **kwargs)
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def sante(request):
@@ -1124,7 +1229,7 @@ class CabineAttendueViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CabineAttendueSerializer
     droit_ecriture = "production"
 
-    filter_backends = [SearchFilter, OrderingFilter]
+    filter_backends = [SearchFilter, TriStable]
     search_fields = ["numero", "num_unique", "chantier", "chantier_brut", "client",
                      "revendeur", "modele", "gamme"]
     ordering_fields = ["numero", "chantier", "semaine_production", "importe_le"]

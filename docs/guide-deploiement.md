@@ -15,8 +15,9 @@ d'installation.
 | Démarrage | quelqu'un double-clique sur le `.bat` | automatique au démarrage de la machine, sans session ouverte |
 | Base | un fichier `db.sqlite3` | PostgreSQL |
 | Écritures simultanées | SQLite verrouille toute la base pendant une écriture | plusieurs postes écrivent en même temps |
-| Sauvegarde | copier un fichier à la main | `pg_dump` planifié, avec rotation |
-| Panne | personne ne le sait | la sonde `/api/sante/` répond 503 |
+| Sauvegarde | copier un fichier à la main | `pg_dump` vérifié deux fois par jour, avec rotation et copie hors machine |
+| Journaux | rien ne les efface | ménage chaque semaine, mesures à l'appui |
+| Panne | personne ne le sait | la sonde `/api/sante/` répond 503, l'administration affiche l'état des sauvegardes |
 
 Le point qui compte vraiment : **SQLite verrouille la base entière à chaque
 écriture**. Un poste tient très bien. Cinq opérateurs qui rangent des cabines en
@@ -29,7 +30,8 @@ C'est la raison technique de passer sur PostgreSQL, pas une question de volume.
 
 Quand la répétition vous a convaincue, **`Basculer-PostgreSQL.bat`** prépare la
 base d'**exploitation** — `wms`, pas `wms_essai` — et fait passer le WMS dessus
-pour de bon.
+pour de bon. Le WMS doit être **arrêté** : la bascule le vérifie, et refuse
+sinon — les gestes faits pendant l'export resteraient dans SQLite.
 
 Ce qu'il fait, dans l'ordre : retour temporaire sur SQLite (pour exporter depuis
 la source d'origine, même si `.env` est déjà basculé), export en lecture seule,
@@ -132,20 +134,15 @@ Quand la répétition vous a convaincue, passez à la suite — le serveur.
 
 ## 1. Préparer la machine serveur
 
-Un PC dédié suffit : 4 Go de RAM, un disque SSD, et **allumé en permanence**.
-Ce dernier point n'est pas un détail — c'est ce qui distingue un serveur d'un
-poste de travail.
+Un serveur Windows (ou un PC dédié) : 4 Go de RAM, un disque SSD, et **allumé en
+permanence**. Ce dernier point n'est pas un détail — c'est ce qui distingue un
+serveur d'un poste de travail.
 
-Installer :
-
-1. **Python 3.12+** — cocher « Add Python to PATH ».
-2. **PostgreSQL 16** — depuis <https://www.postgresql.org/download/windows/>.
-   Noter le mot de passe du compte `postgres` demandé à l'installation.
-   Cocher « Command Line Tools » : c'est ce qui fournit `psql` et `pg_dump`.
-3. Copier le dossier du projet, par exemple dans `C:\WMS\wms-structa`.
-
-Fixer une **adresse IP fixe** à la machine (ou une réservation DHCP côté box) :
-les téléphones se connecteront à cette adresse, et elle ne doit pas changer.
+La liste complète — Python de la même version que le PC, PostgreSQL 18 avec
+« Command Line Tools », adresse IP fixe, nom DNS, port 8443, dossier et partage
+des sauvegardes, règles des mots de passe — est au **§ 1 de
+[`docs/guide-serveur.md`](guide-serveur.md)**, qui déroule ensuite toute la
+mise en service.
 
 ---
 
@@ -240,20 +237,23 @@ Pas à pas, avec la liste de ce qu'il faut télécharger sur le poste serveur :
 > `Installer-Serveur.ps1` a été retiré : il installait le WMS en HTTP sur le port
 > 8000, avant que le HTTPS ne devienne nécessaire au scan par caméra.
 
-**Pourquoi une tâche planifiée et non un service Windows :** elle est native
-(aucun outil tiers à télécharger), elle démarre **sans session ouverte** — le WMS
-repart donc tout seul après une coupure de courant — et elle sait se relancer
-après un échec. Pour une gestion de service complète (arrêt propre, dépendances
-entre services), installez [NSSM](https://nssm.cc) et pointez-le sur
-`deploiement\windows\Demarrer-serveur.bat`.
+À la fin, l'installation pose trois **tâches planifiées**, dans le dossier
+« WMS Structa » du Planificateur, sous le compte SYSTEM :
 
-Commandes utiles :
+| Tâche | Quand | Rôle |
+|---|---|---|
+| Service | au démarrage de Windows, puis toutes les 2 minutes | démarre le WMS, le relance s'il est tombé |
+| Sauvegarde | 12:30 et 22:30 | `manage.py sauvegarder` : base vérifiée, configuration, rotation, copie |
+| Nettoyage | le dimanche à 03:15 | `manage.py nettoyer` : journaux de PostgreSQL, sessions expirées, mesures |
 
-```powershell
-Get-ScheduledTask -TaskName "WMS Structa" | Get-ScheduledTaskInfo   # état, dernier résultat
-Start-ScheduledTask  -TaskName "WMS Structa"                        # démarrer
-Stop-ScheduledTask   -TaskName "WMS Structa"                        # arrêter
-```
+**Pourquoi des tâches planifiées et non un service Windows :** elles sont
+natives (aucun outil tiers à télécharger), elles démarrent **sans session
+ouverte** — le WMS repart donc tout seul après une coupure de courant — et la
+vérification toutes les deux minutes relance un WMS tombé.
+
+Au quotidien, à la racine du dossier : `Etat-WMS.bat` (tout l'état en un
+écran), `Arreter-WMS.bat`, `Redemarrer-WMS.bat`, `Sauvegarder-WMS.bat`,
+`Restaurer-WMS.bat`. Détail : [`docs/guide-serveur.md`](guide-serveur.md), § 7.
 
 ---
 
@@ -289,34 +289,22 @@ le métier fonctionne.
 
 ## 6. Sauvegarder
 
-Une sauvegarde qu'on ne sait pas restaurer n'est pas une sauvegarde. Le script
-vérifie que le fichier produit n'est pas vide et **affiche la commande de
-restauration à chaque passage** — gardez-la sous les yeux.
+La tâche planifiée « Sauvegarde » s'en charge, deux fois par jour, sans rien à
+écrire : `manage.py sauvegarder` produit `wms_<date>.dump` (relu par
+`pg_restore --list` : chaque table doit y figurer) et `wms_<date>_fichiers.zip`
+(`.env`, certificats), applique la rotation (30 jours, puis un par mois pendant
+un an, jamais moins de 7) et copie le tout hors de la machine si
+`WMS_SAUVEGARDE_COPIE` est réglé.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File deploiement\windows\Sauvegarder.ps1 -Destination "D:\Sauvegardes\WMS"
-```
+Restaurer : `Arreter-WMS.bat`, `Restaurer-WMS.bat`, `Redemarrer-WMS.bat` — la
+base actuelle est gardée d'abord, et le rechargement se fait en une seule
+transaction.
 
-À planifier une fois par nuit :
+Tout le détail — réglages, copie vers un NAS, essai mensuel de restauration,
+machine neuve : [`docs/guide-serveur.md`](guide-serveur.md), § 8.
 
-```powershell
-$a = New-ScheduledTaskAction -Execute "powershell.exe" `
-     -Argument "-ExecutionPolicy Bypass -File C:\WMS\wms-structa\deploiement\windows\Sauvegarder.ps1"
-$d = New-ScheduledTaskTrigger -Daily -At 22:30
-Register-ScheduledTask -TaskName "WMS Structa - sauvegarde" -Action $a -Trigger $d `
-    -User "SYSTEM" -RunLevel Highest
-```
-
-**Testez une restauration une fois**, sur une base de test, avant d'en avoir
-besoin :
-
-```bat
-createdb -U postgres wms_test
-pg_restore -U postgres -d wms_test --clean --if-exists D:\Sauvegardes\WMS\wms_2026-08-25_2230.dump
-```
-
-Sortez au moins une copie de la machine (disque externe, partage réseau) : une
-sauvegarde stockée sur le disque qui tombe ne sert à rien.
+> `deploiement\windows\Sauvegarder.ps1` reste pour les scripts qui
+> l'appelaient : il passe maintenant par `manage.py sauvegarder`.
 
 ---
 
@@ -325,8 +313,13 @@ sauvegarde stockée sur le disque qui tombe ne sert à rien.
 - **`/api/sante/`** répond 200 si tout va bien, **503** si la base est injoignable
   ou si le schéma est en retard sur le code. C'est le point à interroger depuis un
   outil de supervision — il n'exige aucun compte et ne divulgue rien.
-- **`logs\wms.log`** (rotation automatique, 5 fichiers de 2 Mo) : le premier
-  endroit à regarder quand un opérateur signale un problème de la veille.
+- **L'accueil de l'administration**, cadre « Sauvegardes et disque » : la
+  dernière sauvegarde, sa copie, la place libre, le dernier ménage.
+- **Le journal Application de Windows**, source « WMS Structa » : 900 pour une
+  sauvegarde réussie, 901 pour un échec.
+- **`logs\wms.log`** (rotation automatique, 6 fichiers de 2 Mo) : le premier
+  endroit à regarder quand un opérateur signale un problème de la veille ;
+  `logs\service.log` quand le WMS ne démarre pas.
 
 ---
 
@@ -372,7 +365,7 @@ l'application deviendrait inaccessible depuis le Wi-Fi local.
 | « CSRF verification failed » sur `/admin/` | Derrière un proxy HTTPS sans `DJANGO_CSRF_ORIGINS`. |
 | Le scan caméra ne marche pas | La caméra exige HTTPS. Sur le réseau local en `http://`, la saisie manuelle prend le relais. |
 | « duplicate key » après la reprise | Séquences non recalées. `reprise_sql importer` le fait ; un `loaddata` lancé à la main, non. |
-| L'appli redevient joignable puis retombe | La tâche planifiée relance en boucle un service qui échoue. Lire `logs\wms.log`. |
+| L'appli redevient joignable puis retombe | La tâche planifiée relance en boucle un service qui échoue. Lire `logs\service.log`, puis `logs\wms.log`. |
 | Mes cabines d'hier ont disparu | Vous n'êtes pas sur la même base. `Quelle-Base.bat` donne le verdict en trois chiffres. |
 | « Le service PostgreSQL ne répond pas » | Le service est arrêté. `services.msc`, chercher `postgresql-x64-…`, démarrer. Le script s'arrête **avant** de demander les mots de passe : la cause est le service, pas le mot de passe. |
 | « La base wms existe déjà et contient N tables » | Garde-fou volontaire : ce script n'écrase pas une base d'exploitation. Soit vous jetez la base à la main (`psql -U postgres -c "DROP DATABASE wms;"`), soit vous relancez avec `-Base wms2`. |

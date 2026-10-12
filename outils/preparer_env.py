@@ -14,10 +14,18 @@ Il n'écrase jamais un réglage déjà personnalisé : relançable sans risque.
 
     python outils/preparer_env.py            # prépare / répare
     python outils/preparer_env.py --verifier  # diagnostic seul, n'écrit rien
+    python outils/preparer_env.py --poser WMS_NOMS=wms.structa.fr
+
+`--poser` écrit un réglage (l'installateur s'en sert pour le nom de domaine et
+le dossier des sauvegardes) ; une valeur vide retire la ligne. Il refuse les
+valeurs que `.env` ne saurait pas relire telles quelles, plutôt que d'écrire un
+réglage que Django comprendrait de travers.
 """
 import re
 import secrets
+import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 
 RACINE = Path(__file__).resolve().parent.parent
@@ -34,8 +42,70 @@ def valeur(texte, cle):
 def poser(texte, cle, val):
     """Remplace la ligne si elle existe, l'ajoute sinon."""
     if re.search(rf"(?m)^{re.escape(cle)}=", texte):
-        return re.sub(rf"(?m)^{re.escape(cle)}=.*$", f"{cle}={val}", texte)
+        # Une fonction et non une chaîne de remplacement : une valeur qui
+        # contient « \\ » (un partage réseau, un chemin Windows) serait sinon
+        # interprétée par re.sub.
+        return re.sub(rf"(?m)^{re.escape(cle)}=.*$", lambda _m: f"{cle}={val}", texte)
     return texte.rstrip("\n") + f"\n{cle}={val}\n"
+
+
+def retirer(texte, cle):
+    return re.sub(rf"(?m)^{re.escape(cle)}=.*\n?", "", texte)
+
+
+def probleme_valeur(valeur):
+    """Pourquoi cette valeur ne peut pas être écrite telle quelle dans `.env`,
+    ou None. python-dotenv — qui relit `.env` pour Django — coupe une valeur à
+    « espace + # » (commentaire), ôte les espaces des bords et les guillemets,
+    et remplace « ${…} » par une variable d'environnement."""
+    if valeur != valeur.strip():
+        return "commence ou finit par une espace"
+    if re.search(r"\s#", valeur):
+        return "contient « # » précédé d'une espace (lu comme un commentaire)"
+    if valeur[:1] in ("'", '"'):
+        return "commence par un guillemet"
+    if "${" in valeur:
+        return "contient « ${ »"
+    if "\n" in valeur or "\r" in valeur:
+        return "contient un retour à la ligne"
+    return None
+
+
+def sauvegarder_env():
+    """Copie datée de `.env` avant écriture — les dix dernières sont gardées,
+    comme le fait outils/basculer_base.py."""
+    if not ENV.is_file():
+        return None
+    copie = ENV.parent / f".env.avant-{datetime.now():%Y%m%d-%H%M%S-%f}"
+    shutil.copy2(ENV, copie)
+    for vieille in sorted(ENV.parent.glob(".env.avant-*"))[:-10]:
+        vieille.unlink(missing_ok=True)
+    return copie
+
+
+def poser_reglages(reglages):
+    """Écrit {CLE: valeur} dans `.env` (valeur vide : ligne retirée). Rend la
+    liste des refus — vide si tout est écrit."""
+    erreurs = []
+    for cle, val in reglages.items():
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", cle):
+            erreurs.append(f"Nom de réglage invalide : {cle}")
+            continue
+        motif = probleme_valeur(val) if val else None
+        if motif:
+            erreurs.append(f"{cle} : la valeur {motif}. Choisissez-en une autre.")
+    if erreurs:
+        return erreurs
+    if not ENV.exists():
+        main()
+    texte = ENV.read_text(encoding="utf-8")
+    nouveau = texte
+    for cle, val in reglages.items():
+        nouveau = poser(nouveau, cle, val) if val else retirer(nouveau, cle)
+    if nouveau != texte:
+        sauvegarder_env()
+        ENV.write_text(nouveau, encoding="utf-8")
+    return []
 
 
 def main(verifier_seulement=False):
@@ -76,5 +146,25 @@ def main(verifier_seulement=False):
     return 0
 
 
+def principal(argv):
+    if "--poser" in argv:
+        reglages = {}
+        for i, arg in enumerate(argv):
+            if arg == "--poser" and i + 1 < len(argv):
+                cle, egal, val = argv[i + 1].partition("=")
+                if not egal:
+                    print(f"--poser attend CLE=VALEUR, pas « {argv[i + 1]} »")
+                    return 2
+                reglages[cle.strip()] = val
+        erreurs = poser_reglages(reglages)
+        for e in erreurs:
+            print("  REFUS : " + e)
+        if not erreurs:
+            for cle, val in reglages.items():
+                print(f"  .env : {cle}={val}" if val else f"  .env : {cle} retiré")
+        return 1 if erreurs else 0
+    return main("--verifier" in argv)
+
+
 if __name__ == "__main__":
-    sys.exit(main("--verifier" in sys.argv))
+    sys.exit(principal(sys.argv[1:]))

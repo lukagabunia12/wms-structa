@@ -59,6 +59,31 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "     Service PostgreSQL : joignable sur ${Hote}:${Port}" -ForegroundColor Gray
 Write-Host ""
 
+# Deja bascule ? Ce script commence par REVENIR sur SQLite pour exporter : sur
+# un WMS qui tourne deja sur PostgreSQL, il exportait la vieille base SQLite,
+# s'arretait sur "base non vide"... et laissait .env sur SQLite. Le WMS
+# repartait alors sur des donnees d'il y a des semaines, sans rien dire.
+& $Py outils\basculer_base.py en-service
+if ($LASTEXITCODE -eq 0) {
+    Write-Host ""
+    Write-Host "  Le WMS tourne deja sur une base PostgreSQL en service : rien a basculer." -ForegroundColor Green
+    Write-Host "  Rien n'a ete modifie. Quelle base est active : Quelle-Base.bat" -ForegroundColor Gray
+    Write-Host ""
+    exit 0
+}
+
+# Le WMS doit etre arrete : l'export est une photo de la base a un instant
+# donne. Ce qui serait saisi ensuite resterait dans SQLite, perdu pour
+# PostgreSQL sans que personne le voie.
+& $Py outils\basculer_base.py wms-arrete
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "  Arretez d'abord le WMS : fermez sa fenetre (sur le serveur :" -ForegroundColor Yellow
+    Write-Host "  Arreter-WMS.bat), puis relancez. Rien n'a ete modifie." -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
+
 # --- 1. Revenir sur SQLite pour exporter depuis la source d'origine ---------
 # Sans cette etape, un .env deja bascule (apres une repetition) ferait exporter
 # la base d'essai au lieu de db.sqlite3 : on reprendrait une copie d'une copie.
@@ -79,73 +104,45 @@ if ($LASTEXITCODE -ne 0) { throw "Installation du pilote PostgreSQL impossible."
 
 # --- 4. Role et base d'exploitation -----------------------------------------
 Write-Host "4/7  Role applicatif et base d'exploitation..." -ForegroundColor Yellow
-$MotDePasse = Read-Host "     Mot de passe a donner au compte applicatif '$Utilisateur'"
-if ([string]::IsNullOrWhiteSpace($MotDePasse)) { throw "Mot de passe vide : abandon." }
-$MotDePasseAdmin = Read-Host "     Mot de passe du compte 'postgres' (installation)" -AsSecureString
-$env:PGPASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-    [Runtime.InteropServices.Marshal]::SecureStringToBSTR($MotDePasseAdmin))
-
-# Rejouable : on ne recree pas un role existant, on remet son mot de passe.
-$sql = @"
-DO `$`$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$Utilisateur') THEN
-    CREATE ROLE $Utilisateur WITH LOGIN PASSWORD '$MotDePasse';
-  ELSE
-    ALTER ROLE $Utilisateur WITH LOGIN PASSWORD '$MotDePasse';
-  END IF;
-END `$`$;
-"@
-$sql | & psql -h $Hote -p $Port -U postgres -v ON_ERROR_STOP=1 -q
-if ($LASTEXITCODE -ne 0) { Remove-Item Env:\PGPASSWORD; throw "Creation du role impossible : mot de passe postgres incorrect ?" }
-
-# Aucun DROP DATABASE ici. Une base d'exploitation ne se recree pas a l'aveugle :
-# si elle porte deja des tables, c'est a un humain de decider ce qu'on en fait.
-# Les guillemets "$( )" autour du resultat ne sont pas cosmetiques : quand la
-# base n'existe pas, psql ne renvoie AUCUNE ligne et PowerShell recupere $null.
-# Appeler .Trim() dessus leve "You cannot call a method on a null-valued
-# expression", et sous $ErrorActionPreference = 'Stop' cela tuait le script --
-# au premier lancement, c'est-a-dire exactement quand la base n'existe pas.
-$existe = "$(& psql -h $Hote -p $Port -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$Base'")".Trim()
-if ($existe -eq "1") {
-    $tables = "$(& psql -h $Hote -p $Port -U postgres -d $Base -tAc `
-        "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")".Trim()
-    if ([string]::IsNullOrWhiteSpace($tables)) { $tables = "0" }
-    if ([int]$tables -gt 0) {
-        Remove-Item Env:\PGPASSWORD
-        Write-Host ""
-        Write-Host "  La base '$Base' existe deja et contient $tables table(s)." -ForegroundColor Red
-        Write-Host "  Ce script n'ecrase jamais une base d'exploitation." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  Si ces donnees sont a jeter, supprimez la base a la main :" -ForegroundColor Yellow
-        Write-Host "     psql -U postgres -c ""DROP DATABASE $Base;""" -ForegroundColor Yellow
-        Write-Host "  Sinon, relancez avec un autre nom :" -ForegroundColor Yellow
-        Write-Host "     ...\Basculer-PostgreSQL.ps1 -Base wms2" -ForegroundColor Yellow
-        Write-Host ""
-        exit 1
-    }
-    Write-Host "     Base '$Base' deja presente et vide : reutilisee." -ForegroundColor Gray
-} else {
-    # Pas de LC_COLLATE force : 'fr_FR.UTF-8' n'existe pas sous Windows.
-    & psql -h $Hote -p $Port -U postgres -v ON_ERROR_STOP=1 -q `
-        -c "CREATE DATABASE $Base WITH OWNER = $Utilisateur ENCODING = 'UTF8' TEMPLATE = template0;"
-    if ($LASTEXITCODE -ne 0) { Remove-Item Env:\PGPASSWORD; throw "Creation de la base impossible." }
+. "$PSScriptRoot\Base-PostgreSQL.ps1"
+for ($essai = 1; $essai -le 3; $essai++) {
+    # Saisie masquee : le mot de passe n'apparait ni a l'ecran, ni dans
+    # l'historique de la console.
+    $saisie = Read-Host "     Mot de passe a donner au compte applicatif '$Utilisateur'" -AsSecureString
+    $MotDePasse = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($saisie))
+    if ([string]::IsNullOrWhiteSpace($MotDePasse)) { throw "Mot de passe vide : abandon." }
+    $refus = Tester-MotDePasseEnv $MotDePasse
+    if (-not $refus) { break }
+    Write-Host "     Ce mot de passe ne convient pas : $refus. Un autre ?" -ForegroundColor Yellow
+    $MotDePasse = $null
 }
-& psql -h $Hote -p $Port -U postgres -d $Base -v ON_ERROR_STOP=1 -q `
-    -c "ALTER SCHEMA public OWNER TO $Utilisateur; GRANT ALL ON SCHEMA public TO $Utilisateur; REVOKE ALL ON DATABASE $Base FROM PUBLIC;"
-# Sans ce controle, un GRANT en echec passait inapercu : le script annoncait
-# "Base prete" et enchainait sur migrate, qui tombait beaucoup plus loin en
-# "permission denied for schema public" -- une erreur sans rapport apparent
-# avec sa cause.
-$droits = $LASTEXITCODE
-Remove-Item Env:\PGPASSWORD
-if ($droits -ne 0) { throw "Attribution des droits sur le schema public impossible." }
+if (-not $MotDePasse) { throw "Aucun mot de passe utilisable : abandon." }
+$saisie = Read-Host "     Mot de passe du compte 'postgres' (installation)" -AsSecureString
+$MotDePasseAdmin = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+    [Runtime.InteropServices.Marshal]::SecureStringToBSTR($saisie))
+
+# La fonction commune a l'installateur : elle examine la base AVANT de toucher
+# au role, et refuse d'ecraser une base qui porte des tables.
+Preparer-BasePostgreSQL -Base $Base -Utilisateur $Utilisateur -MotDePasse $MotDePasse `
+    -MotDePasseAdmin $MotDePasseAdmin -Hote $Hote -Port $Port
+$MotDePasseAdmin = $null
 Write-Host "4/7  Base '$Base' prete." -ForegroundColor Green
 
 # --- 5. Bascule -------------------------------------------------------------
 Write-Host "5/7  Bascule de .env sur PostgreSQL..." -ForegroundColor Yellow
-& $Py outils\basculer_base.py postgresql --base $Base --utilisateur $Utilisateur `
-      --mot-de-passe $MotDePasse --hote $Hote --port $Port
-if ($LASTEXITCODE -ne 0) { throw "La bascule de .env a echoue." }
+# Par variable d'environnement, et non en argument : les arguments d'un
+# processus sont lisibles par tout compte du poste.
+$env:WMS_DB_PASSWORD = $MotDePasse
+try {
+    & $Py outils\basculer_base.py postgresql --base $Base --utilisateur $Utilisateur `
+          --hote $Hote --port $Port
+    if ($LASTEXITCODE -ne 0) { throw "La bascule de .env a echoue." }
+}
+finally {
+    Remove-Item Env:\WMS_DB_PASSWORD -ErrorAction SilentlyContinue
+    $MotDePasse = $null
+}
 
 # --- 6. Schema et reprise ---------------------------------------------------
 Write-Host "6/7  Schema et reprise des donnees..." -ForegroundColor Yellow
@@ -175,8 +172,8 @@ Write-Host ""
 Write-Host "  A faire maintenant :" -ForegroundColor Cyan
 Write-Host "   1. Demarrer-WMS.bat, puis eprouver : connexion, creation d'un rack," -ForegroundColor Cyan
 Write-Host "      scan d'un emplacement, impression d'une bande, journal." -ForegroundColor Cyan
-Write-Host "   2. Planifier la sauvegarde : deploiement\windows\Sauvegarder.ps1" -ForegroundColor Cyan
-Write-Host "      (elle bascule seule sur pg_dump, elle lit .env)" -ForegroundColor Cyan
+Write-Host "   2. Sauvegarder : Sauvegarder-WMS.bat tout de suite, puis les sauvegardes" -ForegroundColor Cyan
+Write-Host "      planifiees (docs\guide-serveur.md, section Sauvegardes)." -ForegroundColor Cyan
 Write-Host "   3. Garder db.sqlite3 quelques semaines : c'est votre filet." -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Quelle base est active, a tout moment : Quelle-Base.bat" -ForegroundColor Gray

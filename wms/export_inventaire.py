@@ -31,6 +31,21 @@ COLONNES = [
 ]
 
 
+#: Débuts de cellule qu'Excel prend pour une formule. Un client nommé
+#: « =HYPERLINK(…) » ou une désignation « @SOMME(…) », recopiés tels quels du
+#: fichier de production, s'exécutaient à l'ouverture de l'export.
+_FORMULE = ("=", "+", "-", "@", "\t", "\r")
+
+
+def cellule(valeur):
+    """Une valeur sûre pour Excel : un texte qui commencerait comme une formule
+    est précédé d'une apostrophe — Excel l'affiche alors comme du texte. Les
+    nombres passent tels quels."""
+    if isinstance(valeur, str) and valeur.startswith(_FORMULE):
+        return "'" + valeur
+    return valeur
+
+
 def _date(valeur):
     """Une date lisible par un humain ET par Excel. Vide si absente."""
     if not valeur:
@@ -95,7 +110,7 @@ def _flux(cabines):
     # sans quoi chaque cabine coûterait deux requêtes de plus.
     for cabine in cabines.iterator(chunk_size=200):
         for ligne in _lignes_de(cabine):
-            graveur.writerow(ligne)
+            graveur.writerow([cellule(v) for v in ligne])
         yield vider()
 
 

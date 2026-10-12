@@ -45,6 +45,32 @@ if (-not $BinPg) { Message-PostgreSQLIntrouvable; exit 1 }
 Write-Host "     Outils PostgreSQL : $BinPg" -ForegroundColor Gray
 Write-Host ""
 
+# Sur un poste qui tourne deja sur sa base PostgreSQL d'exploitation, la
+# repetition exporterait CETTE base, puis ferait basculer .env sur la base
+# d'essai : le WMS ecrirait le lendemain dans 'wms_essai', jetee a la
+# repetition suivante. La repetition n'a de sens qu'avant la bascule.
+& $Py outils\basculer_base.py en-service
+if ($LASTEXITCODE -eq 0) {
+    Write-Host ""
+    Write-Host "  Ce poste tourne deja sur une base PostgreSQL en service :" -ForegroundColor Yellow
+    Write-Host "  la repetition n'a plus lieu d'etre, et ne toucherait que la base reelle." -ForegroundColor Yellow
+    Write-Host "  Rien n'a ete modifie." -ForegroundColor Yellow
+    Write-Host ""
+    exit 0
+}
+
+# Le WMS doit etre arrete : l'export est une photo de la base a un instant
+# donne. Ce qui serait saisi ensuite resterait dans SQLite, perdu pour
+# PostgreSQL sans que personne le voie.
+& $Py outils\basculer_base.py wms-arrete
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "  Arretez d'abord le WMS : fermez sa fenetre (sur le serveur :" -ForegroundColor Yellow
+    Write-Host "  Arreter-WMS.bat), puis relancez. Rien n'a ete modifie." -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
+
 # --- 1. Export DEPUIS SQLite, avant toute bascule ---------------------------
 Write-Host "1/6  Export des donnees actuelles (lecture seule)..." -ForegroundColor Yellow
 & $Py manage.py reprise_sql exporter --vers reprise
@@ -56,21 +82,27 @@ Write-Host "2/6  Installation du pilote PostgreSQL..." -ForegroundColor Yellow
 
 # --- 3. Role et base --------------------------------------------------------
 Write-Host "3/6  Creation du role et de la base d'essai..." -ForegroundColor Yellow
-$MotDePasse = Read-Host "     Mot de passe a donner au compte applicatif '$Utilisateur'"
+. "$PSScriptRoot\Base-PostgreSQL.ps1"
+for ($essai = 1; $essai -le 3; $essai++) {
+    $saisie = Read-Host "     Mot de passe a donner au compte applicatif '$Utilisateur'" -AsSecureString
+    $MotDePasse = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($saisie))
+    if ([string]::IsNullOrWhiteSpace($MotDePasse)) { throw "Mot de passe vide : abandon." }
+    $refus = Tester-MotDePasseEnv $MotDePasse
+    if (-not $refus) { break }
+    Write-Host "     Ce mot de passe ne convient pas : $refus. Un autre ?" -ForegroundColor Yellow
+    $MotDePasse = $null
+}
+if (-not $MotDePasse) { throw "Aucun mot de passe utilisable : abandon." }
 $MotDePasseAdmin = Read-Host "     Mot de passe du compte 'postgres' (installation)" -AsSecureString
 $env:PGPASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
     [Runtime.InteropServices.Marshal]::SecureStringToBSTR($MotDePasseAdmin))
+# psql recoit le texte en UTF-8, et le mot de passe double ses apostrophes.
+$OutputEncoding = New-Object System.Text.UTF8Encoding $false
+$env:PGCLIENTENCODING = "UTF8"
 
 # Rejouable : on ne recree pas un role qui existe deja, on remet son mot de passe.
-$sql = @"
-DO `$`$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$Utilisateur') THEN
-    CREATE ROLE $Utilisateur WITH LOGIN PASSWORD '$MotDePasse';
-  ELSE
-    ALTER ROLE $Utilisateur WITH LOGIN PASSWORD '$MotDePasse';
-  END IF;
-END `$`$;
-"@
+$sql = Script-RoleApplicatif -Utilisateur $Utilisateur -MotDePasse $MotDePasse
 $sql | & psql -h $Hote -p $Port -U postgres -v ON_ERROR_STOP=1 -q
 if ($LASTEXITCODE -ne 0) { throw "Creation du role impossible : mot de passe postgres incorrect ?" }
 
@@ -85,14 +117,21 @@ if ($LASTEXITCODE -ne 0) { throw "Creation de la base impossible." }
 # "permission denied for schema public" : on s'arrete ici, a la cause.
 $droits = $LASTEXITCODE
 Remove-Item Env:\PGPASSWORD
+Remove-Item Env:\PGCLIENTENCODING -ErrorAction SilentlyContinue
 if ($droits -ne 0) { throw "Attribution des droits sur le schema public impossible." }
 Write-Host "3/6  Base '$Base' prete." -ForegroundColor Green
 
 # --- 4. Bascule -------------------------------------------------------------
 Write-Host "4/6  Bascule de .env sur PostgreSQL..." -ForegroundColor Yellow
-& $Py outils\basculer_base.py postgresql --base $Base --utilisateur $Utilisateur `
-      --mot-de-passe $MotDePasse --hote $Hote --port $Port
-if ($LASTEXITCODE -ne 0) { throw "La bascule a echoue." }
+$env:WMS_DB_PASSWORD = $MotDePasse
+try {
+    & $Py outils\basculer_base.py postgresql --base $Base --utilisateur $Utilisateur `
+          --hote $Hote --port $Port
+    if ($LASTEXITCODE -ne 0) { throw "La bascule a echoue." }
+}
+finally {
+    Remove-Item Env:\WMS_DB_PASSWORD -ErrorAction SilentlyContinue
+}
 
 # --- 5. Schema et reprise ---------------------------------------------------
 Write-Host "5/6  Creation du schema et reprise des donnees..." -ForegroundColor Yellow
