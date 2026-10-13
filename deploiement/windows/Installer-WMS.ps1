@@ -175,22 +175,25 @@ if ($Taches) {
 Etape "1/12" "Recherche de Python..."
 
 . "$PSScriptRoot\Trouver-Python.ps1"
-$python = Initialiser-Python -Impose $Python
-if (-not $python) {
+# Surtout pas `$python` : PowerShell ignore la casse, ce serait le parametre
+# -Python, type [string]. L'objet rendu y serait converti en texte, et l'etape
+# conclurait "Python trop ancien" avec des champs vides (vu sur SRV-WMS).
+$interp = Initialiser-Python -Impose $Python
+if (-not $interp) {
     Message-PythonIntrouvable
     Add-Content -Path $Journal -Encoding UTF8 `
         -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  Python introuvable : installation interrompue."
     exit 1
 }
-if ($python.Majeur -lt 3 -or ($python.Majeur -eq 3 -and $python.Mineur -lt 10)) {
+if ($interp.Majeur -lt 3 -or ($interp.Majeur -eq 3 -and $interp.Mineur -lt 10)) {
     Noter ""
-    Noter "  Python $($python.Version) est trop ancien : Django 5.2 exige 3.10 au minimum." "Red"
+    Noter "  Python $($interp.Version) est trop ancien : Django 5.2 exige 3.10 au minimum." "Red"
     Noter ""
     # Tout ce qu'il faut pour trancher sans revenir poser de questions : est-ce
     # un vieux Python reellement installe, ou une lecture de version ratee ?
-    Noter "  Interpreteur retenu : $($python.Exe) $($python.Arguments)" "Gray"
-    Noter "  Il a repondu        : [$($python.Brut -replace '\r?\n', ' / ')]" "Gray"
-    Noter "  Lu comme            : majeur=$($python.Majeur) mineur=$($python.Mineur)" "Gray"
+    Noter "  Interpreteur retenu : $($interp.Exe) $($interp.Arguments)" "Gray"
+    Noter "  Il a repondu        : [$($interp.Brut -replace '\r?\n', ' / ')]" "Gray"
+    Noter "  Lu comme            : majeur=$($interp.Majeur) mineur=$($interp.Mineur)" "Gray"
     Noter ""
     Noter "  Si vous avez installe Python 3.10 ou plus recent, ce n'est pas celui-la" "Yellow"
     Noter "  qui a ete trouve. Double-cliquez Trouver-Python.bat : il liste tous les" "Yellow"
@@ -202,16 +205,16 @@ if ($python.Majeur -lt 3 -or ($python.Majeur -eq 3 -and $python.Mineur -lt 10)) 
     Noter ""
     exit 1
 }
-Noter "     Python $($python.Version) : $($python.Exe) $($python.Arguments)" "Green"
+Noter "     Python $($interp.Version) : $($interp.Exe) $($interp.Arguments)" "Green"
 
 # --- 2. Environnement du projet ---------------------------------------------
 Etape "2/12" "Environnement Python du projet..."
 if (-not (Test-Path $Py)) {
-    & $python.Exe @($python.Arguments) "-m" "venv" ".venv"
+    & $interp.Exe @($interp.Arguments) "-m" "venv" ".venv"
     if (-not (Test-Path $Py)) {
         Noter ""
         Noter "  La creation de .venv a echoue." "Red"
-        Noter "  Interpreteur utilise : $($python.Exe)" "Yellow"
+        Noter "  Interpreteur utilise : $($interp.Exe)" "Yellow"
         Noter "  Cause la plus frequente : un Python installe 'pour moi seulement'" "Yellow"
         Noter "  alors que cette fenetre tourne sous un autre compte administrateur." "Yellow"
         Noter "  Reinstallez Python en 'Install for all users', ou passez son chemin :" "Yellow"
@@ -236,14 +239,14 @@ if ($horsLigne) {
     $marque = "$Paquets\version.txt"
     if (Test-Path $marque) {
         $attendue = (Get-Content $marque -First 1).Trim()
-        if ($attendue -and $attendue -ne $python.Version) {
+        if ($attendue -and $attendue -ne $interp.Version) {
             Noter ""
             Noter "  Le dossier paquets\ a ete prepare pour Python $attendue," "Red"
-            Noter "  ce poste a Python $($python.Version). Les deux doivent concorder." "Red"
+            Noter "  ce poste a Python $($interp.Version). Les deux doivent concorder." "Red"
             Noter ""
             Noter "  Deux issues :" "Yellow"
             Noter "   - installer Python $attendue sur ce poste ; ou" "Yellow"
-            Noter "   - refaire le dossier paquets\ sur un poste en Python $($python.Version)" "Yellow"
+            Noter "   - refaire le dossier paquets\ sur un poste en Python $($interp.Version)" "Yellow"
             Noter "     avec Preparer-Paquets.bat (a la racine du projet)." "Yellow"
             Noter ""
             exit 1

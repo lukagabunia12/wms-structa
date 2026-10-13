@@ -537,6 +537,14 @@ class LanceurTest(SimpleTestCase):
                 mock.patch.object(C, "non_couverts", return_value=["10.0.0.9"]):
             self.assertIn("10.0.0.9", D.motif_renouvellement())
 
+    def test_l_interpreteur_trouve_ne_tombe_pas_dans_le_parametre_python(self):
+        # PowerShell ignore la casse : `$python = ...` ecrirait dans le
+        # parametre [string]$Python, l'objet deviendrait du texte et l'etape 1
+        # refuserait un Python 3.15 comme "trop ancien" (vu sur SRV-WMS).
+        script = (OUTILS.parent / "deploiement" / "windows" / "Installer-WMS.ps1").read_text("ascii")
+        self.assertIn("[string]$Python", script)
+        self.assertNotRegex(script, r"(?im)^\s*\$python\s*=")
+
 
 class ProxyTest(SimpleTestCase):
     def test_l_adresse_du_telephone_est_transmise_et_ne_s_invente_pas(self):
