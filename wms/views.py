@@ -1123,6 +1123,12 @@ class ConnexionJeton(ObtainAuthToken):
 
     # La vue d'origine fixe ses propres analyseurs : on y remet le JSON strict.
     parser_classes = [ObjetJSON, FormParser, MultiPartParser]
+    # Personne n'est encore authentifié ici. Sans cette ligne, un cookie de
+    # session de /admin/ dans le même navigateur faisait passer la requête par
+    # SessionAuthentication, qui exige le jeton CSRF : « 403 » à chaque essai
+    # (vu sur le serveur). Aucun cookie n'est posé ici, le jeton revient dans la
+    # réponse : la protection CSRF n'a rien à protéger sur cette porte.
+    authentication_classes = ()
 
     def post(self, request, *args, **kwargs):
         donnees = request.data if isinstance(request.data, dict) else {}

@@ -547,6 +547,20 @@ class LanceurTest(SimpleTestCase):
 
 
 class ProxyTest(SimpleTestCase):
+    def test_un_client_qui_disparait_ne_remplit_pas_le_journal(self):
+        # WinError 121 vu dans service.log du serveur : un téléphone sorti du
+        # Wi-Fi au milieu d'un échange. Bruit, pas une panne.
+        boucle = mock.Mock()
+        P.silencier_deconnexions(boucle)
+        gestionnaire = boucle.set_exception_handler.call_args[0][0]
+        for code in (121, 64, 1236, 10054):
+            erreur = OSError(code, "deconnexion")
+            erreur.winerror = code
+            gestionnaire(boucle, {"exception": erreur})
+        boucle.default_exception_handler.assert_not_called()
+        gestionnaire(boucle, {"exception": ValueError("vraie panne")})
+        boucle.default_exception_handler.assert_called_once()
+
     def test_l_adresse_du_telephone_est_transmise_et_ne_s_invente_pas(self):
         tete = (b"GET /api/moi/ HTTP/1.1\r\nHost: wms.structa.fr:8443\r\n"
                 b"X-Forwarded-For: 6.6.6.6\r\nX-Real-IP: 6.6.6.6\r\nForwarded: for=6.6.6.6")

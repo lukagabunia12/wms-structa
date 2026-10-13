@@ -78,3 +78,24 @@ class ConnexionTest(APITestCase):
         """
         Utilisateur.objects.create_user(username="vide", password=self.mdp)
         self.assertEqual(self.tenter("vide").status_code, 200)
+
+
+class ConnexionAvecSessionAdminTest(APITestCase):
+    """Vu sur le serveur : connectée à /admin/ dans le même navigateur, la
+    responsable ne pouvait plus se connecter à l'application — « 403 », à
+    chaque essai. Le cookie de session de l'administration faisait passer la
+    page de connexion par l'authentification de session de DRF, qui exige alors
+    le jeton CSRF que l'application n'envoie pas (elle travaille par jeton)."""
+
+    def test_une_session_admin_ouverte_n_empeche_pas_la_connexion(self):
+        from rest_framework.test import APIClient
+        admin = Utilisateur.objects.create_superuser(username="structa", password="x-admin-1",
+                                                     email="")
+        Utilisateur.objects.create_user(username="enzo", password="motdepasse123",
+                                        **PROFIL_CARISTE)
+        client = APIClient(enforce_csrf_checks=True)
+        client.force_login(admin)
+        r = client.post("/api/token/", {"username": "enzo", "password": "motdepasse123"},
+                        format="json")
+        self.assertEqual(r.status_code, 200, getattr(r, "data", None))
+        self.assertIn("token", r.data)

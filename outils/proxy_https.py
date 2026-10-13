@@ -252,7 +252,11 @@ def silencier_deconnexions(boucle):
         if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
             return
         # OSError 10054/10053 : mêmes causes, remontées sans classe dédiée.
-        if isinstance(exc, OSError) and getattr(exc, "winerror", None) in (10053, 10054, 10058):
+        # 121 (délai de sémaphore), 64 (nom réseau plus disponible), 1236
+        # (connexion interrompue) : un téléphone sorti du Wi-Fi ou mis en
+        # veille au milieu d'un échange — vu sur le serveur, même innocuité.
+        if isinstance(exc, OSError) and getattr(exc, "winerror", None) in (
+                10053, 10054, 10058, 121, 64, 1236):
             return
         _boucle.default_exception_handler(contexte)
 
