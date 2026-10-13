@@ -78,7 +78,9 @@ def joignable(hote, port, delai=3.0):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--port", type=int, default=8443)
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+    import certificat_https as C
+    p.add_argument("--port", type=int, default=C.port_https())
     args = p.parse_args()
     port = args.port
     ips = adresses()

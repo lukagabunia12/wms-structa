@@ -254,7 +254,8 @@ def installer_autorite_windows():
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--port", type=int, default=8443, help="port HTTPS ouvert au réseau")
+    p.add_argument("--port", type=int, default=C.port_https(),
+                   help="port HTTPS ouvert au réseau (défaut : WMS_PORT_HTTPS de .env, sinon 8443)")
     p.add_argument("--port-appli", type=int, default=8000,
                    help="port du serveur d'application, sur la boucle locale")
     p.add_argument("--sans-navigateur", action="store_true",

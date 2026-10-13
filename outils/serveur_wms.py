@@ -64,7 +64,8 @@ TACHE_SAUVEGARDE = DOSSIER_TACHES + "Sauvegarde"
 TACHE_NETTOYAGE = DOSSIER_TACHES + "Nettoyage"
 TACHES = (TACHE_SERVICE, TACHE_SAUVEGARDE, TACHE_NETTOYAGE)
 
-PORT_HTTPS, PORT_APPLI = 8443, 8000
+import certificat_https as _C  # noqa: E402
+PORT_HTTPS, PORT_APPLI = _C.port_https(), 8000
 SID_SYSTEME = "S-1-5-18"
 SID_ADMINISTRATEURS = "S-1-5-32-544"
 
@@ -721,7 +722,7 @@ def action_arreter(_args):
             break
         time.sleep(0.5)
     if port_ouvert(PORT_HTTPS):
-        print("    Le port 8443 répond encore : arrêt incomplet. Voir le Gestionnaire "
+        print(f"    Le port {PORT_HTTPS} répond encore : arrêt incomplet. Voir le Gestionnaire "
               "des tâches (python.exe).")
         return 1
     print("    Arrêté" + (f" ({', '.join(tues)})." if tues else " (il ne tournait pas)."))

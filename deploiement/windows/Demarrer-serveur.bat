@@ -23,7 +23,7 @@ if not exist ".venv\Scripts\python.exe" (
 
 rem Deja en marche (lance par cette tache, ou a la main) : rien a faire, et
 rem rien a ecrire -- la verification revient toutes les deux minutes.
-".venv\Scripts\python.exe" -c "import socket,sys; s=socket.socket(); s.settimeout(2); sys.exit(0 if s.connect_ex(('127.0.0.1',8443)) == 0 else 1)"
+".venv\Scripts\python.exe" -c "import socket,sys; sys.path.insert(0,'outils'); import certificat_https as C; s=socket.socket(); s.settimeout(2); sys.exit(0 if s.connect_ex(('127.0.0.1',C.port_https())) == 0 else 1)"
 if not errorlevel 1 exit /b 0
 
 rem --- Rotation du journal de service --------------------------------------
@@ -62,7 +62,7 @@ if errorlevel 1 (
 )
 
 rem Le WMS en HTTPS, comme Demarrer-WMS.bat : waitress sur la boucle locale,
-rem seul le port 8443 ouvert au reseau. Si le serveur d'application tombe,
+rem seul le port HTTPS (WMS_PORT_HTTPS) ouvert au reseau. Si le serveur d'application tombe,
 rem le lanceur s'arrete avec lui ; la tache le relance au passage suivant.
 ".venv\Scripts\python.exe" outils\demarrer_https.py --service
 exit /b %errorlevel%

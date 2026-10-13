@@ -17,7 +17,7 @@ Compter **une heure** le jour J, dont l'essentiel en attente.
 
 | Quand | Qui | Quoi |
 |---|---|---|
-| Avant | service informatique | serveur prêt, adresse IP fixe, nom `wms.structa.fr` dans le DNS interne, port 8443 ouvert, partage réseau pour la copie des sauvegardes (§ 1) |
+| Avant | service informatique | serveur prêt, adresse IP fixe, nom `wms.structa.fr` dans le DNS interne, port 4443 ouvert, partage réseau pour la copie des sauvegardes (§ 1) |
 | Avant | vous | Python et PostgreSQL installés sur le serveur (§ 1) |
 | Jour J | vous | arrêter le WMS sur le PC, `Preparer-Copie.bat`, copier, `Installer-WMS.bat`, vérifier (§ 2 à 5) |
 | Jour J | service informatique | faire pointer `wms.structa.fr` sur le serveur (§ 6) |
@@ -95,7 +95,7 @@ Lettres, chiffres et ponctuation simple (`- _ . ! @ % + =`) : aucun souci.
   celui qu'interrogent les téléphones en Wi-Fi. La veille de la bascule, abaisser
   la durée de vie (TTL) de cet enregistrement à 5 minutes : les téléphones
   suivront le changement dans l'heure.
-- **Pare-feu** : TCP **8443 entrant**, depuis le réseau des postes et du Wi-Fi.
+- **Pare-feu** : TCP **4443 entrant**, depuis le réseau des postes et du Wi-Fi.
   L'installation pose la règle Windows ; une stratégie de groupe peut l'annuler,
   et un pare-feu entre deux réseaux (Wi-Fi et serveurs) demande sa propre règle.
 - **Wi-Fi** : pas d'isolation entre les téléphones et le serveur.
@@ -236,7 +236,7 @@ s'il ne couvre plus un nom ou une adresse de la machine.
 | `-NettoyageTousLes 7` | fréquence du ménage des journaux, en jours (défaut : chaque dimanche ; retenue ensuite) |
 | `-Taches` | seulement le pré-vol, les tâches, une sauvegarde d'essai et le redémarrage |
 | `-SansTaches` | poste d'essai : rien ne démarre tout seul |
-| `-Tunnel` | accès par tunnel tant que le port 8443 n'est pas ouvert (adresse **publique**) |
+| `-Tunnel` | accès par tunnel tant que le port 4443 n'est pas ouvert (adresse **publique**) |
 | `-SansPostgreSQL` | secours sur SQLite, quelques jours au plus |
 
 ---
@@ -247,14 +247,14 @@ s'il ne couvre plus un nom ou une adresse de la machine.
 
 - les trois tâches du dossier « WMS Structa », leur dernier passage et le
   prochain ;
-- les ports 8443 (téléphones) et 8000 (application, sur la machine seulement) ;
+- les ports 4443 (téléphones) et 8000 (application, sur la machine seulement) ;
 - la **santé** : `OK` et `{"service":"ok","base":"ok","migrations":"ok"}` ;
 - le certificat : jours restants, et les noms qu'il ne couvrirait pas ;
 - les sauvegardes et la place libre.
 
 **b. Dans un navigateur du serveur**, puis d'un autre PC, puis d'un téléphone :
-`https://wms.structa.fr:8443` (tant que le DNS n'est pas basculé :
-`https://<adresse-du-serveur>:8443`). La page doit s'ouvrir avec un cadenas.
+`https://wms.structa.fr:4443` (tant que le DNS n'est pas basculé :
+`https://<adresse-du-serveur>:4443`). La page doit s'ouvrir avec un cadenas.
 
 **c. L'accueil de l'administration** (`/admin/`), cadre **« Sauvegardes et
 disque »** : la première sauvegarde y figure.
@@ -272,12 +272,12 @@ fonctionne.
 2. **Les téléphones** : copie faite avec `--avec-autorite`, rien à faire. Sinon,
    installer la nouvelle autorité sur chacun (`docs/guide-https.md`).
    Les téléphones qui ouvraient le WMS par l'**adresse IP** du PC doivent passer
-   à `https://wms.structa.fr:8443` (ajouter de nouveau l'icône sur l'écran
+   à `https://wms.structa.fr:4443` (ajouter de nouveau l'icône sur l'écran
    d'accueil).
 3. **Le PC** : ajouter à son fichier `.env` la ligne
 
    ```
-   WMS_REMPLACE_PAR=https://wms.structa.fr:8443
+   WMS_REMPLACE_PAR=https://wms.structa.fr:4443
    ```
 
    `Demarrer-WMS.bat` refuse alors de relancer le WMS sur le PC, et dit où il est
@@ -556,7 +556,7 @@ jours), `14` (un dimanche sur deux). Voir ce qui partirait, sans rien effacer :
 | Copie « EN ÉCHEC — accès refusé » | Le partage n'autorise pas l'écriture au compte de la machine (`…\<NOM-DU-SERVEUR>$`), ou au compte dédié. |
 | Après la bascule, avertissement de certificat sur les téléphones | Copie faite sans `--avec-autorite` : installer la nouvelle autorité. |
 | `wms.structa.fr` ne répond pas, l'adresse IP oui | DNS pas encore basculé, ou cache du téléphone (attendre le TTL, ou couper et rallumer le Wi-Fi). |
-| Rien ne répond depuis les téléphones | Port 8443 fermé (pare-feu, stratégie de groupe) ou isolation Wi-Fi : `.venv\Scripts\python.exe outils\diagnostic_reseau.py` dit lequel. |
+| Rien ne répond depuis les téléphones | Port 4443 fermé (pare-feu, stratégie de groupe) ou isolation Wi-Fi : `.venv\Scripts\python.exe outils\diagnostic_reseau.py` dit lequel. |
 | `Restaurer-WMS.bat` : « la tâche … est active » | Passer par `Arreter-WMS.bat`, qui la désactive. |
 | Sur l'ancien PC : « Le WMS ne tourne plus sur ce poste » | Normal : `WMS_REMPLACE_PAR` le renvoie vers le serveur. |
 | L'installation refuse un mot de passe | Règles du § 1 : ni accent, ni espace, ni « # », ni « ${ ». |

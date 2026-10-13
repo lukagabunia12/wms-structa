@@ -109,8 +109,10 @@ def exclus(nom, chemin_relatif):
 
 
 def wms_en_marche():
-    """Vrai si le WMS tourne sur ce poste (8443 ou 8000 répond)."""
-    for port in (8443, 8000):
+    """Vrai si le WMS tourne sur ce poste (port HTTPS ou 8000 répond)."""
+    sys.path.insert(0, str(RACINE / "outils"))
+    import certificat_https as C
+    for port in (C.port_https(), 8000):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(1)
             if s.connect_ex(("127.0.0.1", port)) == 0:
@@ -306,7 +308,7 @@ def main():
         print("  À partir de maintenant, ne saisissez plus rien sur ce poste : ce")
         print("  serait perdu. Une fois le serveur en service, empêchez ce poste de")
         print("  redémarrer le WMS par habitude — ajoutez à son fichier .env :")
-        print("      WMS_REMPLACE_PAR=https://wms.structa.fr:8443\n")
+        print("      WMS_REMPLACE_PAR=https://wms.structa.fr:4443\n")
     return 0
 
 

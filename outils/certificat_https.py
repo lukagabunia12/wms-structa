@@ -105,6 +105,16 @@ def valeur_env(cle, defaut=""):
     return defaut
 
 
+def port_https():
+    """Le port HTTPS des téléphones : `WMS_PORT_HTTPS` dans `.env` (8443 par
+    défaut ; 4443 sur le serveur de STRUCTA, posé par Installer-WMS)."""
+    try:
+        port = int(str(valeur_env("WMS_PORT_HTTPS", "8443")).strip() or 8443)
+    except ValueError:
+        return 8443
+    return port if 0 < port < 65536 else 8443
+
+
 def noms_publies():
     """Les noms de domaine donnés au WMS (`WMS_NOMS` dans `.env`, séparés par
     des virgules) : ex. `WMS_NOMS=wms.structa.fr`. Le certificat les couvre, et

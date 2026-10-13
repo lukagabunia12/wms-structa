@@ -214,7 +214,8 @@ def wms_arrete(_=None):
     perdus pour la nouvelle, sans que personne le voie."""
     import socket
     import subprocess
-    for port in (8443, 8000):
+    import certificat_https as C
+    for port in (C.port_https(), 8000):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(1)
             if s.connect_ex(("127.0.0.1", port)) == 0:

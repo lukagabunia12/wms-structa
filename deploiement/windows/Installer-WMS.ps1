@@ -44,7 +44,7 @@ param(
     [string]$Utilisateur = "wms",
     [string]$Hote = "127.0.0.1",
     [string]$Port = "5432",
-    [string]$PortHttps = "8443",
+    [string]$PortHttps = "4443",
     [string]$Python = "",
     [string]$Noms = "",
     [string]$Sauvegardes = "",
@@ -294,6 +294,20 @@ if (-not $Noms -and -not $nomDejaRegle -and -not $Tunnel) {
     Noter "  Nom que taperont les telephones (ex. wms.structa.fr), s'il existe dans" "Cyan"
     Noter "  le DNS interne. Entree si les telephones utilisent l'adresse IP." "Cyan"
     $Noms = (Read-Host "     Nom de domaine").Trim()
+}
+# Le port des telephones (4443 sur le serveur de STRUCTA) : lu par le
+# lanceur, le service, l'etat et l'arret.
+& $Py outils\preparer_env.py --poser "WMS_PORT_HTTPS=$PortHttps"
+if ($LASTEXITCODE -ne 0) { throw "Le port HTTPS n'a pas pu etre inscrit dans .env." }
+# Les bibliotheques du scanner (lecture des QR, etiquettes) ne sont pas dans
+# le depot GitHub : sans elles, les telephones les chargeraient depuis
+# internet a chaque ouverture. Non bloquant.
+if (-not (Test-Path "$Projet\wms\static\app\vendor\html5-qrcode.min.js")) {
+    & $Py manage.py telecharger_libs
+    if ($LASTEXITCODE -ne 0) {
+        Noter "     Bibliotheques du scanner NON telechargees (acces internet ?). Plus tard :" "Yellow"
+        Noter "       .venv\Scripts\python.exe manage.py telecharger_libs" "Yellow"
+    }
 }
 if ($Noms) {
     # Le nom que les telephones taperont (wms.structa.fr) : le certificat le
