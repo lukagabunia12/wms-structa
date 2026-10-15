@@ -6,9 +6,10 @@ gauche, milieu, droite. Toute entrée et toute sortie passe par ce module, qui
 change sans ligne au journal est un chiffre que personne ne sait expliquer.
 
 Règles portées ici :
-- un emplacement range des cabines OU une famille de MP, jamais les deux ;
-- un code ne se range que sur un emplacement de sa famille — et, si
-  l'emplacement est réservé à certains codes, que s'il en fait partie ;
+- un emplacement range des cabines OU des matières premières, jamais les deux ;
+- un code ne se range que sur un emplacement qui accepte sa famille — toutes,
+  ou celles qu'on a choisies — et, si l'emplacement est réservé à certains
+  codes, que s'il en fait partie ;
 - un code d'ancienne génération s'entre seulement après confirmation ;
 - une place condamnée ou un emplacement hors service ne reçoivent rien ;
 - on ne sort ni ne déplace jamais plus que ce qui est là.
@@ -27,7 +28,7 @@ from django.db.models import Count, Exists, F, Max, OuterRef, Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
-from .models import (ArticleMP, Cabine, Emplacement, MouvementMP, Occupation,
+from .models import (ArticleMP, Cabine, Emplacement, FamilleMP, MouvementMP, Occupation,
                      PlaceCondamnee, StockMP, normaliser_code_mp)
 
 logger = logging.getLogger(__name__)
@@ -42,18 +43,67 @@ NOMS_PLACES = {"G": "gauche", "M": "milieu", "D": "droite"}
 #: Au-delà, c'est une faute de frappe (un zéro de trop) plutôt qu'une livraison.
 QUANTITE_MAX = 100_000
 
-FAMILLE_LIBELLE = {ArticleMP.VITRAGE: "vitrages", ArticleMP.CARTON: "cartons"}
-
-
 def _nom(utilisateur):
     if not utilisateur or not getattr(utilisateur, "pk", None):
         return ""
     return getattr(utilisateur, "nom", "") or utilisateur.get_username()
 
 
-def libelle_usage(usage):
-    """« MP · vitrages », « Cabines »… — le libellé du modèle, une seule source."""
-    return dict(Emplacement.USAGES).get(usage, usage)
+# --- Les familles -----------------------------------------------------------
+#
+# Elles se créent dans l'administration (`FamilleMP`). Le code (« vitrage »)
+# est ce que retiennent les codes MP, le journal et les emplacements ; les
+# libellés se lisent ici, à chaque fois — une famille renommée l'est partout.
+
+def infos_familles():
+    """{code: FamilleMP}, actives ou non, en une requête."""
+    return {f.code: f for f in FamilleMP.objects.all()}
+
+
+def familles_publiques():
+    """Les familles telles que l'écran les lit, dans l'ordre d'affichage."""
+    return [{"code": f.code, "nom": f.nom, "pluriel": f.pluriel, "exemple": f.exemple,
+             "couleur": f.couleur, "ordre": f.ordre, "actif": f.actif}
+            for f in FamilleMP.objects.order_by("ordre", "nom")]
+
+
+def nom_famille(code, infos=None):
+    """« Vitrage » — le nom d'une famille, au singulier."""
+    f = (infos_familles() if infos is None else infos).get(code)
+    return f.nom if f else str(code or "")
+
+
+def pluriel_famille(code, infos=None):
+    """« vitrages » — en minuscules, pour une phrase."""
+    f = (infos_familles() if infos is None else infos).get(code)
+    return (f.pluriel if f else str(code or "")).lower()
+
+
+def liste_familles(codes, infos=None):
+    """« vitrages et cartons » : des familles, dites dans une phrase."""
+    infos = infos_familles() if infos is None else infos
+    noms = [pluriel_famille(c, infos) for c in codes]
+    if len(noms) <= 1:
+        return "".join(noms)
+    return f"{', '.join(noms[:-1])} et {noms[-1]}"
+
+
+def libelle_usage(emplacement, infos=None):
+    """« Cabines », « MP · vitrages », « MP · vitrages + cartons », « MP · toutes familles »."""
+    if not emplacement.est_mp:
+        return "Cabines"
+    codes = emplacement.codes_familles()
+    if not codes:
+        return "MP · toutes familles"
+    infos = infos_familles() if infos is None else infos
+    return "MP · " + " + ".join(pluriel_famille(c, infos) for c in codes)
+
+
+def accepte(article, familles, ids_codes):
+    """Ce code entre-t-il, d'après les familles (vide : toutes) et les codes
+    acceptés (vide : tous ceux de ces familles) ?"""
+    return ((not familles or article.famille in familles)
+            and (not ids_codes or article.pk in ids_codes))
 
 
 # --- Lecture -----------------------------------------------------------------
@@ -93,10 +143,12 @@ def contenu(emplacement):
     condamnees = {p.place: p.motif for p in emplacement.places_condamnees.all()}
     acceptes = codes_acceptes(emplacement)
     ids_acceptes = {a.pk for a in acceptes}
+    familles = emplacement.codes_familles()
+    infos = infos_familles()
     places = []
     for code, libelle in StockMP.PLACES:
         ici = [{**ligne_publique(x),
-                "hors_reservation": bool(ids_acceptes) and x.article_id not in ids_acceptes}
+                "hors_reservation": not accepte(x.article, familles, ids_acceptes)}
                for x in lignes if x.place == code]
         places.append({
             "code": code,
@@ -110,15 +162,19 @@ def contenu(emplacement):
         "code": emplacement.code,
         "rack": emplacement.rack,
         "usage": emplacement.usage,
-        "usage_libelle": libelle_usage(emplacement.usage),
+        "usage_libelle": libelle_usage(emplacement, infos),
         "est_mp": emplacement.est_mp,
-        "famille": emplacement.usage if emplacement.est_mp else None,
+        # Les familles acceptées — [] : toutes. `famille` n'est remplie que
+        # s'il n'en accepte qu'une : c'est elle qui colore l'écran et dit
+        # « 12 vitrages » plutôt que « 12 pièces ».
+        "familles": familles,
+        "famille": familles[0] if len(familles) == 1 else None,
         "actif": emplacement.actif,
         "motif_inactif": emplacement.motif_inactif,
         "places": places,
         "nb_lignes": len(lignes),
         "quantite": sum(x.quantite for x in lignes),
-        "codes_acceptes": [article_public(a) for a in acceptes],
+        "codes_acceptes": [article_public(a, infos=infos) for a in acceptes],
     }
 
 
@@ -168,9 +224,9 @@ def suggerer(texte, famille=None, limite=12, emplacement=None):
     mais APRÈS ceux d'aujourd'hui à pertinence égale : celui qu'on cherche le
     plus souvent est l'actuel.
 
-    Avec `emplacement`, seuls les codes qu'il accepte sont proposés : choisir
-    dans la liste un code que le serveur refusera ensuite est un aller-retour
-    pour rien, devant le rack.
+    Avec `emplacement`, seuls les codes qu'il accepte sont proposés — ses
+    familles, ses codes réservés : choisir dans la liste un code que le serveur
+    refusera ensuite est un aller-retour pour rien, devant le rack.
 
     Chaque code dit aussi où il a une place réservée (`reserve_sur`) : à
     l'entrée, c'est la réponse à « où est-ce que je le pose ? ».
@@ -182,6 +238,9 @@ def suggerer(texte, famille=None, limite=12, emplacement=None):
     if famille:
         qs = qs.filter(famille=famille)
     if emplacement is not None:
+        familles = emplacement.codes_familles()
+        if familles:
+            qs = qs.filter(famille__in=familles)
         acceptes = codes_acceptes(emplacement)
         if acceptes:
             qs = qs.filter(pk__in=[a.pk for a in acceptes])
@@ -197,7 +256,8 @@ def suggerer(texte, famille=None, limite=12, emplacement=None):
                  .values("article").annotate(q=Sum("quantite"))
                  .values_list("article", "q"))
     reserves = _reserves_de(articles)
-    return [{**article_public(a, en_stock=stock.get(a.id, 0)),
+    infos = infos_familles()
+    return [{**article_public(a, en_stock=stock.get(a.id, 0), infos=infos),
              "reserve_sur": reserves.get(a.id, [])} for a in articles]
 
 
@@ -211,12 +271,14 @@ def _reserves_de(articles):
     return {k: sorted(v, key=_ordre_naturel) for k, v in resultat.items()}
 
 
-def article_public(article, en_stock=None):
+def article_public(article, en_stock=None, infos=None):
+    """Un code MP tel que les écrans le lisent. `infos` : les familles déjà lues,
+    pour une liste — sinon une requête."""
     return {
         "id": article.id,
         "code": article.code,
         "famille": article.famille,
-        "famille_libelle": article.get_famille_display(),
+        "famille_libelle": nom_famille(article.famille, infos),
         "designation": article.designation,
         "fournisseur": article.fournisseur,
         "numero": article.numero,
@@ -284,6 +346,7 @@ def stock(*, texte="", famille="", fournisseur="", rack="", generation="",
     # Un code sans stock n'apparaît que si on le demande : toute la base, ou ce
     # qui est sous le seuil — un code à zéro est le premier à recommander.
     montrer_vides = (tous or sous_seuil) and not rack
+    infos = infos_familles()
     resultat = []
     for article in articles:
         ici = par_article.get(article.id, [])
@@ -299,7 +362,7 @@ def stock(*, texte="", famille="", fournisseur="", rack="", generation="",
         if sous_seuil and not bas:
             continue
         resultat.append({
-            **article_public(article, en_stock=total),
+            **article_public(article, en_stock=total, infos=infos),
             "sous_seuil": bas,
             "dernier_mouvement": max((x.modifie_le for x in ici), default=None),
             "positions": [{
@@ -319,14 +382,17 @@ def stock(*, texte="", famille="", fournisseur="", rack="", generation="",
                                      -(a["dernier_mouvement"].timestamp()
                                        if a["dernier_mouvement"] else 0)))
     else:
-        resultat.sort(key=lambda a: (a["famille"] != ArticleMP.VITRAGE,
+        # Les familles dans leur ordre d'affichage, puis les codes.
+        rang = {code: (f.ordre, f.nom) for code, f in infos.items()}
+        resultat.sort(key=lambda a: (rang.get(a["famille"], (10 ** 6, a["famille"])),
                                      _ordre_naturel(a["code"])))
     return resultat
 
 
 def compteurs():
     """Les chiffres du haut de l'écran MP, et les listes de ses filtres."""
-    par_famille = {f: {"codes": 0, "quantite": 0} for f, _ in ArticleMP.FAMILLES}
+    par_famille = {f["code"]: {"codes": 0, "quantite": 0} for f in familles_publiques()
+                   if f["actif"]}
     for ligne in (StockMP.objects.values("article__famille")
                   .annotate(codes=Count("article", distinct=True), q=Sum("quantite"))):
         par_famille[ligne["article__famille"]] = {"codes": ligne["codes"],
@@ -343,6 +409,7 @@ def compteurs():
             anciennes += 1
     return {
         "familles": par_famille,
+        "liste_familles": familles_publiques(),
         "ancienne_generation": anciennes,
         "sous_seuil": sous_seuil,
         # `.order_by()` vide n'est pas décoratif : le tri par défaut du modèle
@@ -427,7 +494,7 @@ def _tracer(type, *, article, emplacement, place, quantite, reste, utilisateur, 
 
 def codes_acceptes(emplacement):
     """Les codes qu'accepte cet emplacement, dans l'ordre naturel — [] : tous
-    ceux de sa famille. Lit le préchargement de la vue quand il existe."""
+    ceux de ses familles. Lit le préchargement de la vue quand il existe."""
     return sorted(emplacement.codes_acceptes.all(), key=lambda a: _ordre_naturel(a.code))
 
 
@@ -470,9 +537,11 @@ def refus_emplacement(emplacement, famille=None):
     if not emplacement.actif:
         motif = f" : {emplacement.motif_inactif}" if emplacement.motif_inactif else ""
         return f"{emplacement.code} est hors service{motif}."
-    if famille and famille != emplacement.usage:
-        return (f"{emplacement.code} range des {FAMILLE_LIBELLE[emplacement.usage]} : "
-                f"un {dict(ArticleMP.FAMILLES)[famille].lower()} n'y va pas.")
+    if famille and not emplacement.accepte_famille(famille):
+        infos = infos_familles()
+        return (f"{emplacement.code} n'accepte que les "
+                f"{liste_familles(emplacement.codes_familles(), infos)} : "
+                f"un {nom_famille(famille, infos).lower()} n'y va pas.")
     return ""
 
 
@@ -734,29 +803,68 @@ def deplacer(*, lignes, vers, place, utilisateur=None, note=""):
 #
 # « Ce que range cet emplacement » se règle en nombre — un rack entier, une
 # colonne, le niveau du sol où se posent les chevalets — et pas seulement à
-# l'unité. Les quatre choix possibles, et ce qu'ils écrivent :
+# l'unité. Trois choix, et pour les matières premières, les familles acceptées
+# (aucune cochée : toutes). Un code de famille vaut « MP, cette famille
+# seulement » : c'est le choix d'avant, qui reste compris.
 
 CHOIX_USAGE = {
     "cabines-gd": (Emplacement.CABINES, Emplacement.GD),
     "cabines-illimite": (Emplacement.CABINES, Emplacement.ILLIMITE),
-    "carton": (Emplacement.MP_CARTON, None),
-    "vitrage": (Emplacement.MP_VITRAGE, None),
+    "mp": (Emplacement.MP, None),
 }
 LIBELLES_CHOIX = {
     "cabines-gd": "Cabines — 2 places",
     "cabines-illimite": "Cabines — capacité illimitée",
-    "carton": "MP — cartons",
-    "vitrage": "MP — vitrages",
+    "mp": "Matières premières",
 }
 #: Une génération de rack va jusqu'à 500 emplacements : un rack entier doit
 #: pouvoir changer d'usage d'un geste.
 USAGE_LOT_MAX = 500
 
 
+def codes_de_familles(familles):
+    """Les codes de familles demandés, tous existants, dans l'ordre d'affichage.
+
+    Accepte une liste ou « vitrage,carton » ; [] pour rien. Une famille
+    inconnue est un refus, pas un oubli : « MP — tout » au lieu de « MP —
+    vitrages » ouvrirait l'emplacement à ce que personne n'a demandé."""
+    if familles in (None, ""):
+        return []
+    if isinstance(familles, str):
+        familles = familles.split(",")
+    demandes = list(dict.fromkeys(str(c).strip().lower() for c in familles if str(c).strip()))
+    connues = {f.code: f for f in FamilleMP.objects.filter(code__in=demandes)}
+    inconnues = [c for c in demandes if c not in connues]
+    if inconnues:
+        raise ErreurMP(f"Famille inconnue : « {inconnues[0]} ».")
+    return [f.code for f in sorted(connues.values(), key=lambda f: (f.ordre, f.nom))]
+
+
+def lire_choix(choix, familles=None):
+    """`(choix, familles)` : le choix d'usage normalisé, et pour « mp » les codes
+    de familles visés ([] : toutes) — `None` pour les cabines."""
+    choix = str(choix or "").strip()
+    if choix in CHOIX_USAGE:
+        return (choix, codes_de_familles(familles)) if choix == "mp" else (choix, None)
+    if choix and FamilleMP.objects.filter(code=choix.lower()).exists():
+        return "mp", [choix.lower()]
+    raise ErreurMP(f"Usage inconnu : « {choix} ».")
+
+
+def libelle_choix(choix, familles, infos=None):
+    """« Cabines — 2 places », « MP — vitrages + cartons », « MP — toutes familles »."""
+    if choix != "mp":
+        return LIBELLES_CHOIX[choix]
+    if not familles:
+        return "MP — toutes familles"
+    infos = infos_familles() if infos is None else infos
+    return "MP — " + " + ".join(pluriel_famille(c, infos) for c in familles)
+
+
 def choix_de(emplacement):
     """Le choix d'usage qui décrit l'emplacement tel qu'il est."""
     if emplacement.est_mp:
-        return emplacement.usage
+        return "mp"
     return "cabines-illimite" if emplacement.illimite else "cabines-gd"
 
 
@@ -772,23 +880,29 @@ def _emplacements(ids, verrouiller=False):
         raise ErreurMP(f"{len(numeros)} emplacements sélectionnés : {USAGE_LOT_MAX} au plus "
                        "à la fois.")
     requete = Emplacement.objects.filter(pk__in=numeros).order_by("code")
-    liste = list(requete.select_for_update() if verrouiller else requete)
+    if verrouiller:
+        requete = requete.select_for_update()
+    liste = list(requete.prefetch_related("familles"))
     if len(liste) != len(numeros):
         raise ErreurMP(f"{len(numeros) - len(liste)} emplacement(s) de la sélection "
                        "n'existent plus. Rouvrez le rack pour repartir de ce qui est là.")
     return liste
 
 
-def bilan_usage(liste, choix):
+def bilan_usage(liste, choix, familles=None):
     """Ce que le changement ferait à chaque emplacement — sans rien écrire.
 
     Trois issues par emplacement : il change, il est déjà ainsi, ou quelque
     chose l'en empêche. Ce qui empêche est toujours ce qui est POSÉ dessus : le
     WMS ne déplace ni une cabine ni une palette tout seul, il dit lesquelles
     sont à sortir d'abord.
+
+    Changer les familles d'un emplacement MP n'est pas changer ce qu'il range :
+    rien n'est à sortir. Comme une réservation de codes, cela ne déplace rien —
+    ce qui est posé et n'est plus accepté reste, peut sortir ou changer
+    d'emplacement, et la réponse le nomme (`hors_reservation`).
     """
-    if choix not in CHOIX_USAGE:
-        raise ErreurMP(f"Usage inconnu : « {choix} ».")
+    choix, cibles = lire_choix(choix, familles)
     usage, mode = CHOIX_USAGE[choix]
     ids = [e.pk for e in liste]
     cabines = dict(Occupation.objects.filter(emplacement_id__in=ids)
@@ -805,7 +919,10 @@ def bilan_usage(liste, choix):
     changes, deja, bloques = [], [], []
     for e in liste:
         if choix_de(e) == choix:
-            deja.append(e)
+            if choix == "mp" and e.codes_familles() != cibles:
+                changes.append(e)
+            else:
+                deja.append(e)
             continue
         n_cab, n_mp = cabines.get(e.pk, 0), lignes_mp.get(e.pk, 0)
         message = ""
@@ -822,23 +939,55 @@ def bilan_usage(liste, choix):
             bloques.append({"id": e.pk, "code": e.code, "message": message})
         else:
             changes.append(e)
+
+    # Ce qui resterait posé sans être accepté — familles seulement : les codes
+    # réservés qui ne sont plus de ces familles tombent avec le changement.
+    hors = []
+    if choix == "mp" and cibles and changes:
+        poses = {}
+        for e_id, code, famille in (StockMP.objects
+                                    .filter(emplacement_id__in=[e.pk for e in changes])
+                                    .exclude(article__famille__in=cibles)
+                                    .values_list("emplacement_id", "article__code",
+                                                 "article__famille")):
+            poses.setdefault(e_id, set()).add(code)
+        hors = [{"id": e.pk, "code": e.code, "codes": sorted(poses[e.pk], key=_ordre_naturel)}
+                for e in changes if e.pk in poses]
     return {
         "choix": choix,
-        "libelle": LIBELLES_CHOIX[choix],
+        "familles": cibles,
+        "libelle": libelle_choix(choix, cibles),
         "total": len(liste),
         "changes": [e.code for e in changes],
         "ids_changes": [e.pk for e in changes],
         "deja": [e.code for e in deja],
         "bloques": bloques,
+        "hors_reservation": hors,
     }
 
 
-def apercu_usage(ids, choix):
-    return bilan_usage(_emplacements(ids), choix)
+def apercu_usage(ids, choix, familles=None):
+    return bilan_usage(_emplacements(ids), choix, familles)
+
+
+def ecrire_familles(emplacement_ids, familles):
+    """Les familles de ces emplacements, remplacées ; les codes réservés qui n'en
+    sont plus tombent avec — sinon l'emplacement n'accepterait plus rien."""
+    if not emplacement_ids:
+        return
+    lien = Emplacement.familles.through
+    lien.objects.filter(emplacement_id__in=emplacement_ids).delete()
+    if familles:
+        pks = dict(FamilleMP.objects.filter(code__in=familles).values_list("code", "pk"))
+        lien.objects.bulk_create([lien(emplacement_id=e_id, famillemp_id=pks[c])
+                                  for e_id in emplacement_ids for c in familles])
+        reserves = Emplacement.codes_acceptes.through
+        reserves.objects.filter(emplacement_id__in=emplacement_ids).exclude(
+            articlemp__famille__in=familles).delete()
 
 
 @transaction.atomic
-def changer_usage(ids, choix, *, utilisateur=None):
+def changer_usage(ids, choix, familles=None, *, utilisateur=None):
     """Applique l'usage aux emplacements qui le peuvent, et dit ce qu'il en est des autres.
 
     Pas « tout ou rien » ici, à la différence d'une suppression : passer le
@@ -848,17 +997,20 @@ def changer_usage(ids, choix, *, utilisateur=None):
     redit après.
     """
     liste = _emplacements(ids, verrouiller=True)
-    bilan = bilan_usage(liste, choix)
-    usage, mode = CHOIX_USAGE[choix]
+    bilan = bilan_usage(liste, choix, familles)
+    usage, mode = CHOIX_USAGE[bilan["choix"]]
     valeurs = {"usage": usage}
     if mode:
         valeurs["mode_places"] = mode
-    if bilan["ids_changes"]:
-        # Les codes acceptés appartiennent à l'ancienne famille : ils ne
-        # veulent plus rien dire, ils partent avec elle.
-        oublier_codes([e.pk for e in liste if e.pk in bilan["ids_changes"]
-                       and e.usage != usage])
-        Emplacement.objects.filter(pk__in=bilan["ids_changes"]).update(**valeurs)
+    a_changer = bilan["ids_changes"]
+    if a_changer:
+        Emplacement.objects.filter(pk__in=a_changer).update(**valeurs)
+        if usage == Emplacement.CABINES:
+            # Familles et codes ne veulent plus rien dire pour des cabines.
+            ecrire_familles(a_changer, [])
+            oublier_codes(a_changer)
+        else:
+            ecrire_familles(a_changer, bilan["familles"])
         # Les emplacements n'ont pas de journal à eux : sans cette ligne,
         # « depuis quand AH ne prend plus de cabines ? » n'aurait pas de réponse.
         logger.warning("Usage des emplacements changé par %s : %s → %s",
@@ -867,9 +1019,9 @@ def changer_usage(ids, choix, *, utilisateur=None):
     return bilan
 
 
-def refus_changement_usage(emplacement, choix):
+def refus_changement_usage(emplacement, choix, familles=None):
     """Pour la fiche d'un emplacement : "" si le changement passe, sinon pourquoi."""
-    bilan = bilan_usage([emplacement], choix)
+    bilan = bilan_usage([emplacement], choix, familles)
     return bilan["bloques"][0]["message"] if bilan["bloques"] else ""
 
 
@@ -883,7 +1035,7 @@ def stock_de_l_emplacement(emplacement_ids):
 # --- Codes acceptés : réserver un emplacement à certains codes ----------------
 #
 # « Le sol de AH ne prend que les VITR.445 et les VITR.470 » : un emplacement MP
-# accepte par défaut toute sa famille, et se réserve, si besoin, à un ou
+# accepte par défaut tous les codes de ses familles, et se réserve, si besoin, à un ou
 # plusieurs codes. Comme l'usage, le réglage se fait à l'unité — la fiche de
 # l'emplacement — ou en nombre — une sélection dans le plan d'un rack. Une
 # réservation n'est jamais un déplacement : ce qui est déjà posé reste là, et
@@ -892,7 +1044,7 @@ def stock_de_l_emplacement(emplacement_ids):
 MODES_CODES = {
     "remplacer": "réservés à ces codes",
     "ajouter": "codes ajoutés à leur réservation",
-    "tous": "ouverts à tous les codes de leur famille",
+    "tous": "ouverts à tous les codes de leurs familles",
 }
 
 
@@ -916,11 +1068,11 @@ def _articles(ids):
 def _calculer_codes(liste, articles, mode):
     """Ce que le réglage ferait à chaque emplacement : (bilan public, nouvelles listes).
 
-    Chaque emplacement prend les codes de SA famille dans la sélection : réserver
-    d'un geste le niveau du sol aux VITR.445 et le niveau du dessus aux C8.FD
-    est un seul réglage. Un emplacement qui n'y trouve aucun code de sa famille
-    est laissé tel quel, et nommé : « remplacer par rien » voudrait dire « tout
-    accepter », le contraire de ce qui était demandé.
+    Chaque emplacement prend, dans la sélection, les codes de SES familles :
+    réserver d'un geste le niveau du sol aux VITR.445 et le niveau du dessus
+    aux C8.FD est un seul réglage. Un emplacement qui n'y trouve aucun code de
+    ses familles est laissé tel quel, et nommé : « remplacer par rien » voudrait
+    dire « tout accepter », le contraire de ce qui était demandé.
     """
     if mode not in MODES_CODES:
         raise ErreurMP(f"Réglage inconnu : « {mode} ».")
@@ -945,6 +1097,7 @@ def _calculer_codes(liste, articles, mode):
             "emplacement_id", "article_id", "article__code"):
         poses.setdefault(e_id, {})[a_id] = code
 
+    infos = infos_familles()
     changes, deja, bloques, hors, nouvelles = [], [], [], [], {}
     for e in liste:
         if not e.est_mp:
@@ -952,17 +1105,17 @@ def _calculer_codes(liste, articles, mode):
                 "il range des cabines : les codes acceptés ne concernent que les "
                 "matières premières.")})
             continue
-        siens = {a.pk for a in articles if a.famille == e.usage}
+        siens = {a.pk for a in articles if e.accepte_famille(a.famille)}
         actuels = avant.get(e.pk, set())
         if mode == "tous":
             apres = set()
         elif not siens:
             bloques.append({"id": e.pk, "code": e.code, "message": (
-                f"il range des {FAMILLE_LIBELLE[e.usage]} : aucun des codes choisis n'en "
-                "est un.")})
+                f"il n'accepte que les {liste_familles(e.codes_familles(), infos)} : aucun "
+                "des codes choisis n'en est un.")})
             continue
         elif mode == "ajouter" and not actuels:
-            # Ouvert à toute sa famille, il accepte DÉJÀ ces codes. « Ajouter »
+            # Ouvert à toutes ses familles, il accepte DÉJÀ ces codes. « Ajouter »
             # ne doit pas le fermer aux autres : ce serait le contraire de ce
             # que dit le geste — « les codes déjà acceptés le restent ».
             deja.append(e.code)
@@ -1020,25 +1173,28 @@ def regler_codes(ids, articles, mode, *, utilisateur=None):
 
 
 def oublier_codes(emplacement_ids):
-    """Retire la réservation de ces emplacements — leur famille vient de changer."""
+    """Retire la réservation de ces emplacements — ils viennent de passer aux cabines."""
     if emplacement_ids:
         Emplacement.codes_acceptes.through.objects.filter(
             emplacement_id__in=emplacement_ids).delete()
 
 
-def refus_codes_famille(usage, articles):
-    """Pour l'administration : "" si ces codes vont sur un emplacement de cet usage."""
+def refus_codes_familles(usage, familles, articles):
+    """Pour l'administration : "" si ces codes vont sur un emplacement de cet usage,
+    qui accepte ces familles ([] : toutes)."""
     articles = list(articles)
     if not articles:
         return ""
     if usage == Emplacement.CABINES:
         return ("Un emplacement de cabines n'accepte pas de codes MP : videz « codes "
                 "acceptés », ou réglez d'abord ce qu'il range.")
-    autres = [a.code for a in articles if a.famille != usage]
+    if not familles:
+        return ""
+    autres = [a.code for a in articles if a.famille not in familles]
     if autres:
         return (f"{liste_codes(autres)} ne {'sont' if len(autres) > 1 else 'est'} pas "
-                f"des {FAMILLE_LIBELLE[usage]} : un emplacement « {libelle_usage(usage)} » "
-                "ne peut pas les accepter.")
+                f"des {liste_familles(familles)} : l'emplacement n'accepte que ces "
+                "familles. Ajoutez la leur, ou retirez ces codes.")
     return ""
 
 
@@ -1102,11 +1258,17 @@ def _requete_sous_seuil():
 
 
 def _requete_hors_reservation():
-    liaison = Emplacement.codes_acceptes.through.objects
-    reserve = Exists(liaison.filter(emplacement_id=OuterRef("emplacement_id")))
-    accepte = Exists(liaison.filter(emplacement_id=OuterRef("emplacement_id"),
-                                    articlemp_id=OuterRef("article_id")))
-    return StockMP.objects.filter(reserve).exclude(accepte).order_by()
+    """Le stock posé là où il n'est plus accepté : son code n'est pas réservé ici,
+    ou sa famille n'y est plus acceptée."""
+    codes = Emplacement.codes_acceptes.through.objects
+    familles = Emplacement.familles.through.objects
+    reserve = Exists(codes.filter(emplacement_id=OuterRef("emplacement_id")))
+    code_ok = Exists(codes.filter(emplacement_id=OuterRef("emplacement_id"),
+                                  articlemp_id=OuterRef("article_id")))
+    restreint = Exists(familles.filter(emplacement_id=OuterRef("emplacement_id")))
+    famille_ok = Exists(familles.filter(emplacement_id=OuterRef("emplacement_id"),
+                                        famillemp__code=OuterRef("article__famille")))
+    return StockMP.objects.filter((reserve & ~code_ok) | (restreint & ~famille_ok)).order_by()
 
 
 def _empreinte(sous_seuil, hors):
@@ -1150,12 +1312,19 @@ def alertes():
 
     hors = []
     lignes = list(_requete_hors_reservation().select_related("article", "emplacement"))
-    acceptes = {}
+    acceptes, familles = {}, {}
     if lignes:
+        ici = {x.emplacement_id for x in lignes}
         for e_id, code in (Emplacement.codes_acceptes.through.objects
-                           .filter(emplacement_id__in={x.emplacement_id for x in lignes})
+                           .filter(emplacement_id__in=ici)
                            .values_list("emplacement_id", "articlemp__code")):
             acceptes.setdefault(e_id, []).append(code)
+        for e_id, famille in (Emplacement.familles.through.objects
+                              .filter(emplacement_id__in=ici)
+                              .order_by("famillemp__ordre", "famillemp__nom")
+                              .values_list("emplacement_id", "famillemp__code")):
+            familles.setdefault(e_id, []).append(famille)
+    infos = infos_familles()
     for x in sorted(lignes, key=_ordre_position):
         hors.append({
             "cle": f"hors:{x.pk}", "ligne": x.pk, "article": x.article_id,
@@ -1163,6 +1332,8 @@ def alertes():
             "emplacement": x.emplacement_id, "code_emplacement": x.emplacement.code,
             "place": x.place, "position": x.position, "quantite": x.quantite,
             "acceptes": sorted(acceptes.get(x.emplacement_id, []), key=_ordre_naturel),
+            # Les familles qu'il accepte, dites en clair : « vitrages et cartons ».
+            "familles": liste_familles(familles.get(x.emplacement_id, []), infos),
         })
 
     groupes = []

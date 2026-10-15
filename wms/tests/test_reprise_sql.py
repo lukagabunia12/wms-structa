@@ -12,7 +12,8 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from wms.management.commands.reprise_sql import Command, modeles_a_recaler
-from wms.models import ArticleMP, Cabine, Emplacement, ModeleCabine, Utilisateur
+from wms.models import (ArticleMP, Cabine, Emplacement, FamilleMP, Groupe, ModeleCabine,
+                        Utilisateur)
 
 
 class RepriseTest(TestCase):
@@ -59,6 +60,9 @@ class RepriseTest(TestCase):
         # De même pour la base des codes MP, semée par 0026.
         ModeleCabine.objects.all().delete()
         ArticleMP.objects.all().delete()
+        # Et les groupes de comptes (0030), les familles MP (0031).
+        Groupe.objects.all().delete()
+        FamilleMP.objects.all().delete()
         with self.assertRaisesMessage(CommandError, "vide"):
             call_command("reprise_sql", "exporter", vers=str(self.dossier), verbosity=0)
 
@@ -88,6 +92,9 @@ class RepriseTest(TestCase):
         # La base MP aussi : semée par la migration, remplacée par le fichier.
         self.assertEqual(ArticleMP.objects.count(),
                          manifeste["comptages"]["wms.articlemp"])
+        # Groupes et familles : semés eux aussi, et remplacés sans doublon.
+        self.assertEqual(Groupe.objects.count(), manifeste["comptages"]["wms.groupe"])
+        self.assertEqual(FamilleMP.objects.count(), manifeste["comptages"]["wms.famillemp"])
 
     def test_import_refuse_une_base_deja_peuplee(self):
         """Charger par-dessus des données existantes produit des doublons de clé."""

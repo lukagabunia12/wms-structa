@@ -13,7 +13,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Count
 
-from .models import Cabine, Emplacement, Occupation, StockMP
+from .models import Cabine, Emplacement, FamilleMP, Occupation, StockMP
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +341,7 @@ def apercu_rack(**parametres):
 
 
 @transaction.atomic
-def generer_rack(*, mode_places=None, usage=None, description="", **parametres):
+def generer_rack(*, mode_places=None, usage=None, familles=None, description="", **parametres):
     """Crée le rack. Les codes déjà pris sont laissés intacts et rapportés.
 
     Volontairement rejouable : ajouter un quatrième niveau à un rack existant se
@@ -354,16 +354,24 @@ def generer_rack(*, mode_places=None, usage=None, description="", **parametres):
     if mode_places and mode_places not in dict(Emplacement.MODES_PLACES):
         raise ErreurEmplacement(f"Mode de rangement inconnu : « {mode_places} ».")
     # Un rack se crée directement pour les matières premières : le niveau du sol
-    # des chevalets, une rangée de palettes de cartons.
+    # des chevalets, une rangée de palettes de cartons. Un code de famille
+    # (« vitrage ») vaut « MP, cette famille seulement ».
+    from . import services_mp
+    codes_familles = []
     if usage and usage not in dict(Emplacement.USAGES):
-        raise ErreurEmplacement(f"Usage inconnu : « {usage} ».")
+        code = str(usage).strip().lower()
+        if not FamilleMP.objects.filter(code=code).exists():
+            raise ErreurEmplacement(f"Usage inconnu : « {usage} ».")
+        usage, codes_familles = Emplacement.MP, [code]
+    if usage == Emplacement.MP and familles:
+        codes_familles = services_mp.codes_de_familles(familles)
     apercu = apercu_rack(**parametres)
     a_creer = [x for x in apercu["codes"] if not x["existe"]]
     prefixe = (parametres.get("prefixe") or "").strip().upper()
 
     # Un par un plutôt que `bulk_create` : `Emplacement.save()` normalise le code,
     # et 500 lignes au maximum dans une seule transaction ne coûtent rien.
-    crees = []
+    crees, ids = [], []
     for x in a_creer:
         emplacement = Emplacement(
             code=x["code"], rack=prefixe, colonne=x["colonne"], niveau=x["niveau"],
@@ -380,6 +388,9 @@ def generer_rack(*, mode_places=None, usage=None, description="", **parametres):
                 f"Le code {x['code']} vient d'être créé par ailleurs. Relancez la "
                 "génération : les codes déjà pris seront simplement ignorés.")
         crees.append(emplacement.code)
+        ids.append(emplacement.pk)
+    if usage == Emplacement.MP and codes_familles:
+        services_mp.ecrire_familles(ids, codes_familles)
 
     return {
         "rack": prefixe,

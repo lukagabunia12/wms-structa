@@ -46,7 +46,7 @@ python manage.py runserver        # développement
 
 ## Tests et style
 ```bash
-python manage.py test           # 889 tests côté serveur
+python manage.py test           # 919 tests côté serveur
 ruff check .                    # style et erreurs de code (pip install ruff)
 node outils/verifier_interface.js   # les écrans de l'interface existent et sont joignables
 node outils/tester_interface.js     # le comportement de l'interface, sans navigateur

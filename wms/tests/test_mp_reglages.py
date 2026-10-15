@@ -219,13 +219,18 @@ class CodesAcceptesTest(BaseReglages):
         self.assertEqual(r.status_code, 403)
 
     def test_l_administration_suit_la_meme_regle(self):
-        donnees = {"code": "AH500", "usage": "vitrage", "mode_places": "gd",
-                   "codes_acceptes": [self.c8fd.pk], "actif": True}
+        from wms.models import FamilleMP
+        vitrage = FamilleMP.objects.get(code="vitrage")
+        donnees = {"code": "AH500", "usage": "mp", "mode_places": "gd",
+                   "familles": [vitrage.pk], "codes_acceptes": [self.c8fd.pk], "actif": True}
         form = EmplacementForm(data=donnees, instance=self.ah500)
         self.assertFalse(form.is_valid())
         self.assertIn("codes_acceptes", form.errors)
         form = EmplacementForm(data={**donnees, "codes_acceptes": [self.v470.pk]},
                                instance=self.ah500)
+        self.assertTrue(form.is_valid(), form.errors)
+        # Toutes les familles : un carton peut y être réservé.
+        form = EmplacementForm(data={**donnees, "familles": []}, instance=self.ah500)
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_un_code_reserve_ne_change_pas_de_famille_ni_ne_se_retire(self):
@@ -494,7 +499,7 @@ class DeplacerTest(BaseReglages):
         self.reserver([reserve], [self.v927])
         cas = [
             ({"vers": self.cabines}, "range des cabines"),
-            ({"vers": self.cartons}, "range des cartons"),
+            ({"vers": self.cartons}, "n'accepte que les cartons"),
             ({"vers": hors}, "lisse tordue"),
             ({"place": "M"}, "pilier"),
             ({"place": "X"}, "gauche, milieu ou droite"),

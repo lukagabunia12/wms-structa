@@ -4,8 +4,8 @@ from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 
 from . import services_cabines, services_emplacements, services_mp
-from .models import (Cabine, CabineAttendue, Emplacement, ModeleCabine, MouvementCabine,
-                     Occupation)
+from .models import (Cabine, CabineAttendue, Emplacement, FamilleMP, ModeleCabine,
+                     MouvementCabine, Occupation)
 
 
 class ChampNormalise(serializers.CharField):
@@ -59,8 +59,16 @@ class EmplacementSerializer(serializers.ModelSerializer):
                                             default=None)
     mode_libelle = serializers.CharField(source="get_mode_places_display", read_only=True)
     illimite = serializers.BooleanField(read_only=True)
-    usage_libelle = serializers.CharField(source="get_usage_display", read_only=True)
+    #: « MP · vitrages + cartons » : ce qu'il range, familles comprises.
+    usage_libelle = serializers.SerializerMethodField()
     est_mp = serializers.BooleanField(read_only=True)
+    #: Les familles acceptées, par leur code — [] : toutes. Elles s'écrivent
+    #: aussi ici (PATCH `{"familles": ["vitrage", "carton"]}`) : les codes
+    #: réservés qui n'en sont plus tombent avec.
+    familles = serializers.SlugRelatedField(many=True, slug_field="code", required=False,
+                                            queryset=FamilleMP.objects.all())
+    #: La famille, quand il n'en accepte qu'une : c'est elle qui colore l'écran.
+    famille = serializers.SerializerMethodField()
     #: Ce que porte un emplacement MP, en résumé : de quoi colorer une case du
     #: plan sans ouvrir l'emplacement. `None` pour un emplacement de cabines.
     mp = serializers.SerializerMethodField()
@@ -175,6 +183,34 @@ class EmplacementSerializer(serializers.ModelSerializer):
             "places": sorted({x.place for x in lignes}, key="GMD".index),
         }
 
+    def _infos(self):
+        """Les familles, lues une fois pour toute la liste."""
+        if getattr(self, "_infos_familles", None) is None:
+            self._infos_familles = services_mp.infos_familles()
+        return self._infos_familles
+
+    def get_usage_libelle(self, obj):
+        if not obj.pk:
+            return dict(Emplacement.USAGES).get(obj.usage, obj.usage)
+        return services_mp.libelle_usage(obj, self._infos())
+
+    def get_famille(self, obj):
+        codes = obj.codes_familles() if obj.pk else []
+        return codes[0] if len(codes) == 1 else None
+
+    def to_internal_value(self, data):
+        """Un code de famille à la place de l'usage — « vitrage » — veut dire
+        « matières premières, cette famille seulement » : c'est ce qu'envoyaient
+        les écrans d'avant les familles réglables, et c'est un raccourci commode."""
+        usage = data.get("usage") if hasattr(data, "get") else None
+        if usage and usage not in dict(Emplacement.USAGES):
+            code = str(usage).strip().lower()
+            if FamilleMP.objects.filter(code=code).exists():
+                data = data.dict() if hasattr(data, "dict") else dict(data)
+                data["usage"] = Emplacement.MP
+                data.setdefault("familles", [code])
+        return super().to_internal_value(data)
+
     def get_codes_acceptes(self, obj):
         """Lit le préchargement de la vue ; une requête à défaut."""
         if not obj.pk:
@@ -182,8 +218,9 @@ class EmplacementSerializer(serializers.ModelSerializer):
         return [{"id": a.id, "code": a.code} for a in services_mp.codes_acceptes(obj)]
 
     def update(self, instance, validated_data):
-        """Un emplacement qui change de famille perd ses codes acceptés : ils
-        appartenaient à l'ancienne, et n'y voudraient plus rien dire.
+        """Les familles s'écrivent par `services_mp.ecrire_familles` : les codes
+        réservés qui n'en sont plus tombent avec — sinon l'emplacement
+        n'accepterait plus rien. Passé aux cabines, il perd familles et codes.
 
         Le changement d'usage se décide SOUS le verrou de l'emplacement, celui
         que prennent l'entrée de stock MP et le rangement d'une cabine : sinon
@@ -196,19 +233,31 @@ class EmplacementSerializer(serializers.ModelSerializer):
                  .values_list("pk", flat=True))
             usage = validated_data.get("usage", instance.usage)
             mode = validated_data.get("mode_places", instance.mode_places)
+            familles = validated_data.pop("familles", None)
             if usage == Emplacement.CABINES:
                 choix = "cabines-illimite" if mode == Emplacement.ILLIMITE else "cabines-gd"
             else:
-                choix = usage
+                choix = "mp"
             if choix != services_mp.choix_de(instance):
                 refus = services_mp.refus_changement_usage(instance, choix)
                 if refus:
                     raise serializers.ValidationError({"usage": f"{instance.code} : {refus}"})
             usage_avant = instance.usage
             instance = super().update(instance, validated_data)
-            if instance.usage != usage_avant:
-                services_mp.oublier_codes([instance.pk])
+            if instance.usage == Emplacement.CABINES:
+                if usage_avant != Emplacement.CABINES:
+                    services_mp.ecrire_familles([instance.pk], [])
+                    services_mp.oublier_codes([instance.pk])
+            elif familles is not None:
+                services_mp.ecrire_familles(
+                    [instance.pk], services_mp.codes_de_familles([f.code for f in familles]))
         return instance
+
+    def create(self, validated_data):
+        """Les familles d'un emplacement de cabines ne veulent rien dire : ignorées."""
+        if validated_data.get("usage", Emplacement.CABINES) == Emplacement.CABINES:
+            validated_data.pop("familles", None)
+        return super().create(validated_data)
 
     def get_places_libres(self, obj):
         """Les places encore libres pour une cabine ordinaire.
@@ -240,9 +289,11 @@ class EmplacementSerializer(serializers.ModelSerializer):
         if usage == Emplacement.CABINES:
             choix = "cabines-illimite" if mode == Emplacement.ILLIMITE else "cabines-gd"
         else:
-            choix = usage
+            choix = "mp"
         avant = services_mp.choix_de(self.instance)
-        # Le mode d'un emplacement MP ne décrit rien : seul l'usage compte.
+        # Le mode d'un emplacement MP ne décrit rien, et ses familles se
+        # changent sans le vider (ce qui est posé reste) : seul le passage
+        # cabines ↔ matières premières exige un emplacement vide.
         if usage != Emplacement.CABINES and self.instance.usage == usage:
             return attrs
         if choix != avant:

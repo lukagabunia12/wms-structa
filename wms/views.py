@@ -22,7 +22,7 @@ from rest_framework.response import Response
 
 from . import (connexion, export_inventaire, export_mp, lecture_fiche, ocr_fiche,
                services_cabines, services_emplacements, services_import, services_mp)
-from .models import (ArticleMP, Cabine, CabineAttendue, Emplacement, ModeleCabine,
+from .models import (ArticleMP, Cabine, CabineAttendue, Emplacement, FamilleMP, ModeleCabine,
                      MouvementCabine, MouvementMP, Occupation, StockMP, Utilisateur)
 from .parseurs import ObjetJSON
 from .serializers import (CabineAttendueSerializer, CabineSerializer, EmplacementSerializer,
@@ -94,19 +94,24 @@ class EmplacementViewSet(viewsets.ModelViewSet):
                                 # pour toute la liste, pas une par emplacement.
                                 Prefetch("stock_mp", queryset=StockMP.objects.order_by("place"),
                                          to_attr="lignes_mp"),
-                                # Les codes acceptés : idem, une requête en tout.
-                                "codes_acceptes",
+                                # Les codes et familles acceptés : idem, une
+                                # requête chacun pour toute la liste.
+                                "codes_acceptes", "familles",
                                 # Les places condamnées : le calcul des places
                                 # libres en a besoin pour chaque case du plan.
                                 "places_condamnees"))
         if p.get("rack"):
             qs = qs.filter(rack__iexact=p["rack"].strip())
-        # `?usage=mp` : les emplacements de matières premières, toutes familles.
+        # `?usage=mp` : les emplacements de matières premières, toutes familles ;
+        # `?usage=vitrage` : ceux qui ACCEPTENT les vitrages — qui n'ont pas
+        # restreint leurs familles, ou qui l'ont gardée.
         usage = (p.get("usage") or "").strip()
-        if usage == "mp":
-            qs = qs.exclude(usage=Emplacement.CABINES)
-        elif usage in dict(Emplacement.USAGES):
+        if usage in dict(Emplacement.USAGES):
             qs = qs.filter(usage=usage)
+        elif usage:
+            qs = (qs.filter(usage=Emplacement.MP)
+                  .filter(Q(familles__code=usage.lower()) | Q(familles__isnull=True))
+                  .distinct())
         colonne = _filtre_id(p, "colonne")
         if colonne is not None:
             qs = qs.filter(colonne=colonne)
@@ -192,7 +197,7 @@ class EmplacementViewSet(viewsets.ModelViewSet):
             "zone": emplacement.zone_cabine.nom if emplacement.zone_cabine_id else None,
             # Un emplacement MP ne se lit pas ici : l'écran passe à son contenu MP.
             "usage": emplacement.usage,
-            "usage_libelle": emplacement.get_usage_display(),
+            "usage_libelle": services_mp.libelle_usage(emplacement),
             "est_mp": emplacement.est_mp,
             "mode_places": emplacement.mode_places,
             "mode_libelle": emplacement.get_mode_places_display(),
@@ -301,6 +306,7 @@ class EmplacementViewSet(viewsets.ModelViewSet):
                 return Response(services_emplacements.apercu_rack(**parametres))
             resultat = services_emplacements.generer_rack(
                 mode_places=d.get("mode_places"), usage=d.get("usage"),
+                familles=d.get("familles"),
                 description=(d.get("description") or "")[:255], **parametres)
         except ValidationError as e:
             return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
@@ -308,23 +314,27 @@ class EmplacementViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"])
     def usage(self, request):
-        """Change ce que rangent plusieurs emplacements : cabines, cartons, vitrages.
+        """Change ce que rangent plusieurs emplacements : cabines, ou matières
+        premières — toutes familles, ou celles choisies.
 
-        `{ids: [...], choix: "vitrage", apercu: true}` rend le bilan sans rien
-        écrire ; sans `apercu`, l'applique aux emplacements qui le peuvent. Les
-        autres sont nommés, avec ce qui les retient. Droit « régler les
-        emplacements ».
+        `{ids: [...], choix: "mp", familles: ["vitrage", "carton"], apercu: true}`
+        rend le bilan sans rien écrire ; sans `apercu`, l'applique aux
+        emplacements qui le peuvent. Les autres sont nommés, avec ce qui les
+        retient. `choix: "vitrage"` vaut « MP, les vitrages seulement ». Droit
+        « régler les emplacements ».
         """
         d = request.data
         ids = d.get("ids")
         if isinstance(ids, str):
             ids = ids.split(",")
         choix = str(d.get("choix") or "").strip()
+        familles = d.get("familles")
         try:
             if d.get("apercu"):
-                bilan = services_mp.apercu_usage(ids, choix)
+                bilan = services_mp.apercu_usage(ids, choix, familles)
             else:
-                bilan = services_mp.changer_usage(ids, choix, utilisateur=request.user)
+                bilan = services_mp.changer_usage(ids, choix, familles,
+                                                  utilisateur=request.user)
         except ValidationError as e:
             return Response({"erreur": e.messages}, status=status.HTTP_400_BAD_REQUEST)
         return Response(bilan)
@@ -336,7 +346,7 @@ class EmplacementViewSet(viewsets.ModelViewSet):
         `{ids: [...], articles: [...], mode: "remplacer" | "ajouter" | "tous",
         apercu: true}` rend le bilan sans rien écrire ; sans `apercu`, l'applique
         à ceux qui le prennent. « tous » retire la réservation : l'emplacement
-        accepte de nouveau toute sa famille. Droit « régler les emplacements »,
+        accepte de nouveau tous les codes de ses familles. Droit « régler les emplacements »,
         comme tout réglage d'emplacement.
         """
         d = request.data
@@ -1416,7 +1426,7 @@ class MatieresPremieresViewSet(viewsets.ViewSet):
         """
         p = request.query_params
         famille = (p.get("famille") or "").strip()
-        if famille and famille not in dict(ArticleMP.FAMILLES):
+        if famille and not FamilleMP.objects.filter(code=famille).exists():
             raise ErreurAPI({"erreur": [f"Famille inconnue : « {famille} »."]})
         emplacement = None
         if str(p.get("emplacement") or "").strip():
@@ -1450,6 +1460,15 @@ class MatieresPremieresViewSet(viewsets.ViewSet):
     @action(detail=False, methods=["get"])
     def filtres(self, request):
         return Response(services_mp.compteurs())
+
+    @action(detail=False, methods=["get"])
+    def familles(self, request):
+        """Les familles de matières premières : noms, pluriels, couleurs, ordre.
+
+        L'écran les lit au démarrage : une famille créée dans l'administration
+        apparaît partout — réglage des emplacements, entrée, filtres — sans
+        mise à jour de l'application."""
+        return Response(services_mp.familles_publiques())
 
     @action(detail=False, methods=["get"])
     def article(self, request):

@@ -95,9 +95,25 @@ geste ajouté à l'API entre dans `GESTES`**, sinon ce test échoue.
 
 L'administration de Django suit ses propres permissions, sauf `EmplacementAdmin`, qui
 exige en plus les cases (`empl_creer`, `empl_regler`) et ne supprime rien : la suppression
-d'emplacements vit dans l'application, par `services_emplacements`. Les actions de profil de `UtilisateurAdmin` exigent la
-permission de modifier (`permissions=["change"]`) : sans elle, Django les proposait à qui
-pouvait seulement consulter la liste.
+d'emplacements vit dans l'application, par `services_emplacements`. Les actions de `UtilisateurAdmin`
+— une par groupe (« Mettre dans le groupe … », créées par `get_actions`), « Retirer de leur
+groupe », « Lecture seule » — exigent la permission de modifier : sans elle, Django les
+proposait à qui pouvait seulement consulter la liste.
+
+**Groupes.** `Groupe` (migration 0030) porte les mêmes cases que `Utilisateur` : les deux
+héritent de `CasesDroits`, une seule définition. Un compte a un groupe au plus
+(`Utilisateur.groupe`, PROTECT) ; `droits_effectifs()` = rôle d'abord, puis cases du groupe
+OU cases du compte (ses « droits en plus »). Les groupes de Django sont retirés de
+l'administration (`admin.site.unregister`).
+
+**Familles MP.** `FamilleMP` (migration 0031) remplace les choix figés vitrage/carton.
+`ArticleMP.famille` et `MouvementMP.famille` portent le CODE de la famille (texte, validé
+par `ArticleMP.clean`). Un emplacement MP (`usage = "mp"`) a `familles` (vide : toutes) et
+`codes_acceptes` (vide : tous ceux de ces familles) : un code entre si sa famille est
+acceptée ET, s'il y a des codes, s'il en fait partie (`services_mp.accepte`). Un code de
+famille passé comme usage (« vitrage ») vaut « MP, cette famille seulement » — modèle,
+API et génération de rack le traduisent. L'écran lit les familles par `GET /api/mp/familles/`
+au démarrage (`chargerFamillesMP`) ; `FAMILLES_MP` dans `app.js` n'est qu'une réserve.
 
 Seul « Repartir de zéro » reste au-delà des cases : rôle administrateur
 (`est_administrateur`), dans l'administration.

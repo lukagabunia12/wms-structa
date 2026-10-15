@@ -315,7 +315,7 @@ def _pourquoi_pas(emplacement, grand, prises, condamnees, possible):
     if possible:
         return ""
     if emplacement.est_mp:
-        return f"réservé aux matières premières ({emplacement.get_usage_display()})"
+        return "réservé aux matières premières"
     if not emplacement.actif:
         return (f"hors service : {emplacement.motif_inactif}"
                 if emplacement.motif_inactif else "hors service")
@@ -660,8 +660,8 @@ def ranger(*, cabine, emplacement, place="", occupation=None, ajouter=False,
     _verrouiller(emplacement)
     if emplacement.est_mp:
         raise ErreurCabine(
-            f"{emplacement.code} range des matières premières "
-            f"({emplacement.get_usage_display()}) : on n'y pose pas de cabine. "
+            f"{emplacement.code} range des matières premières : on n'y pose pas "
+            "de cabine. "
             "Choisissez un emplacement de cabines.")
     if not emplacement.actif:
         raise ErreurCabine(f"L'emplacement {emplacement.code} est inactif.")

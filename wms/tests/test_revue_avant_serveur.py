@@ -349,7 +349,8 @@ class UsageSousVerrouTest(Base):
         with self.assertRaises(ValidationError):
             serialiseur.save()
         vitrages.refresh_from_db()
-        self.assertEqual(vitrages.usage, Emplacement.MP_VITRAGE)
+        self.assertEqual((vitrages.usage, vitrages.codes_familles()),
+                         (Emplacement.MP, ["vitrage"]))
         self.assertTrue(StockMP.objects.filter(emplacement=vitrages).exists())
 
 

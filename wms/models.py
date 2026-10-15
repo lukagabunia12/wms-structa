@@ -14,13 +14,14 @@ from django.core.validators import RegexValidator
 from django.db import models
 
 
-class Utilisateur(AbstractUser):
-    ADMIN, OPERATEUR, LECTURE = "admin", "operateur", "lecture"
-    ROLES = [(ADMIN, "Administrateur"), (OPERATEUR, "Opérateur"), (LECTURE, "Lecture seule")]
+class CasesDroits(models.Model):
+    """Les cases de droits du WMS, communes au compte et au groupe.
 
-    nom = models.CharField("nom affiché", max_length=150, blank=True)
-    role = models.CharField("rôle", max_length=16, choices=ROLES, default=OPERATEUR)
-    pin = models.CharField(max_length=32, blank=True)
+    Une seule définition pour les deux fiches : un groupe porte exactement les
+    cases que la fiche d'un compte, avec les mêmes noms et les mêmes
+    explications. Deux listes recopiées finiraient par diverger, et une case
+    du groupe ne commanderait plus rien.
+    """
 
     # --- Les droits : une case par geste -------------------------------------
     #: Chaque case ouvre un geste, ou une famille de gestes qui vont ensemble,
@@ -60,7 +61,8 @@ class Utilisateur(AbstractUser):
     #: verre n'est pas forcément celle qui range les cabines, et l'inverse.
     droit_mp = models.BooleanField(
         "entrer, sortir et déplacer des matières premières", default=False,
-        help_text="Vitrages et cartons : entrée, sortie, changement d'emplacement.")
+        help_text="Toutes les familles — vitrages, cartons… : entrée, sortie, changement "
+                  "d'emplacement.")
     droit_mp_seuils = models.BooleanField(
         "régler les seuils d'alerte MP", default=False,
         help_text="Le stock sous lequel la cloche signale un code à recommander.")
@@ -70,8 +72,8 @@ class Utilisateur(AbstractUser):
                   "condamner une place ou la rouvrir.")
     droit_empl_regler = models.BooleanField(
         "régler les emplacements", default=False,
-        help_text="Leur code, ce qu'ils rangent (cabines, cartons, vitrages), les codes "
-                  "MP qu'ils acceptent, leur description.")
+        help_text="Leur code, ce qu'ils rangent (cabines ou matières premières), les "
+                  "familles et codes MP qu'ils acceptent, leur description.")
     droit_empl_creer = models.BooleanField(
         "créer et supprimer des emplacements et des racks", default=False,
         help_text="Un emplacement ne se supprime de toute façon pas tant qu'une cabine "
@@ -79,6 +81,7 @@ class Utilisateur(AbstractUser):
     droit_modeles = models.BooleanField(
         "régler la taille des modèles de cabine", default=False,
         help_text="Grand modèle — il prend tout l'emplacement — ou non.")
+
 
     #: Les droits, dans les groupes et l'ordre de la fiche du compte. La clé est
     #: le nom du champ sans « droit_ » : c'est elle que nomment les vues
@@ -99,6 +102,54 @@ class Utilisateur(AbstractUser):
             return str(cle)
         return str(cls._meta.get_field(f"droit_{cle}").verbose_name)
 
+    def cases_cochees(self):
+        """Les clés des cases cochées sur CETTE fiche, dans l'ordre de la fiche."""
+        return [c for c in self.DROITS if getattr(self, f"droit_{c}")]
+
+    class Meta:
+        abstract = True
+
+
+class Groupe(CasesDroits):
+    """Un groupe de comptes qui font le même travail : Caristes, Réception MP…
+
+    Ses cases sont celles de la fiche d'un compte. Un compte appartient à un
+    groupe au plus ; il a les droits du groupe, plus les cases cochées sur sa
+    propre fiche — les exceptions. Retirer une case au groupe la retire à tous
+    ses membres d'un coup, sauf à qui l'a en exception.
+
+    Ce ne sont PAS les groupes de Django (« Can add cabine »…) : ceux-là
+    règlent l'accès aux pages de l'administration, en anglais, et ne disent
+    rien de ce qu'un cariste peut faire sur son téléphone.
+    """
+
+    nom = models.CharField(max_length=80, unique=True)
+    description = models.CharField(max_length=255, blank=True, default="")
+    modifie_le = models.DateTimeField("modifié le", auto_now=True)
+
+    class Meta:
+        verbose_name = "groupe"
+        verbose_name_plural = "groupes"
+        ordering = ["nom"]
+
+    def __str__(self):
+        return self.nom
+
+
+class Utilisateur(AbstractUser, CasesDroits):
+    ADMIN, OPERATEUR, LECTURE = "admin", "operateur", "lecture"
+    ROLES = [(ADMIN, "Administrateur"), (OPERATEUR, "Opérateur"), (LECTURE, "Lecture seule")]
+
+    nom = models.CharField("nom affiché", max_length=150, blank=True)
+    role = models.CharField("rôle", max_length=16, choices=ROLES, default=OPERATEUR)
+    pin = models.CharField(max_length=32, blank=True)
+    #: PROTECT : supprimer un groupe en SET_NULL retirerait leurs droits à tous
+    #: ses membres, en silence. L'administration refuse, et les nomme.
+    groupe = models.ForeignKey(
+        Groupe, null=True, blank=True, on_delete=models.PROTECT, related_name="membres",
+        help_text="Ses droits viennent du groupe. Les cases cochées plus bas s'y "
+                  "ajoutent : ce sont ses droits en plus.")
+
     def droits_effectifs(self):
         """Droits réellement applicables. Appliqué par wms.permissions.DroitWMS.
 
@@ -110,7 +161,19 @@ class Utilisateur(AbstractUser):
         if self.role == self.LECTURE:
             # « Lecture seule » l'emporte sur les cases cochées individuellement.
             return {c: False for c in self.DROITS}
-        return {c: getattr(self, f"droit_{c}") for c in self.DROITS}
+        groupe = self.groupe if self.groupe_id else None
+        return {c: bool(getattr(self, f"droit_{c}")
+                        or (groupe is not None and getattr(groupe, f"droit_{c}")))
+                for c in self.DROITS}
+
+    def droits_du_groupe(self):
+        """Les clés que le groupe donne — vide sans groupe."""
+        return self.groupe.cases_cochees() if self.groupe_id else []
+
+    def droits_en_plus(self):
+        """Les cases cochées sur la fiche que le groupe ne donne pas déjà."""
+        du_groupe = set(self.droits_du_groupe())
+        return [c for c in self.cases_cochees() if c not in du_groupe]
 
     def peut(self, droit):
         """Le compte a-t-il ce droit ? Un nom inconnu vaut « non » : une faute de
@@ -196,24 +259,37 @@ class Emplacement(models.Model):
     mode_places = models.CharField("mode de rangement", max_length=16,
                                    choices=MODES_PLACES, default=GD)
 
-    #: Ce que l'emplacement range : des cabines, ou une famille de matières
-    #: premières. Les deux mondes ne se mélangent pas — une palette de cartons
-    #: posée là où le WMS attend une cabine fausse les deux stocks à la fois.
+    #: Ce que l'emplacement range : des cabines, ou des matières premières. Les
+    #: deux mondes ne se mélangent pas — une palette de cartons posée là où le
+    #: WMS attend une cabine fausse les deux stocks à la fois.
     #:
     #: Un emplacement MP a toujours TROIS places, gauche, milieu, droite : c'est
     #: la largeur d'une lisse de rack pour des palettes ou des chevalets. Le
     #: `mode_places` ne le concerne pas — il décrit le rangement des cabines, et
     #: reste tel quel pour le jour où l'emplacement y reviendrait.
     #:
-    #: Les codes MP sont ceux de `ArticleMP.famille` : on compare l'un à l'autre
-    #: sans table de correspondance.
-    CABINES, MP_CARTON, MP_VITRAGE = "cabines", "carton", "vitrage"
-    USAGES = [(CABINES, "Cabines"), (MP_CARTON, "MP · cartons"),
-              (MP_VITRAGE, "MP · vitrages")]
+    #: Ce qu'il accepte se règle ensuite, du plus large au plus fin :
+    #: - `familles` vide : toutes les familles ; sinon, celles-là seulement ;
+    #: - `codes_acceptes` vide : tous les codes de ces familles ; sinon, ces
+    #:   codes-là seulement — et ils appartiennent aux familles acceptées.
+    #:
+    #: Un code de famille à la place de l'usage (« vitrage ») est un raccourci :
+    #: « matières premières, cette famille seulement ». `save()` le traduit.
+    CABINES, MP = "cabines", "mp"
+    USAGES = [(CABINES, "Cabines"), (MP, "Matières premières")]
+    #: Les raccourcis d'avant les familles réglables : un emplacement « de
+    #: vitrages » est un emplacement MP qui n'accepte que les vitrages.
+    MP_CARTON, MP_VITRAGE = "carton", "vitrage"
     usage = models.CharField("ce qu'il range", max_length=16, choices=USAGES,
                              default=CABINES, db_index=True)
 
-    #: Les codes qu'un emplacement MP accepte. VIDE : tous ceux de sa famille —
+    familles = models.ManyToManyField(
+        "FamilleMP", blank=True, related_name="emplacements",
+        verbose_name="familles acceptées",
+        help_text="Vide : toutes les familles de matières premières. Sinon, seules "
+                  "celles-ci y entrent.")
+
+    #: Les codes qu'un emplacement MP accepte. VIDE : tous ceux de ses familles —
     #: c'est le cas ordinaire, et il le reste tant qu'on ne réserve pas
     #: l'emplacement à un ou plusieurs codes.
     #:
@@ -224,12 +300,26 @@ class Emplacement(models.Model):
     codes_acceptes = models.ManyToManyField(
         "ArticleMP", blank=True, related_name="emplacements_reserves",
         verbose_name="codes acceptés",
-        help_text="Vide : tous les codes de sa famille. Sinon, seuls ces codes y entrent.")
+        help_text="Vide : tous les codes de ses familles. Sinon, seuls ces codes y entrent.")
 
     @property
     def est_mp(self):
-        """Emplacement de matières premières (cartons ou vitrages) ?"""
+        """Emplacement de matières premières ?"""
         return self.usage != self.CABINES
+
+    def codes_familles(self):
+        """Les codes des familles acceptées, dans l'ordre d'affichage — [] : toutes.
+
+        Lit le préchargement de la vue quand il existe : le plan d'un rack en
+        demande pour chaque case."""
+        if not self.pk or not self.est_mp:
+            return []
+        return [f.code for f in sorted(self.familles.all(), key=lambda f: (f.ordre, f.nom))]
+
+    def accepte_famille(self, code):
+        """Cette famille entre-t-elle ici ? Toujours, s'il n'en restreint aucune."""
+        familles = self.codes_familles()
+        return not familles or code in familles
 
     #: Position dans la structure physique, renseignée par le générateur de racks.
     #: Le code seul ne suffit pas : « AC551 » ne dit pas à une machine que c'est le
@@ -279,7 +369,15 @@ class Emplacement(models.Model):
 
     def save(self, *args, **kwargs):
         self.code = (self.code or "").strip().upper()
+        # Le raccourci : un code de famille à la place de l'usage.
+        famille_seule = None
+        if self.usage not in (self.CABINES, self.MP):
+            famille_seule, self.usage = self.usage, self.MP
+            if not FamilleMP.objects.filter(code=famille_seule).exists():
+                raise ValidationError({"usage": f"Usage inconnu : « {famille_seule} »."})
         super().save(*args, **kwargs)
+        if famille_seule:
+            self.familles.set(FamilleMP.objects.filter(code=famille_seule))
 
     def __str__(self):
         return self.code
@@ -668,8 +766,8 @@ class Occupation(models.Model):
         # par l'administration, où ce formulaire se remplit à la main.
         if self.emplacement_id and self.emplacement.est_mp:
             raise ValidationError({"emplacement": (
-                f"{self.emplacement.code} range des matières premières "
-                f"({self.emplacement.get_usage_display()}) : pas de cabine.")})
+                f"{self.emplacement.code} range des matières premières : pas de "
+                "cabine.")})
         if self.place and not self.emplacement_id:
             raise ValidationError({"place": "Une place ne se définit qu'avec un emplacement."})
         # Un emplacement à capacité illimitée n'a pas de place nommée.
@@ -935,6 +1033,48 @@ def normaliser_code_mp(texte):
     return "".join(c for c in texte.upper() if c.isalnum())
 
 
+class FamilleMP(models.Model):
+    """Une famille de matières premières : Vitrage, Carton — et celles qu'on ajoute.
+
+    Elle se crée dans l'administration. Son CODE est ce que retiennent les
+    codes MP et le journal : il ne change plus une fois créé. Tout le reste —
+    nom, pluriel, couleur — se change à volonté, l'écran suit.
+    """
+
+    code = models.SlugField(
+        "code", max_length=16, unique=True,
+        help_text="Court, en minuscules, sans espace ni accent : « quincaillerie ». "
+                  "Il ne change plus une fois créé : le stock et le journal le citent.")
+    nom = models.CharField("nom", max_length=60, help_text="Au singulier : « Vitrage ».")
+    pluriel = models.CharField(
+        "au pluriel", max_length=60,
+        help_text="« Vitrages ». Il sert aux titres et aux quantités : « 3 vitrages ».")
+    exemple = models.CharField(
+        "exemple de recherche", max_length=80, blank=True, default="",
+        help_text="Écrit en gris dans le champ de recherche : « Ex. vitr.445 ou 445 ».")
+    couleur = models.CharField(
+        max_length=7, default="#5B6B7A",
+        validators=[RegexValidator(r"^#[0-9A-Fa-f]{6}$", "Une couleur au format #RRVVBB.")],
+        help_text="La couleur de sa pastille, sur le plan des racks et dans les listes.")
+    ordre = models.PositiveIntegerField("ordre d'affichage", default=0)
+    actif = models.BooleanField(
+        "active", default=True,
+        help_text="Décochée : elle n'est plus proposée pour un nouveau code. Ce qui "
+                  "existe reste, et se range comme avant.")
+
+    class Meta:
+        verbose_name = "famille MP"
+        verbose_name_plural = "familles MP"
+        ordering = ["ordre", "nom"]
+
+    def clean(self):
+        super().clean()
+        self.code = (self.code or "").strip().lower()
+
+    def __str__(self):
+        return self.nom
+
+
 class ArticleMP(models.Model):
     """Un code élément de matière première : un vitrage ou un carton.
 
@@ -949,11 +1089,12 @@ class ArticleMP(models.Model):
     prenant le code voisin dans la liste.
     """
 
+    #: Les deux familles livrées. Les autres se créent dans l'administration
+    #: (`FamilleMP`) : le champ ci-dessous en porte le code.
     VITRAGE, CARTON = "vitrage", "carton"
-    FAMILLES = [(VITRAGE, "Vitrage"), (CARTON, "Carton")]
 
     code = models.CharField("code élément", max_length=64, unique=True)
-    famille = models.CharField(max_length=16, choices=FAMILLES)
+    famille = models.CharField(max_length=16, help_text="Le code d'une famille MP.")
     designation = models.CharField("désignation", max_length=200, blank=True, default="")
     fournisseur = models.CharField(max_length=60, blank=True, default="")
     #: Le n° de l'article dans le fichier des matières premières (« 434 »).
@@ -997,6 +1138,8 @@ class ArticleMP(models.Model):
         """
         super().clean()
         self.code = " ".join(str(self.code or "").split()).upper()
+        if self.famille and not FamilleMP.objects.filter(code=self.famille).exists():
+            raise ValidationError({"famille": f"Famille inconnue : « {self.famille} »."})
 
     def save(self, *args, **kwargs):
         self.code = " ".join(str(self.code or "").split()).upper()
@@ -1078,7 +1221,7 @@ class MouvementMP(models.Model):
     article = models.ForeignKey(ArticleMP, null=True, blank=True,
                                 on_delete=models.SET_NULL, related_name="mouvements")
     article_code = models.CharField("code élément", max_length=64)
-    famille = models.CharField(max_length=16, choices=ArticleMP.FAMILLES)
+    famille = models.CharField(max_length=16)
     emplacement = models.ForeignKey(Emplacement, null=True, blank=True,
                                     on_delete=models.SET_NULL, related_name="mouvements_mp")
     position = models.CharField(max_length=80)

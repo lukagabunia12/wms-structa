@@ -444,7 +444,7 @@ class DetailsEtGardeFousTest(BaseRemiseAZero):
         mixte.codes_acceptes.set([ajoute, livre])
         detail = {p["cle"]: p["detail"] for p in services_remise.presenter()}["codes_mp"]
         self.assertIn("Si le plan est gardé, AH510 et AH520 perdent un code réservé", detail)
-        self.assertIn("AH510 n'en garde aucun et acceptera tous les codes de sa famille",
+        self.assertIn("AH510 n'en garde aucun et acceptera tous les codes de ses familles",
                       detail)
 
     def test_une_sauvegarde_impossible_n_efface_rien_et_le_dit(self):

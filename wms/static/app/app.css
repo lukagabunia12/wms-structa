@@ -882,6 +882,33 @@ label.case input{width:auto;flex:none;accent-color:var(--marine)}
 .case.mp.charge .o{color:var(--nuit);font-weight:700}
 .pastille.vitrage{background:var(--verre-tint);box-shadow:inset 0 0 0 1.5px var(--verre)}
 .pastille.carton{background:var(--kraft-tint);box-shadow:inset 0 0 0 1.5px var(--kraft)}
+
+/* Une famille ajoutée dans l'administration : sa couleur, posée par l'écran en
+   variables (--fam, sa teinte, son trait). Le verre et le kraft gardent leur
+   texture ; les autres un aplat, qui se distingue sans rien inventer.        */
+.famille-mp.fam,.etat.mp.fam{background:var(--fam-tint);color:var(--fam)}
+.emp-mp.fam .mp-lettre{background:var(--fam-tint);color:var(--fam)}
+.kpi-mp.fam .v{color:var(--fam)}
+.case.mp.fam{background:var(--fam-tint);border-color:var(--fam-ligne)}
+.case.mp.fam.charge{border-color:var(--fam)}
+.pastille.fam{background:var(--fam-tint);box-shadow:inset 0 0 0 1.5px var(--fam)}
+/* Plusieurs familles, ou toutes : ni verre ni kraft, les deux en biais. */
+.famille-mp.mixte,.etat.mp.mixte{background:var(--surface-2);color:var(--nuit)}
+.emp-mp.mixte .mp-lettre{background:var(--surface-2);color:var(--nuit)}
+.case.mp.mixte{background:repeating-linear-gradient(45deg,var(--verre-tint) 0 7px,var(--kraft-tint) 7px 14px);
+  border-color:var(--ligne)}
+.case.mp.mixte.charge{border-color:var(--nuit)}
+.pastille.mixte{background:repeating-linear-gradient(45deg,var(--verre-tint) 0 3px,var(--kraft-tint) 3px 6px);
+  box-shadow:inset 0 0 0 1.5px var(--muted)}
+
+/* Les familles acceptées par un emplacement : des cases, chacune à sa couleur. */
+.familles-choix{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.famille-case{display:inline-flex;align-items:center;gap:8px;min-height:40px;margin:0;padding:6px 12px;
+  border:1px solid var(--ligne);border-radius:20px;background:var(--surface);font-size:14px;font-weight:600;
+  color:var(--nuit);cursor:pointer}
+.famille-case input{margin:0;width:18px;height:18px;accent-color:var(--marine)}
+.famille-case i.pastille{display:inline-block;width:14px;height:14px;border-radius:4px;flex:none}
+.famille-case:has(input:checked){border-color:var(--marine);background:var(--surface-2)}
 /* En sélection, le n° de colonne et le niveau deviennent des boutons : ils
    cochent toute la colonne, tout le niveau. */
 .plan button.sel{margin:0;padding:4px 2px;min-height:30px;font:inherit;font-size:11px;font-weight:700;

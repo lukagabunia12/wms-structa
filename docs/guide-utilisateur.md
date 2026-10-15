@@ -37,8 +37,8 @@ qui proposaient chacun des champs différents.
 
 **Ajouter** — le bouton orange **« + Nouvel emplacement »** est en haut à droite du
 titre, toujours visible. Une fenêtre s'ouvre : code, **ce qu'il range** (cabines sur deux
-places, cabines en capacité illimitée, MP — cartons, MP — vitrages), description, et la
-case « zone de réception ». Le code est ce qui sera imprimé sur l'étiquette QR collée sur
+places, cabines en capacité illimitée, ou matières premières — avec les familles
+acceptées), description, et la case « zone de réception ». Le code est ce qui sera imprimé sur l'étiquette QR collée sur
 l'emplacement.
 
 **Créer un rack entier** — bouton **« Créer un rack »**, à côté du précédent.
@@ -214,30 +214,43 @@ réglage des emplacements (pour leurs codes acceptés).
 
 ### Régler les emplacements MP
 
-Un emplacement range des cabines **ou** une famille de matières premières — jamais
-les deux. Le réglage se fait en nombre :
+Un emplacement range des cabines **ou** des matières premières — jamais les deux.
+Pour les matières premières, il accepte, du plus large au plus fin :
+
+- **toutes les familles** — aucune case cochée : vitrages, cartons, et celles créées
+  plus tard ;
+- **une ou plusieurs familles** — cartons ET vitrages, par exemple ;
+- **des codes précis** — la carte « Codes acceptés » (plus bas) : seuls ces codes y
+  entrent, pris dans ses familles.
+
+Le réglage se fait en nombre :
 
 1. **Emplacements** → le rack → **« Sélectionner plusieurs emplacements »** ;
 2. touchez les cases — ou un **n° de colonne** pour toute la colonne, un **niveau**
    (N0, N1…) pour tout le niveau : le sol d'un rack où se posent les chevalets —, ou
    **Tout le rack** ;
-3. **« Ce qu'ils rangent »** → Cabines (2 places ou capacité illimitée), **MP —
-   cartons** ou **MP — vitrages** ;
-4. le WMS dit ce qui va changer, ce qui l'est déjà, et ce qui ne peut pas — un
-   emplacement où une cabine ou du stock MP est encore posé : il est **nommé**, et
-   laissé tel quel. **Appliquer** change tous les autres.
+3. **« Ce qu'ils rangent »** → Cabines (2 places ou capacité illimitée), ou
+   **Matières premières**, puis cochez les **familles acceptées** (aucune : toutes) ;
+4. le WMS dit ce qui va changer, ce qui l'est déjà, et ce qui ne peut pas — passer
+   des cabines aux matières premières, ou l'inverse, demande un emplacement vide : un
+   emplacement où une cabine ou du stock MP est encore posé est **nommé**, et laissé
+   tel quel. **Appliquer** change tous les autres. Changer seulement les familles
+   d'un emplacement MP ne demande pas de le vider : ce qui est posé reste (voir
+   « Une réservation ne déplace rien », plus bas).
 
 Sur le plan du rack, les emplacements MP portent la texture de leur matière — reflets
-bleutés pour le verre, cannelures kraft pour le carton — et disent « vide » ou « 2
-codes ». Ils ne prennent jamais de cabine : le rangement d'une cabine les refuse, et
+bleutés pour le verre, cannelures kraft pour le carton, la couleur choisie pour une
+famille ajoutée, des bandes verre et kraft pour un emplacement qui en accepte
+plusieurs — et disent « vide » ou « 2 codes ». Ils ne prennent jamais de cabine : le rangement d'une cabine les refuse, et
 l'onglet MP refuse un emplacement de cabines, en le disant sur la vidéo.
 
-Un emplacement se règle aussi à l'unité, sur sa fiche (« Ce qu'il range »), et un rack
-se crée directement pour les MP (« Créer un rack » → « Ce qu'il range »).
+Un emplacement se règle aussi à l'unité, sur sa fiche (« Ce qu'il range » et
+« Familles acceptées »), et un rack se crée directement pour les MP (« Créer un rack »
+→ « Ce qu'il range »).
 
 ### Codes acceptés : réserver un emplacement à certains codes
 
-Un emplacement MP accepte, par défaut, **tous les codes de sa famille**. On peut le
+Un emplacement MP accepte, par défaut, **tous les codes de ses familles**. On peut le
 **réserver** à un ou plusieurs codes : « le sol de AH ne prend que les VITR.445 et les
 VITR.470 ». Les autres codes y sont alors refusés à l'entrée — et au déplacement —,
 avec un message qui dit lesquels y vont.
@@ -250,15 +263,15 @@ avec un message qui dit lesquels y vont.
   niveau, une colonne…) → **« Codes acceptés »**. Trois réglages :
   - **Réserver à des codes précis** — la réservation devient exactement ces codes ;
   - **Ajouter des codes à leur réservation** — les codes déjà acceptés le restent. Un
-    emplacement encore ouvert à toute sa famille n'est pas fermé pour autant : il
-    accepte déjà ces codes, et le WMS le dit ;
+    emplacement encore ouvert à tous les codes de ses familles n'est pas fermé pour
+    autant : il accepte déjà ces codes, et le WMS le dit ;
   - **Accepter de nouveau tous les codes** — retire la réservation.
 
-  Chaque emplacement prend les codes de **sa** famille : d'un même geste, le niveau
+  Chaque emplacement prend les codes de **ses** familles : d'un même geste, le niveau
   des vitrages et celui des cartons se réservent chacun à leurs codes. Comme pour
   « Ce qu'ils rangent », le WMS montre d'abord ce qui va changer, ce qui l'est déjà
-  et ce qui ne peut pas — un emplacement de cabines, ou sans aucun code de sa famille
-  dans la sélection.
+  et ce qui ne peut pas — un emplacement de cabines, ou sans aucun code de ses
+  familles dans la sélection.
 
 **Une réservation ne déplace rien.** Ce qui est déjà posé et n'est plus accepté
 reste là : il peut toujours sortir ou changer d'emplacement. L'écran de l'emplacement

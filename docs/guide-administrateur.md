@@ -105,10 +105,10 @@ fiche d'un compte porte, juste sous l'identifiant, son **rôle** et ses
 | | Corriger ou supprimer une fiche cabine | corriger une cabine mal saisie, ou la supprimer |
 | Fichier de production | Importer le fichier de production | l'écran « Fichier de production » |
 | | Enregistrer une cabine absente du fichier | avec un motif, écrit au journal ; demande aussi « entrer et ranger » |
-| Matières premières | Entrer, sortir et déplacer des matières premières | vitrages et cartons |
+| Matières premières | Entrer, sortir et déplacer des matières premières | toutes les familles : vitrages, cartons… |
 | | Régler les seuils d'alerte MP | le seuil sous lequel la cloche signale un code |
 | Emplacements, racks et modèles | Mettre hors service, condamner une place | et l'inverse : remettre en service, rouvrir |
-| | Régler les emplacements | leur code, ce qu'ils rangent, leurs codes MP acceptés, leur description |
+| | Régler les emplacements | leur code, ce qu'ils rangent, leurs familles et codes MP acceptés, leur description |
 | | Créer et supprimer des emplacements et des racks | à l'unité, une sélection, un rack entier |
 | | Régler la taille des modèles de cabine | grand modèle ou non |
 
@@ -116,20 +116,56 @@ L'application ne montre à chacun que les boutons de ses cases. Un geste qu'il
 ne peut pas faire est absent, ou affiché éteint avec la case qui manque — c'est
 le mot à chercher sur sa fiche pour la cocher.
 
-**Les profils prêts à l'emploi.** Dans la liste des comptes, cochez-en un ou
-plusieurs, puis choisissez dans « Action » : **Cariste** (les quatre cases des
-cabines), **Cariste + MP**, **Matières premières**, **Gestionnaire** (tout le
-quotidien, réglages compris, mais ni créer ou supprimer des emplacements, ni le
-fichier de production), **Lecture seule**. Un profil fixe le rôle et TOUTES les
-cases — passer un gestionnaire en cariste lui retire le reste. Les
-administrateurs cochés par mégarde sont laissés tels quels. La colonne
-« droits » de la liste dit ce que chacun peut faire : le nom du profil, ou
-« Sur mesure » suivi de ses cases ; le filtre « a le droit » répond à « qui
-peut… ? ».
+**Les groupes.** Une équipe qui fait le même travail se règle une fois :
+**Administration → WMS → Groupes**. Un groupe porte exactement les cases de la
+fiche d'un compte, avec les mêmes noms, dans le même ordre. Quatre groupes sont
+livrés : **Caristes** (les quatre cases des cabines), **Caristes + MP**,
+**Matières premières**, **Gestionnaires** (tout le quotidien, réglages compris,
+mais ni créer ou supprimer des emplacements, ni le fichier de production). On en
+crée d'autres à volonté, et une case changée sur un groupe vaut aussitôt pour
+tous ses membres.
+
+- **Un compte appartient à un groupe au plus** : le champ **Groupe** de sa fiche,
+  dès la création. Sa fiche dit « droits reçus du groupe ».
+- **Les cases de la fiche du compte sont ses droits EN PLUS** de ceux du groupe —
+  une exception pour une personne. Laissées vides, il a exactement les droits de
+  son groupe. Elles ajoutent, elles ne retirent jamais.
+- **En nombre** : dans la liste des comptes, cochez-en plusieurs, puis dans
+  « Action » : **Mettre dans le groupe « … »** (il en reçoit les droits, ses droits
+  en plus sont retirés, il passe en Opérateur), **Retirer de leur groupe**, ou
+  **Passer en « Lecture seule »**. Les administrateurs cochés par mégarde sont
+  laissés tels quels.
+- Un groupe qui a des membres **ne se supprime pas** : la page nomme les comptes à
+  ranger ailleurs d'abord.
+
+La colonne « droits » de la liste dit ce que chacun peut faire : « Ceux du
+groupe », suivis de ses droits en plus ; sans groupe, « Sur mesure » et ses
+cases. Le filtre « a le droit » répond à « qui peut… ? », groupe compris.
+
+Les « Groupes » et « permissions » de Django — en anglais, « Can add cabine » —
+ne figurent plus dans l'administration : ils ne réglaient que l'accès à ces
+pages, jamais ce qu'on fait sur le téléphone. L'accès complet à
+l'administration, c'est la case **Statut super-utilisateur** de la fiche.
+
+À la mise à jour qui a créé les groupes, chaque compte dont les cases formaient
+exactement un ancien profil (Cariste, Gestionnaire…) a été rangé dans le groupe
+correspondant ; ses droits n'ont pas changé d'une case. Les autres ont gardé
+leurs cases, sans groupe.
 
 À la mise à jour qui a créé ces cases, chaque compte a gardé ce qu'il pouvait
 faire, case par case — **sauf « créer et supprimer des emplacements et des
 racks »**, que personne n'a reçu d'office : cochez-la pour qui doit l'avoir.
+
+**Les familles de matières premières.** **Administration → WMS → Familles MP.**
+Vitrage et Carton sont livrées ; une famille s'ajoute ici — Quincaillerie,
+Profilés… — avec son nom, son pluriel (« 3 quincailleries »), un exemple de
+recherche et sa couleur. L'application la propose aussitôt, sans mise à jour :
+réglage des emplacements, entrée de stock, filtres et chiffres de l'onglet MP.
+Les codes MP de cette famille se créent ensuite dans **Codes MP**, où la famille
+se choisit dans la liste. Son **code** (« quincaillerie ») ne change plus une
+fois créé : le stock et le journal le citent. Une famille citée ne se supprime
+pas — décochez « active » : elle n'est plus proposée pour un nouveau code, et
+ce qui existe se range comme avant.
 
 **À savoir aussi**
 

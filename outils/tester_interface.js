@@ -226,14 +226,15 @@ verifier('des cartons au pluriel', quantiteMP(160, 'carton'), '160 cartons');
 const { usageDeChoix, choixUsageDe, CHOIX_USAGE } = extraire('const MODES_EMP = [', 'const optionsUsage',
                                                              'usageDeChoix, choixUsageDe, CHOIX_USAGE');
 console.log('\nCe que range un emplacement');
-verifier('quatre choix, cabines d’abord', CHOIX_USAGE.map(c => c[0]).join(' '),
-         'cabines-gd cabines-illimite carton vitrage');
+verifier('trois choix, cabines d’abord', CHOIX_USAGE.map(c => c[0]).join(' '),
+         'cabines-gd cabines-illimite mp');
 verifier('cabines en capacité illimitée', JSON.stringify(usageDeChoix('cabines-illimite')),
          '{"usage":"cabines","mode_places":"illimite"}');
-verifier('vitrages : le mode d’avant est gardé',
-         JSON.stringify(usageDeChoix('vitrage', { mode_places: 'illimite' })),
-         '{"usage":"vitrage","mode_places":"illimite"}');
-verifier('un emplacement MP se lit par sa famille', choixUsageDe({ est_mp: true, usage: 'carton' }), 'carton');
+verifier('matières premières : le mode d’avant est gardé',
+         JSON.stringify(usageDeChoix('mp', { mode_places: 'illimite' })),
+         '{"usage":"mp","mode_places":"illimite"}');
+verifier('un emplacement MP se lit « mp », quelles que soient ses familles',
+         choixUsageDe({ est_mp: true, usage: 'mp', familles: ['carton'] }), 'mp');
 verifier('un emplacement de cabines par son mode', choixUsageDe({ est_mp: false, mode_places: 'gd' }), 'cabines-gd');
 
 const { contenuMPCourt } = extraire('function contenuMPCourt', 'function etiquetteEtat', 'contenuMPCourt');
@@ -267,7 +268,8 @@ const mp = extraireEnsemble([
   ['/** Pourquoi ces lignes ne peuvent pas aller', '/** Changer d\'emplacement : combien'],
   ['/** Ce que fera le réglage, en une phrase', 'function bilanCodesHTML'],
 ], 'listeCodes, nonVues, clesAlertes, libelleCloche, lireSeuil, libelleSeuil, phraseSeuil, '
-   + 'refusArrivee, phraseDeplacement, phraseDeplace, phraseCodes, phraseDejaCodes');
+   + 'refusArrivee, phraseDeplacement, phraseDeplace, phraseCodes, phraseDejaCodes, '
+   + 'FAMILLES_MP, listeFamilles, attrsFamille, attrsFamilleEmp, teinteFamille');
 
 console.log('\nLa cloche');
 verifier('un code', mp.listeCodes(['VITR.445']), 'VITR.445');
@@ -306,8 +308,24 @@ verifier('une arrivée ouverte', mp.refusArrivee(arrivee(), lignes), '');
 verifier('un emplacement de cabines', mp.refusArrivee(arrivee({ est_mp: false }), lignes),
          'AH510 range des cabines.');
 verifier('hors service', mp.refusArrivee(arrivee({ actif: false }), lignes), 'AH510 est hors service.');
-verifier('une autre famille', mp.refusArrivee(arrivee({ usage: 'carton' }), lignes),
-         'AH510 range des cartons.');
+verifier('une autre famille', mp.refusArrivee(arrivee({ familles: ['carton'] }), lignes),
+         'AH510 n’accepte que les cartons.');
+verifier('toutes les familles', mp.refusArrivee(arrivee({ familles: [] }), lignes), '');
+verifier('plusieurs familles, dont la leur',
+         mp.refusArrivee(arrivee({ familles: ['vitrage', 'carton'] }), lignes), '');
+verifier('une ligne d’une autre famille dans le lot', mp.refusArrivee(arrivee({ familles: ['vitrage'] }),
+  lignes.concat([{ code: 'C8.FD', famille: 'carton', place: 'D' }])), 'AH510 n’accepte que les vitrages.');
+
+console.log('\nFamilles MP');
+verifier('dites dans une phrase', mp.listeFamilles(['vitrage', 'carton']), 'vitrages et cartons');
+verifier('le verre garde sa texture', mp.attrsFamille('vitrage').cls, 'vitrage');
+verifier('une famille inconnue : le neutre', mp.attrsFamille('inconnue').cls, 'mixte');
+verifier('plusieurs familles : le neutre', mp.attrsFamilleEmp({ familles: ['vitrage', 'carton'] }).cls, 'mixte');
+verifier('toutes les familles : le neutre', mp.attrsFamilleEmp({ familles: [] }).cls, 'mixte');
+verifier('une famille ajoutée prend sa couleur',
+         (mp.FAMILLES_MP.quinc = { titre: 'Quincailleries', plusieurs: 'quincailleries', couleur: '#6B4FA0' },
+          mp.attrsFamille('quinc').style.startsWith('--fam:#6B4FA0;')), true);
+verifier('sa teinte claire', mp.teinteFamille('#000000', 0.5), 'rgb(128,128,128)');
 verifier('réservé à un des deux codes',
          mp.refusArrivee(arrivee({ codes_acceptes: [{ code: 'VITR.470' }] }), lignes),
          'AH510 est réservé à VITR.470 : VITR.927 n’y va pas.');
@@ -333,7 +351,7 @@ verifier('réserver un seul', mp.phraseCodes({ mode: 'remplacer', changes: ['AH5
 verifier('ajouter', mp.phraseCodes({ mode: 'ajouter', changes: ['AH500'], codes: ['VITR.927'] }),
          'VITR.927 s’ajoute à la réservation de 1 emplacement.');
 verifier('tout rouvrir', mp.phraseCodes({ mode: 'tous', changes: ['AH500', 'AH501'], codes: [] }),
-         '2 emplacements accepteront de nouveau tous les codes de leur famille.');
+         '2 emplacements accepteront de nouveau tous les codes de leurs familles.');
 verifier('rien ne change', mp.phraseCodes({ mode: 'tous', changes: [], codes: [] }), '');
 verifier('ajouter à un emplacement ouvert : il les accepte déjà',
          mp.phraseDejaCodes({ mode: 'ajouter', deja: ['AH500'] }), '1 les accepte déjà : AH500');

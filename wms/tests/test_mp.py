@@ -131,7 +131,7 @@ class EntreeTest(BaseMP):
             self.entrer(emplacement=self.cabines)
 
     def test_refuse_la_mauvaise_famille(self):
-        with self.assertRaisesMessage(services_mp.ErreurMP, "range des vitrages"):
+        with self.assertRaisesMessage(services_mp.ErreurMP, "n'accepte que les vitrages"):
             self.entrer(article=self.c8fd)
 
     def test_refuse_une_place_inconnue(self):
@@ -338,13 +338,41 @@ class UsageDesEmplacementsTest(BaseMP):
         bilan = services_mp.changer_usage(
             self.ids(self.cabines, libre, self.vitrages, self.cartons), "carton",
             utilisateur=self.admin)
-        self.assertEqual(bilan["changes"], ["AC551"])
+        # Une cabine retient AC550. AH500 passe aux cartons malgré ses vitrages :
+        # changer de familles ne déplace rien, et la réponse les nomme.
+        self.assertEqual(bilan["changes"], ["AC551", "AH500"])
         self.assertEqual(bilan["deja"], ["AH501"])
-        self.assertEqual({b["code"] for b in bilan["bloques"]}, {"AC550", "AH500"})
+        self.assertEqual({b["code"] for b in bilan["bloques"]}, {"AC550"})
+        self.assertEqual(bilan["hors_reservation"],
+                         [{"id": self.vitrages.id, "code": "AH500", "codes": ["VITR.470X2072.BP"]}])
         libre.refresh_from_db()
-        self.assertEqual(libre.usage, Emplacement.MP_CARTON)
+        self.assertEqual((libre.usage, libre.codes_familles()), (Emplacement.MP, ["carton"]))
         self.vitrages.refresh_from_db()
-        self.assertEqual(self.vitrages.usage, Emplacement.MP_VITRAGE)
+        self.assertEqual(self.vitrages.codes_familles(), ["carton"])
+        # Le vitrage resté là est signalé, comme un code hors réservation.
+        alertes = services_mp.alertes()
+        hors = [g for g in alertes["groupes"] if g["type"] == "hors_reservation"][0]["items"]
+        self.assertEqual([(x["code"], x["familles"]) for x in hors],
+                         [("VITR.470X2072.BP", "cartons")])
+
+    def test_plusieurs_familles_ou_toutes(self):
+        bilan = services_mp.changer_usage(self.ids(self.cabines), "mp",
+                                          ["carton", "vitrage"], utilisateur=self.admin)
+        self.assertEqual(bilan["libelle"], "MP — vitrages + cartons")
+        self.cabines.refresh_from_db()
+        self.assertEqual(self.cabines.codes_familles(), ["vitrage", "carton"])
+        self.assertEqual(services_mp.libelle_usage(self.cabines), "MP · vitrages + cartons")
+        bilan = services_mp.changer_usage(self.ids(self.cabines), "mp", [])
+        self.assertEqual(bilan["libelle"], "MP — toutes familles")
+        self.assertEqual(self.cabines.codes_familles(), [])
+        # Toutes : un vitrage et un carton y entrent.
+        for article in (self.v470, self.c8fd):
+            services_mp.entrer(emplacement=self.cabines, place="G", article=article, quantite=1)
+        self.assertEqual(StockMP.objects.filter(emplacement=self.cabines).count(), 2)
+
+    def test_une_famille_inconnue_est_refusee(self):
+        with self.assertRaisesMessage(services_mp.ErreurMP, "Famille inconnue"):
+            services_mp.apercu_usage(self.ids(self.cabines), "mp", ["verre"])
 
     def test_revenir_aux_cabines_avec_le_mode(self):
         bilan = services_mp.changer_usage(self.ids(self.cartons), "cabines-illimite")
@@ -388,6 +416,26 @@ class UsageDesEmplacementsTest(BaseMP):
                               {"usage": "carton"}, format="json")
         self.assertEqual(r.status_code, 200, r.data)
         self.assertTrue(r.data["est_mp"])
+        self.assertEqual((r.data["familles"], r.data["famille"]), (["carton"], "carton"))
+
+    def test_la_fiche_regle_les_familles(self):
+        """Plusieurs familles d'un geste ; les codes réservés qui n'en sont plus
+        tombent avec — sinon l'emplacement n'accepterait plus rien."""
+        services_mp.regler_codes([self.vitrages.id], [self.v470.id], "remplacer")
+        r = self.client.patch(f"/api/emplacements/{self.vitrages.id}/",
+                              {"usage": "mp", "familles": ["carton", "vitrage"]}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["familles"], ["vitrage", "carton"])
+        self.assertEqual(r.data["usage_libelle"], "MP · vitrages + cartons")
+        self.assertEqual([a["code"] for a in r.data["codes_acceptes"]], ["VITR.470X2072.BP"])
+        r = self.client.patch(f"/api/emplacements/{self.vitrages.id}/",
+                              {"familles": ["carton"]}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["codes_acceptes"], [])
+        r = self.client.patch(f"/api/emplacements/{self.vitrages.id}/",
+                              {"familles": []}, format="json")
+        self.assertEqual((r.data["familles"], r.data["usage_libelle"]),
+                         ([], "MP · toutes familles"))
 
     def test_la_liste_resume_le_stock_mp(self):
         self.entrer(quantite=19)
@@ -475,8 +523,17 @@ class CreationEtFiltresTest(BaseMP):
             "prefixe": "AV", "debut": "100", "pas": 10, "colonnes": 2, "niveaux": 1,
             "usage": "vitrage"}, format="json")
         self.assertEqual(r.status_code, 201, r.data)
-        self.assertEqual(set(Emplacement.objects.filter(rack="AV")
-                             .values_list("usage", flat=True)), {Emplacement.MP_VITRAGE})
+        crees = Emplacement.objects.filter(rack="AV")
+        self.assertEqual({e.usage for e in crees}, {Emplacement.MP})
+        self.assertEqual({tuple(e.codes_familles()) for e in crees}, {("vitrage",)})
+
+    def test_un_rack_mp_pour_plusieurs_familles(self):
+        r = self.client.post("/api/emplacements/generer/", {
+            "prefixe": "AW", "debut": "100", "pas": 10, "colonnes": 1, "niveaux": 1,
+            "usage": "mp", "familles": ["carton", "vitrage"]}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(Emplacement.objects.get(rack="AW").codes_familles(),
+                         ["vitrage", "carton"])
 
     def test_un_usage_inconnu_est_refuse_a_la_creation_du_rack(self):
         r = self.client.post("/api/emplacements/generer/", {
@@ -495,6 +552,10 @@ class CreationEtFiltresTest(BaseMP):
         self.assertEqual({e["code"] for e in r.data["results"]}, {"AH500", "AH501"})
         r = self.client.get("/api/emplacements/", {"usage": "vitrage"})
         self.assertEqual([e["code"] for e in r.data["results"]], ["AH500"])
+        # Un emplacement ouvert à toutes les familles accepte aussi les vitrages.
+        Emplacement.objects.create(code="AH502", usage=Emplacement.MP)
+        r = self.client.get("/api/emplacements/", {"usage": "vitrage"})
+        self.assertEqual([e["code"] for e in r.data["results"]], ["AH500", "AH502"])
 
     def test_l_ordre_des_positions_est_celui_du_rack(self):
         """Gauche, milieu, droite — pas D, G, M comme l'alphabet."""
@@ -516,15 +577,18 @@ class EcranEtServeurAlignesTest(APITestCase):
     def test_les_choix_d_usage(self):
         import re
         modes = re.findall(r"\['([a-z]+)',", re.search(r"const MODES_EMP = \[(.*?)\];", self.app).group(1))
-        familles_mp = re.findall(r"\['(carton|vitrage)', 'MP — ", self.app)
-        self.assertEqual([f"cabines-{m}" for m in modes] + familles_mp,
-                         list(services_mp.CHOIX_USAGE))
+        mp = re.findall(r"\['(mp)', 'Matières premières'", self.app)
+        self.assertEqual([f"cabines-{m}" for m in modes] + mp, list(services_mp.CHOIX_USAGE))
 
-    def test_les_familles(self):
+    def test_les_familles_livrees(self):
+        """L'écran a les deux familles livrées en réserve, pour le cas où la
+        liste du serveur n'arriverait pas : ce sont celles de la migration."""
+        import importlib
         import re
         bloc = re.search(r"const FAMILLES_MP = \{(.*?)\n\};", self.app, re.S).group(1)
+        livrees = importlib.import_module("wms.migrations.0031_familles_mp").LIVREES
         self.assertEqual(sorted(re.findall(r"^\s+(\w+): \{", bloc, re.M)),
-                         sorted(code for code, _ in ArticleMP.FAMILLES))
+                         sorted(code for code, *_ in livrees))
 
 
 class AdministrationDeLaBaseTest(APITestCase):
@@ -564,7 +628,7 @@ class GardeFousDeLAdministrationTest(BaseMP):
         self.assertIn("stock MP", str(refus.exception))
 
     def test_l_usage_d_un_emplacement_vide_change(self):
-        self.cartons.usage = Emplacement.MP_VITRAGE
+        self.cartons.usage = Emplacement.CABINES
         self.cartons.full_clean()           # ne lève pas
 
     def test_pas_de_cabine_sur_un_emplacement_mp_par_l_administration(self):

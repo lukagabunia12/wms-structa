@@ -96,16 +96,27 @@ def _semis():
 def _reservations_qui_tombent(codes):
     """{id d'emplacement: (code, codes qui tombent, codes qui restent)} — ce que
     la remise des codes ferait aux réservations d'un plan gardé : un code
-    retiré, ou revenu à une autre famille que celle de l'emplacement, n'y est
+    retiré, ou revenu à une famille que l'emplacement n'accepte pas, n'y est
     plus accepté."""
     lien = Emplacement.codes_acceptes.through
+    familles = _familles_par_emplacement()
     touches = {}
-    for emplacement, code_emp, code, usage in lien.objects.values_list(
-            "emplacement_id", "emplacement__code", "articlemp__code", "emplacement__usage"):
+    for emplacement, code_emp, code in lien.objects.values_list(
+            "emplacement_id", "emplacement__code", "articlemp__code"):
         _, tombent, restent = touches.setdefault(emplacement, (code_emp, [], []))
-        (tombent if code not in codes or codes[code]["famille"] != usage
+        siennes = familles.get(emplacement)
+        (tombent if code not in codes or (siennes and codes[code]["famille"] not in siennes)
          else restent).append(code)
     return {pk: v for pk, v in touches.items() if v[1]}
+
+
+def _familles_par_emplacement():
+    """{id d'emplacement: {codes de familles acceptées}} — absents : toutes."""
+    resultat = {}
+    for e_id, code in Emplacement.familles.through.objects.values_list(
+            "emplacement_id", "famillemp__code"):
+        resultat.setdefault(e_id, set()).add(code)
+    return resultat
 
 
 def _differe(article, ligne):
@@ -159,8 +170,8 @@ def etat():
             "codes": len(articles),
             "livres": len(codes),
             # Si le plan est gardé : les emplacements qui perdent un code réservé,
-            # et ceux qui n'en gardent aucun — ils accepteront alors toute leur
-            # famille.
+            # et ceux qui n'en gardent aucun — ils accepteront alors tous les
+            # codes de leurs familles.
             "reservations": sorted(v[0] for v in reservations.values()),
             "sans_reservation": sorted(v[0] for v in reservations.values() if not v[2]),
             "ajoutes": sum(1 for a in articles if a.code not in codes),
@@ -249,10 +260,10 @@ def _detail(cle, e):
                        f"perd{'ent' if len(touches) > 1 else ''} un code réservé")
             if len(vides) > 1:
                 phrase += (f" ; {services_mp.liste_codes(vides)} n'en gardent aucun et "
-                           "accepteront tous les codes de leur famille")
+                           "accepteront tous les codes de leurs familles")
             elif vides:
                 phrase += (f" ; {services_mp.liste_codes(vides)} n'en garde aucun et "
-                           "acceptera tous les codes de sa famille")
+                           "acceptera tous les codes de ses familles")
             phrase += "."
         return phrase
     raise KeyError(cle)
@@ -390,8 +401,10 @@ def _remettre_codes_mp(codes):
         article.actif = True
         article.save()
     lien = Emplacement.codes_acceptes.through
-    hors_famille = [pk for pk, famille, usage in lien.objects.values_list(
-        "pk", "articlemp__famille", "emplacement__usage") if famille != usage]
+    familles = _familles_par_emplacement()
+    hors_famille = [pk for pk, famille, e_id in lien.objects.values_list(
+        "pk", "articlemp__famille", "emplacement_id")
+        if familles.get(e_id) and famille not in familles[e_id]]
     lien.objects.filter(pk__in=hors_famille).delete()
 
 

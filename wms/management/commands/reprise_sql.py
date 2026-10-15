@@ -45,7 +45,9 @@ EXCLUES = ["contenttypes", "auth.Permission", "admin.logentry", "sessions.sessio
 #:
 #: La base des codes MP (vitrages, cartons), semée par 0026, suit la même règle :
 #: `ArticleMP.code` est unique, et le stock qui la cite arrive dans le fichier.
-SEMEES_PAR_MIGRATION = ["wms.modelecabine", "wms.articlemp"]
+#: De même pour les groupes de comptes (0030) et les familles MP (0031) : leurs
+#: noms et leurs codes sont uniques, et le fichier apporte les siens.
+SEMEES_PAR_MIGRATION = ["wms.modelecabine", "wms.articlemp", "wms.famillemp", "wms.groupe"]
 
 FICHIER_DONNEES = "donnees.json"
 FICHIER_MANIFESTE = "manifeste.json"
